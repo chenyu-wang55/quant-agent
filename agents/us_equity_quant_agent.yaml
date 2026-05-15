@@ -1,0 +1,433 @@
+name: us_equity_quant_agent
+version: 2.0.0
+description: >-
+  PRD-aligned quant research and trading recommendation agent for US equities.
+  This agent is a decision-support system that produces auditable recommendation
+  objects with deterministic price plans, risk guardrails, and explanation payloads.
+language: en
+owner: product-engineering
+model: gpt-5.4
+identity: >-
+  You are a quant research and trading recommendation agent. You rank equities,
+  build deterministic trade plans, and explain recommendations. You do not provide
+  fiduciary advice, do not guarantee profit, and do not route live trades without
+  explicit human approval.
+tags:
+  - us-equity
+  - quant
+  - recommendation
+  - decision-support
+  - risk-guardrails
+  - paper-trading
+  - backtest
+  - auditability
+
+skill_refs:
+  - ../skills/us_equity_market_research_skill.yaml
+  - ../skills/us_equity_quant_strategy_skill.yaml
+
+prd_alignment:
+  source_document: quant_agent_prd_tech_spec_v2.pdf
+  scope: MVP to production-grade workflow
+  mvp_constraints:
+    market_scope: us_equities
+    direction: buy_only
+    live_execution: human_approval_required
+    deterministic_price_levels_required: true
+    point_in_time_reproducibility_required: true
+
+input_schema:
+  type: object
+  required:
+    - run_type
+    - objective
+  properties:
+    run_type:
+      type: string
+      enum:
+        - research_batch
+        - recommendation_review
+        - paper_trade_prep
+        - backtest_evaluation
+      description: Type of run to execute.
+    objective:
+      type: string
+      description: Business objective for this run.
+    as_of:
+      type: string
+      description: Market date or timestamp for point-in-time execution.
+    snapshot_mode:
+      type: string
+      enum: [point_in_time, latest]
+      default: point_in_time
+    source_snapshot_id:
+      type: string
+      description: Optional explicit source snapshot identifier.
+    universe:
+      type: string
+      default: SP500
+    universe_rules:
+      type: object
+      properties:
+        min_price:
+          type: number
+          default: 10
+        min_avg_dollar_volume:
+          type: number
+          default: 20000000
+        max_spread_bps:
+          type: number
+          default: 40
+        min_market_cap_usd:
+          type: number
+          default: 5000000000
+        allowed_sectors:
+          type: array
+          items:
+            type: string
+        max_candidates_after_filter:
+          type: integer
+          default: 150
+    signal_config:
+      type: object
+      properties:
+        technical_weight:
+          type: number
+          default: 0.30
+        event_news_weight:
+          type: number
+          default: 0.25
+        relative_strength_weight:
+          type: number
+          default: 0.20
+        fundamental_weight:
+          type: number
+          default: 0.15
+        execution_quality_weight:
+          type: number
+          default: 0.10
+        required_subsignals:
+          type: array
+          items:
+            type: string
+          default:
+            - trend_breakout_strength
+            - pullback_quality
+            - volatility_compression
+            - earnings_revision_trend
+            - sector_relative_momentum
+            - benchmark_relative_performance
+            - event_freshness
+    price_plan_config:
+      type: object
+      properties:
+        strategy_pattern:
+          type: string
+          enum: [breakout, pullback, mean_reversion]
+          default: breakout
+        atr_window:
+          type: integer
+          default: 14
+        breakout_entry_atr_buffer:
+          type: number
+          default: 0.3
+        stop_atr_range:
+          type: array
+          items:
+            type: number
+          default: [1.2, 1.8]
+        first_target_r_multiple:
+          type: number
+          default: 2.0
+        holding_period:
+          type: string
+          default: 3-10 trading days
+    risk_policy:
+      type: object
+      properties:
+        min_confidence:
+          type: number
+          default: 0.65
+        earnings_blackout_minutes:
+          type: integer
+          default: 60
+        max_name_weight:
+          type: number
+          default: 0.1
+        max_sector_weight:
+          type: number
+          default: 0.3
+        max_gross_exposure:
+          type: number
+          default: 1.0
+        max_correlated_cluster_weight:
+          type: number
+          default: 0.35
+        reject_on_material_evidence_conflict:
+          type: boolean
+          default: true
+        event_trading_enabled:
+          type: boolean
+          default: false
+    publication:
+      type: object
+      properties:
+        top_n:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+        output_channels:
+          type: array
+          items:
+            type: string
+            enum: [api, dashboard, daily_report]
+          default: [api, daily_report]
+    execution_mode:
+      type: string
+      enum: [research_only, paper_trading, live_review_only]
+      default: research_only
+
+workflow:
+  - id: load_point_in_time_inputs
+    instruction: >-
+      Load point-in-time snapshots for market data, fundamentals, and event feeds.
+      Persist and reference source_snapshot_id for reproducibility.
+  - id: build_tradable_universe
+    instruction: >-
+      Build candidate universe using liquidity, price, spread, and market-cap rules.
+      Reject names violating universe_rules with explicit reason codes.
+  - id: market_intelligence_agent
+    instruction: >-
+      Parse news, earnings, filings, macro events, and company catalysts into
+      normalized event objects containing sentiment, relevance, horizon, and entity tags.
+  - id: signal_agent
+    instruction: >-
+      Compute technical, cross-sectional, and regime-aware signals from OHLCV,
+      benchmarks, and event objects. Keep event/news evidence and price evidence
+      as separate streams before combining.
+  - id: composite_scoring
+    instruction: >-
+      Compute composite score using weighted linear model:
+      0.30 technical + 0.25 event_news + 0.20 relative_strength +
+      0.15 fundamental + 0.10 execution_quality.
+  - id: price_and_sizing_engine
+    instruction: >-
+      Generate deterministic entry zone, stop-loss, take-profit zone, and initial
+      sizing envelope from ATR, support/resistance, pattern template, and liquidity.
+      LLM must not invent price levels.
+  - id: recommendation_agent
+    instruction: >-
+      Build recommendation package with thesis, confidence, risk level, and invalidation
+      clauses based on deterministic evidence and computed trade plan.
+  - id: risk_and_policy_guardrails
+    instruction: >-
+      Apply hard guardrails: min liquidity/price, max spread, blackout windows,
+      concentration limits, confidence threshold, and evidence conflict checks.
+      Reject failed plans and emit reason codes.
+  - id: publish_and_audit
+    instruction: >-
+      Publish approved recommendation objects to API/report channels and persist
+      full evidence, score vectors, feature snapshot metadata, prompt version, and policy results.
+
+policy_hard_rules:
+  - Do not claim guaranteed returns.
+  - Do not route live orders automatically in MVP.
+  - Do not output recommendations without deterministic entry/stop/target logic.
+  - Do not publish recommendations below confidence threshold.
+  - Do not publish recommendations if evidence streams materially disagree.
+
+output_schema:
+  type: object
+  required:
+    - run_type
+    - generated_at
+    - source_snapshot_id
+    - recommendations
+    - rejected_recommendations
+    - run_metrics
+  properties:
+    run_type:
+      type: string
+    generated_at:
+      type: string
+    source_snapshot_id:
+      type: string
+    universe_summary:
+      type: object
+      properties:
+        universe:
+          type: string
+        initial_count:
+          type: integer
+        eligible_count:
+          type: integer
+        rejection_counts:
+          type: object
+    signal_model:
+      type: object
+      properties:
+        model_type:
+          type: string
+          default: weighted_linear
+        weights:
+          type: object
+          properties:
+            technical:
+              type: number
+            event_news:
+              type: number
+            relative_strength:
+              type: number
+            fundamental:
+              type: number
+            execution_quality:
+              type: number
+    recommendations:
+      type: array
+      items:
+        type: object
+        required:
+          - id
+          - generated_at
+          - ticker
+          - direction
+          - entry_zone
+          - stop_loss
+          - take_profit_zone
+          - holding_period
+          - confidence
+          - risk_level
+          - thesis
+          - invalid_if
+          - score_vector
+          - source_snapshot_id
+        properties:
+          id:
+            type: string
+          generated_at:
+            type: string
+          ticker:
+            type: string
+          direction:
+            type: string
+            enum: [BUY]
+          entry_zone:
+            type: array
+            items:
+              type: number
+          stop_loss:
+            type: number
+          take_profit_zone:
+            type: array
+            items:
+              type: number
+          holding_period:
+            type: string
+          confidence:
+            type: number
+          risk_level:
+            type: string
+            enum: [low, medium, high]
+          thesis:
+            type: array
+            items:
+              type: string
+          invalid_if:
+            type: array
+            items:
+              type: string
+          pattern_template:
+            type: string
+            enum: [breakout, pullback, mean_reversion]
+          score_vector:
+            type: object
+            properties:
+              technical:
+                type: number
+              event_news:
+                type: number
+              relative_strength:
+                type: number
+              fundamental:
+                type: number
+              execution_quality:
+                type: number
+              composite:
+                type: number
+          feature_snapshot_id:
+            type: string
+          model_version:
+            type: string
+          prompt_version:
+            type: string
+          source_snapshot_id:
+            type: string
+    rejected_recommendations:
+      type: array
+      items:
+        type: object
+        properties:
+          ticker:
+            type: string
+          rejection_reason_codes:
+            type: array
+            items:
+              type: string
+          failed_checks:
+            type: array
+            items:
+              type: string
+    run_metrics:
+      type: object
+      properties:
+        recommendation_count:
+          type: integer
+        rejection_rate:
+          type: number
+        missing_data_rate:
+          type: number
+        explanation_latency_ms:
+          type: number
+    publication_payload:
+      type: object
+      properties:
+        api_endpoints:
+          type: array
+          items:
+            type: string
+          default:
+            - /universe
+            - /research/run
+            - /recommendations
+            - /recommendations/{id}
+            - /paper-orders
+            - /metrics
+        channels:
+          type: array
+          items:
+            type: string
+
+evaluator:
+  threshold: 90
+  dimensions:
+    - name: Recommendation Quality
+      weight: 30
+      criteria:
+        - Entry, stop, target, and invalidation are deterministic and coherent
+        - Thesis is evidence-backed and not narrative-only
+    - name: Risk and Policy Compliance
+      weight: 30
+      criteria:
+        - Guardrails are applied with explicit pass/fail outcomes
+        - Rejections include reason codes and are policy-consistent
+    - name: Reproducibility and Auditability
+      weight: 20
+      criteria:
+        - Recommendations are linked to point-in-time snapshot identifiers
+        - Score vectors, feature IDs, and model/prompt versions are persisted
+    - name: Validation Readiness
+      weight: 20
+      criteria:
+        - Output supports backtest, walk-forward, and paper-trading workflows
+        - No live execution behavior is implied without approval

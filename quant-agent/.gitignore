@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+
+.venv/
+venv/
+
+quant_agent.db
+quant_agent_v2.db
+*.db
+*.sqlite
+*.sqlite3
