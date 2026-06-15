@@ -33,6 +33,7 @@ from infra.db.repositories import (
     PositionRepository,
     RecommendationRepository,
     SignalRepository,
+    SourceSnapshotRepository,
 )
 from infra.observability.metrics import MetricsStore
 from infra.queue.events import EventType, SystemEvent
@@ -64,6 +65,7 @@ class AppState:
     holding_watch_repo: HoldingWatchRepository = field(default_factory=HoldingWatchRepository)
     approval_repo: ApprovalRepository = field(default_factory=ApprovalRepository)
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
+    source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
 
     latest_run: ResearchRunResult | None = None
     last_research_request: ResearchRunRequest | None = None
@@ -80,7 +82,7 @@ class AppState:
 
     def __post_init__(self) -> None:
         init_db()
-        self.pipeline = ResearchPipeline(provider=self.provider)
+        self.pipeline = ResearchPipeline(provider=self.provider, snapshot_repository=self.source_snapshot_repo)
         self.kill_switch = self.execution_control_repo.get_kill_switch()
 
     def ingest_run_output(self, request: ResearchRunRequest, output: PipelineOutput) -> None:

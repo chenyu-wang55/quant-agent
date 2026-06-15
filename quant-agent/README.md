@@ -45,6 +45,18 @@ Example:
 DATA_PROVIDER=yfinance uvicorn apps.api.main:app --reload
 ```
 
+## Source Snapshots and Replay
+
+Research runs persist the exact input snapshot used by the pipeline: universe metadata,
+historical bars, fundamentals, news/events, and earnings-blackout timing. The first
+run with a new `source_snapshot_id` records the provider inputs; later runs with the
+same `source_snapshot_id` replay from the database instead of calling the live vendor.
+
+The run output reports this under `universe_summary.snapshot.operation`:
+- `recorded`: provider data was captured into a new snapshot
+- `replayed`: provider data was loaded from an existing snapshot
+- `disabled`: the pipeline was constructed without a snapshot repository
+
 ## Database and Migrations
 
 Recommended bootstrap (idempotent):
@@ -80,7 +92,12 @@ Endpoints:
 Default risk guardrails:
 - `min_confidence=0.72`
 - `max_entry_gap_pct=0.30` (reject plans too far from current spot)
+- `max_name_weight=0.10`, `max_sector_weight=0.30`, and `max_correlated_cluster_weight=0.35`
 - In live mode (`snapshot_mode=latest`), engine applies calibrated confidence relaxation to preserve coverage (`effective_min_confidence = max(0.60, min_confidence - 0.08)`).
+
+Portfolio risk is applied after candidates are ranked by composite score. The run output includes
+`universe_summary.portfolio_exposure` so operators can inspect the published name, sector, and
+correlated-cluster weights that shaped the final recommendation set.
 
 Default publication:
 - `top_n=8`

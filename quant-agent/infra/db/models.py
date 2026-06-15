@@ -164,3 +164,74 @@ class MarketBarRecord(Base):
     close: Mapped[float] = mapped_column(Float, nullable=False)
     volume: Mapped[float] = mapped_column(Float, nullable=False)
     vendor_id: Mapped[str] = mapped_column(String(64), nullable=False, default="mock-provider")
+
+
+class SourceSnapshotRecord(Base):
+    __tablename__ = "source_snapshots"
+
+    source_snapshot_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    universe: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    tickers: Mapped[list] = mapped_column(JSON, nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class SnapshotSecurityRecord(Base):
+    __tablename__ = "snapshot_securities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    sector: Mapped[str] = mapped_column(String(64), nullable=False)
+    market_cap_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_dollar_volume: Mapped[float] = mapped_column(Float, nullable=False)
+    last_price: Mapped[float] = mapped_column(Float, nullable=False)
+    spread_bps: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class SnapshotMarketBarRecord(Base):
+    __tablename__ = "snapshot_market_bars"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    open: Mapped[float] = mapped_column(Float, nullable=False)
+    high: Mapped[float] = mapped_column(Float, nullable=False)
+    low: Mapped[float] = mapped_column(Float, nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    volume: Mapped[float] = mapped_column(Float, nullable=False)
+    vendor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class SnapshotFundamentalRecord(Base):
+    __tablename__ = "snapshot_fundamentals"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    pe_ttm: Mapped[float] = mapped_column(Float, nullable=False)
+    roe: Mapped[float] = mapped_column(Float, nullable=False)
+    revenue_growth_yoy: Mapped[float] = mapped_column(Float, nullable=False)
+    eps_revision_30d: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class SnapshotEventRecord(Base):
+    __tablename__ = "snapshot_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    vendor_source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    headline: Mapped[str] = mapped_column(Text, nullable=False)
+    normalized_text: Mapped[str] = mapped_column(Text, nullable=False)
+    tickers: Mapped[list] = mapped_column(JSON, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    sentiment: Mapped[float] = mapped_column(Float, nullable=False)
+    relevance: Mapped[float] = mapped_column(Float, nullable=False)
+    horizon: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_url: Mapped[str] = mapped_column(Text, nullable=False)

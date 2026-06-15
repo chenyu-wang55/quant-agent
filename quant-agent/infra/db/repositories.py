@@ -9,9 +9,12 @@ from domain.entities.models import (
     ApprovalDecision,
     Direction,
     FeatureSnapshot,
+    FundamentalSnapshot,
     HoldingStatus,
     HoldingWatch,
     KillSwitchState,
+    MarketBar,
+    NewsEvent,
     PaperOrder,
     PatternType,
     PositionState,
@@ -20,6 +23,7 @@ from domain.entities.models import (
     RecommendationApproval,
     RecommendationStatus,
     RiskLevel,
+    SecurityMetadata,
     SignalSnapshot,
 )
 from infra.db.models import (
@@ -31,8 +35,19 @@ from infra.db.models import (
     PositionStateRecord,
     RecommendationRecord,
     SignalSnapshotRecord,
+    SnapshotEventRecord,
+    SnapshotFundamentalRecord,
+    SnapshotMarketBarRecord,
+    SnapshotSecurityRecord,
+    SourceSnapshotRecord,
 )
 from infra.db.session import SessionLocal
+
+
+def _ensure_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 class RecommendationRepository:
@@ -396,3 +411,232 @@ class ExecutionControlRepository:
             )
             session.commit()
         return state
+
+
+class SourceSnapshotRepository:
+    def snapshot_exists(self, source_snapshot_id: str) -> bool:
+        with SessionLocal() as session:
+            stmt = (
+                select(SourceSnapshotRecord.source_snapshot_id)
+                .where(SourceSnapshotRecord.source_snapshot_id == source_snapshot_id)
+                .limit(1)
+            )
+            return session.execute(stmt).first() is not None
+
+    def replace_snapshot(
+        self,
+        source_snapshot_id: str,
+        as_of: datetime,
+        universe: str,
+        provider_name: str,
+        securities: Iterable[SecurityMetadata],
+        bars_by_ticker: dict[str, list[MarketBar]],
+        fundamentals_by_ticker: dict[str, FundamentalSnapshot],
+        events: Iterable[NewsEvent],
+        earnings_minutes_by_ticker: dict[str, int | None],
+    ) -> None:
+        securities_list = list(securities)
+        events_list = list(events)
+        tickers = sorted({security.ticker.upper() for security in securities_list})
+        metadata = {
+            "earnings_minutes_by_ticker": {
+                ticker.upper(): minutes
+                for ticker, minutes in earnings_minutes_by_ticker.items()
+                if minutes is not None
+            }
+        }
+
+        with SessionLocal() as session:
+            for model in (
+                SnapshotEventRecord,
+                SnapshotFundamentalRecord,
+                SnapshotMarketBarRecord,
+                SnapshotSecurityRecord,
+            ):
+                session.execute(delete(model).where(model.source_snapshot_id == source_snapshot_id))
+
+            session.merge(
+                SourceSnapshotRecord(
+                    source_snapshot_id=source_snapshot_id,
+                    created_at=datetime.now(timezone.utc),
+                    as_of=as_of,
+                    universe=universe,
+                    provider_name=provider_name,
+                    tickers=tickers,
+                    metadata_json=metadata,
+                )
+            )
+
+            for security in securities_list:
+                session.add(
+                    SnapshotSecurityRecord(
+                        source_snapshot_id=source_snapshot_id,
+                        ticker=security.ticker.upper(),
+                        sector=security.sector,
+                        market_cap_usd=security.market_cap_usd,
+                        avg_dollar_volume=security.avg_dollar_volume,
+                        last_price=security.last_price,
+                        spread_bps=security.spread_bps,
+                    )
+                )
+
+            for ticker, bars in bars_by_ticker.items():
+                for bar in bars:
+                    session.add(
+                        SnapshotMarketBarRecord(
+                            source_snapshot_id=source_snapshot_id,
+                            ticker=ticker.upper(),
+                            timestamp=bar.timestamp,
+                            open=bar.open,
+                            high=bar.high,
+                            low=bar.low,
+                            close=bar.close,
+                            volume=bar.volume,
+                            vendor_id=provider_name,
+                        )
+                    )
+
+            for ticker, fundamentals in fundamentals_by_ticker.items():
+                session.add(
+                    SnapshotFundamentalRecord(
+                        source_snapshot_id=source_snapshot_id,
+                        ticker=ticker.upper(),
+                        timestamp=fundamentals.timestamp,
+                        pe_ttm=fundamentals.pe_ttm,
+                        roe=fundamentals.roe,
+                        revenue_growth_yoy=fundamentals.revenue_growth_yoy,
+                        eps_revision_30d=fundamentals.eps_revision_30d,
+                    )
+                )
+
+            for event in events_list:
+                session.add(
+                    SnapshotEventRecord(
+                        source_snapshot_id=source_snapshot_id,
+                        vendor_source_id=event.source_id,
+                        published_at=event.published_at,
+                        ingested_at=event.ingested_at,
+                        headline=event.headline,
+                        normalized_text=event.normalized_text,
+                        tickers=[ticker.upper() for ticker in event.tickers],
+                        event_type=event.event_type,
+                        sentiment=event.sentiment,
+                        relevance=event.relevance,
+                        horizon=event.horizon,
+                        source_url=event.source_url,
+                    )
+                )
+
+            session.commit()
+
+    def get_metadata(self, source_snapshot_id: str) -> dict:
+        with SessionLocal() as session:
+            stmt = select(SourceSnapshotRecord).where(
+                SourceSnapshotRecord.source_snapshot_id == source_snapshot_id
+            )
+            record = session.execute(stmt).scalars().first()
+        if record is None:
+            return {}
+        return dict(record.metadata_json or {})
+
+    def get_securities(self, source_snapshot_id: str) -> list[SecurityMetadata]:
+        with SessionLocal() as session:
+            stmt = (
+                select(SnapshotSecurityRecord)
+                .where(SnapshotSecurityRecord.source_snapshot_id == source_snapshot_id)
+                .order_by(SnapshotSecurityRecord.id)
+            )
+            records = list(session.execute(stmt).scalars())
+        return [
+            SecurityMetadata(
+                ticker=record.ticker,
+                sector=record.sector,
+                market_cap_usd=record.market_cap_usd,
+                avg_dollar_volume=record.avg_dollar_volume,
+                last_price=record.last_price,
+                spread_bps=record.spread_bps,
+            )
+            for record in records
+        ]
+
+    def get_bars(self, source_snapshot_id: str, ticker: str, limit: int) -> list[MarketBar]:
+        ticker_upper = ticker.upper()
+        with SessionLocal() as session:
+            stmt = (
+                select(SnapshotMarketBarRecord)
+                .where(
+                    SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id,
+                    SnapshotMarketBarRecord.ticker == ticker_upper,
+                )
+                .order_by(SnapshotMarketBarRecord.timestamp.desc())
+                .limit(limit)
+            )
+            records = list(session.execute(stmt).scalars())
+        records.reverse()
+        return [
+            MarketBar(
+                ticker=record.ticker,
+                timestamp=_ensure_utc(record.timestamp),
+                open=record.open,
+                high=record.high,
+                low=record.low,
+                close=record.close,
+                volume=record.volume,
+            )
+            for record in records
+        ]
+
+    def get_fundamental(self, source_snapshot_id: str, ticker: str) -> FundamentalSnapshot | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(SnapshotFundamentalRecord)
+                .where(
+                    SnapshotFundamentalRecord.source_snapshot_id == source_snapshot_id,
+                    SnapshotFundamentalRecord.ticker == ticker.upper(),
+                )
+                .order_by(SnapshotFundamentalRecord.timestamp.desc())
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+        if record is None:
+            return None
+        return FundamentalSnapshot(
+            ticker=record.ticker,
+            timestamp=_ensure_utc(record.timestamp),
+            pe_ttm=record.pe_ttm,
+            roe=record.roe,
+            revenue_growth_yoy=record.revenue_growth_yoy,
+            eps_revision_30d=record.eps_revision_30d,
+        )
+
+    def get_events(self, source_snapshot_id: str, tickers: list[str]) -> list[NewsEvent]:
+        ticker_set = {ticker.upper() for ticker in tickers}
+        with SessionLocal() as session:
+            stmt = (
+                select(SnapshotEventRecord)
+                .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
+                .order_by(SnapshotEventRecord.published_at.desc())
+            )
+            records = list(session.execute(stmt).scalars())
+
+        events: list[NewsEvent] = []
+        for record in records:
+            record_tickers = [str(ticker).upper() for ticker in record.tickers or []]
+            if ticker_set and not ticker_set.intersection(record_tickers):
+                continue
+            events.append(
+                NewsEvent(
+                    source_id=record.vendor_source_id,
+                    published_at=_ensure_utc(record.published_at),
+                    ingested_at=_ensure_utc(record.ingested_at),
+                    headline=record.headline,
+                    normalized_text=record.normalized_text,
+                    tickers=record_tickers,
+                    event_type=record.event_type,
+                    sentiment=record.sentiment,
+                    relevance=record.relevance,
+                    horizon=record.horizon,
+                    source_url=record.source_url,
+                )
+            )
+        return events

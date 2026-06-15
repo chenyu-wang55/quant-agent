@@ -21,6 +21,11 @@ REQUIRED_TABLES = {
     "execution_controls",
     "market_bars",
     "holding_watches",
+    "source_snapshots",
+    "snapshot_securities",
+    "snapshot_market_bars",
+    "snapshot_fundamentals",
+    "snapshot_events",
 }
 
 

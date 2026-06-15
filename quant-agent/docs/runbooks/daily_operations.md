@@ -35,6 +35,10 @@ curl http://localhost:8000/portfolio/holdings
 curl http://localhost:8000/portfolio/alerts
 ```
 
+Replay a previous research snapshot by reusing its `source_snapshot_id` in
+`POST /research/run`. Check `universe_summary.snapshot.operation`; it should show
+`replayed` when the database snapshot was used instead of the live provider.
+
 记录你实际买入的股票（用于卖出提醒）：
 
 ```bash
@@ -69,5 +73,7 @@ curl -X POST http://localhost:8000/execution/kill-switch \
 ## Incident Actions
 
 - If recommendation count is unexpectedly low, inspect `rejected_recommendations` reason codes.
+- If sector or correlated-cluster exposure is the limiter, inspect
+  `universe_summary.portfolio_exposure` and `universe_summary.rejection_counts`.
 - If missing data rate spikes, verify ingestion provider health and snapshot generation timestamps.
 - If paper-order flow fails, check recommendation ID validity and router logs.

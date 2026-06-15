@@ -2,11 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from domain.entities.models import Direction, PricePlanConfig, RiskPolicy, SignalConfig
+from domain.entities.models import (
+    Direction,
+    PricePlanConfig,
+    PublicationConfig,
+    ResearchRunRequest,
+    RiskPolicy,
+    RunType,
+    SignalConfig,
+    UniverseRules,
+)
 from domain.policies.rules import RejectionReason
 from services.features.engine import FeatureEngine
 from services.ingestion.mock_provider import MockMarketDataProvider
 from services.ranking.price_engine import PriceSizingEngine
+from services.ranking.pipeline import ResearchPipeline
 from services.ranking.recommendation_builder import RecommendationBuilder
 from services.ranking.signal_scorer import SignalScorer
 from services.risk.engine import RiskEngine
@@ -158,3 +168,38 @@ def test_risk_engine_rejects_invalid_buy_price_geometry() -> None:
     assert RejectionReason.INVALID_PRICE_PLAN in decision.reason_codes
     assert "buy_stop_not_below_entry" in decision.failed_checks
     assert "buy_tp1_not_above_entry" in decision.failed_checks
+
+
+def test_pipeline_applies_portfolio_exposure_limits_after_ranking() -> None:
+    provider = MockMarketDataProvider()
+    pipeline = ResearchPipeline(provider=provider)
+    request = ResearchRunRequest(
+        run_type=RunType.RESEARCH_BATCH,
+        objective="portfolio exposure gating",
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        universe="SP500",
+        universe_rules=UniverseRules(
+            min_price=1,
+            min_avg_dollar_volume=1_000_000,
+            max_spread_bps=100,
+            min_market_cap_usd=100_000_000,
+            max_candidates_after_filter=100,
+        ),
+        risk_policy=RiskPolicy(
+            min_confidence=0.0,
+            max_name_weight=0.20,
+            max_sector_weight=0.12,
+            max_correlated_cluster_weight=0.22,
+            reject_on_material_evidence_conflict=False,
+            event_trading_enabled=True,
+        ),
+        publication=PublicationConfig(top_n=8, output_channels=["api"]),
+    )
+
+    output = pipeline.run(request)
+    exposure = output.result.universe_summary["portfolio_exposure"]
+
+    assert output.result.recommendations
+    assert all(weight <= 0.120001 for weight in exposure["sector_weights"].values())
+    assert all(weight <= 0.220001 for weight in exposure["correlated_cluster_weights"].values())
+    assert RejectionReason.SECTOR_CONCENTRATION in output.result.universe_summary["rejection_counts"]
