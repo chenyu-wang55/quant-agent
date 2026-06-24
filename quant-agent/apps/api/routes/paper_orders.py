@@ -3,7 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.dependencies import AppState, get_app_state
-from domain.entities.models import Direction, PaperOrder, PaperOrderRequest, PaperOrderStatus
+from domain.entities.models import (
+    Direction,
+    PaperOrder,
+    PaperOrderRequest,
+    PaperOrderRiskPlan,
+    PaperOrderStatus,
+    Recommendation,
+)
 
 
 router = APIRouter(tags=["paper-orders"])
@@ -25,6 +32,29 @@ def _parse_status(status: str | None) -> PaperOrderStatus | None:
     if normalized in {item.value for item in PaperOrderStatus}:
         return PaperOrderStatus(normalized)
     raise HTTPException(status_code=400, detail="status must be submitted, filled, or canceled")
+
+
+def _get_recommendation_or_404(state: AppState, recommendation_id: str) -> Recommendation:
+    recommendation = state.recommendations_by_id.get(recommendation_id)
+    if recommendation is None:
+        recommendation = state.recommendation_repo.get(recommendation_id)
+    if recommendation is None:
+        raise HTTPException(status_code=404, detail="Recommendation id not found")
+    return recommendation
+
+
+@router.post("/paper-orders/risk-plan", response_model=PaperOrderRiskPlan)
+def get_paper_order_risk_plan(
+    request: PaperOrderRequest,
+    state: AppState = Depends(get_app_state),
+) -> PaperOrderRiskPlan:
+    recommendation = _get_recommendation_or_404(state, request.recommendation_id)
+    if request.side != recommendation.direction:
+        raise HTTPException(
+            status_code=409,
+            detail="Paper order side must match the recommendation direction",
+        )
+    return state.build_paper_order_risk_plan(recommendation=recommendation, request=request)
 
 
 @router.get("/paper-orders", response_model=list[PaperOrder])
@@ -51,11 +81,7 @@ def submit_paper_order(
     if state.kill_switch.enabled:
         raise HTTPException(status_code=423, detail="Execution is blocked by kill switch")
 
-    recommendation = state.recommendations_by_id.get(request.recommendation_id)
-    if recommendation is None:
-        recommendation = state.recommendation_repo.get(request.recommendation_id)
-    if recommendation is None:
-        raise HTTPException(status_code=404, detail="Recommendation id not found")
+    recommendation = _get_recommendation_or_404(state, request.recommendation_id)
 
     if request.side != recommendation.direction:
         raise HTTPException(
@@ -69,6 +95,10 @@ def submit_paper_order(
             status_code=409,
             detail="Recommendation must be approved before paper-order routing",
         )
+
+    risk_plan = state.build_paper_order_risk_plan(recommendation=recommendation, request=request)
+    if request.enforce_risk_limits and not risk_plan.is_within_limits:
+        raise HTTPException(status_code=409, detail=risk_plan.model_dump(mode="json"))
 
     order, updated_positions = state.paper_router.submit(
         recommendation=recommendation,

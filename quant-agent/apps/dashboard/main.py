@@ -603,6 +603,9 @@ def dashboard_home() -> str:
         <div class="field"><label for="minConfidence">Min Confidence</label><input id="minConfidence" type="number" min="0" max="1" step="0.05" value="0" /></div>
         <div class="field"><label for="buyQty">Buy Qty</label><input id="buyQty" type="number" min="0.0001" step="1" value="10" /></div>
         <div class="field"><label for="buyPrice">Buy Price</label><input id="buyPrice" type="number" min="0.0001" step="0.01" placeholder="entry high" /></div>
+        <div class="field"><label for="accountEquity">Account Equity</label><input id="accountEquity" type="number" min="1" step="1000" value="100000" /></div>
+        <div class="field"><label for="riskPct">Risk %</label><input id="riskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
+        <div class="field"><label for="maxPositionPct">Max Position %</label><input id="maxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
         <div class="field"><label for="sellQty">Sell Qty</label><input id="sellQty" type="number" min="0.0001" step="1" placeholder="all" /></div>
         <div class="field"><label for="sellPrice">Sell Price</label><input id="sellPrice" type="number" min="0.0001" step="0.01" /></div>
         <div class="field"><label for="sourceSnapshotId">Snapshot ID</label><input id="sourceSnapshotId" type="text" placeholder="source_snapshot_id" /></div>
@@ -820,7 +823,10 @@ def dashboard_home() -> str:
       }
       if (!res.ok) {
         const detail = data.detail || `HTTP ${res.status}`;
-        throw new Error(Array.isArray(detail) ? detail.map((x) => x.msg || String(x)).join('; ') : String(detail));
+        const message = Array.isArray(detail)
+          ? detail.map((x) => x.msg || String(x)).join('; ')
+          : (typeof detail === 'object' ? JSON.stringify(detail) : String(detail));
+        throw new Error(message);
       }
       return data;
     }
@@ -1175,14 +1181,25 @@ def dashboard_home() -> str:
         return;
       }
       const buyPrice = numberValue('buyPrice') || Number(rec.entry_zone_high);
+      const payload = {
+        recommendation_id: rec.id,
+        side: rec.direction || 'BUY',
+        qty,
+        limit_price: buyPrice,
+        account_equity: numberValue('accountEquity') || 100000,
+        risk_per_trade_pct: (numberValue('riskPct') || 1) / 100,
+        max_position_pct: (numberValue('maxPositionPct') || 10) / 100,
+      };
       try {
-        const order = await postJson('/paper-orders', {
-          recommendation_id: rec.id,
-          side: rec.direction || 'BUY',
-          qty,
-          limit_price: buyPrice,
-        });
-        setActionStatus(`已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || buyPrice, 2)}`);
+        const plan = await postJson('/paper-orders/risk-plan', payload);
+        if (!plan.is_within_limits) {
+          setActionStatus(plan.message_cn || '风险校验未通过', true);
+          return;
+        }
+        const order = await postJson('/paper-orders', payload);
+        setActionStatus(
+          `已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || buyPrice, 2)}；${plan.message_cn}`
+        );
         await refreshNow(false);
       } catch (err) {
         setActionStatus(String(err), true);

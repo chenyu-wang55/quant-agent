@@ -58,6 +58,9 @@ def test_dashboard_and_event_endpoints() -> None:
     assert dashboard_home.status_code == 200
     assert "Quant 实时交易看板" in dashboard_home.text
     assert "交易控制" in dashboard_home.text
+    assert "Account Equity" in dashboard_home.text
+    assert "Risk %" in dashboard_home.text
+    assert "Max Position %" in dashboard_home.text
     assert "行情快照" in dashboard_home.text
     assert "策略版本" in dashboard_home.text
     assert "调参建议" in dashboard_home.text
@@ -83,6 +86,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "buyRecommendation" in dashboard_home.text
     assert "sellHolding" in dashboard_home.text
     assert "/paper-orders" in dashboard_home.text
+    assert "/paper-orders/risk-plan" in dashboard_home.text
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200

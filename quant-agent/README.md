@@ -127,6 +127,7 @@ Endpoints:
 - `GET /strategy-configs`
 - `GET /strategy-configs/tuning-report`
 - `GET /paper-orders`
+- `POST /paper-orders/risk-plan`
 - `POST /paper-orders`
 - `GET /execution/kill-switch`
 - `POST /execution/kill-switch`
@@ -137,6 +138,10 @@ later P&L attribution. Manual buys remain available for trades placed outside th
 paper router.
 Use `GET /paper-orders` to audit recent submitted, filled, or canceled paper orders
 separately from the trade ledger and P&L records.
+`POST /paper-orders/risk-plan` computes the maximum and recommended order quantity
+from account equity, per-trade risk, max position size, entry price, and stop-loss
+distance. `POST /paper-orders` enforces the same plan by default before filling a paper
+order.
 
 Default risk guardrails:
 - `min_confidence=0.72`

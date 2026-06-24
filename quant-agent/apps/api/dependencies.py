@@ -20,6 +20,8 @@ from domain.entities.models import (
     ManualBuyRequest,
     ManualSellRequest,
     PaperOrder,
+    PaperOrderRequest,
+    PaperOrderRiskPlan,
     PaperOrderStatus,
     PortfolioPerformance,
     PortfolioSummary,
@@ -255,6 +257,115 @@ class AppState:
 
     def get_strategy_config(self, strategy_config_id: str) -> StrategyConfigSnapshot | None:
         return self.strategy_config_repo.get(strategy_config_id)
+
+    def _current_position_value(self, ticker: str, as_of: datetime | None = None) -> float:
+        ticker_upper = ticker.upper()
+        holding = self.holdings_by_ticker.get(ticker_upper)
+        if holding is None:
+            holding = self.holding_watch_repo.get(ticker_upper)
+        if holding is None or holding.status != HoldingStatus.OPEN:
+            return 0.0
+        try:
+            mark = self.provider.get_latest_price(ticker_upper, as_of or datetime.now(timezone.utc))
+        except Exception:
+            mark = None
+        price = float(mark) if mark is not None else holding.avg_buy_price
+        return round(max(0.0, price * holding.qty), 6)
+
+    @staticmethod
+    def _floor_qty(value: float) -> float:
+        if value <= 0:
+            return 0.0
+        return float(math.floor(value))
+
+    def build_paper_order_risk_plan(
+        self,
+        recommendation: Recommendation,
+        request: PaperOrderRequest,
+    ) -> PaperOrderRiskPlan:
+        side = Direction(request.side)
+        entry_mid = (recommendation.entry_zone_low + recommendation.entry_zone_high) / 2.0
+        entry_price = float(request.limit_price if request.limit_price is not None else entry_mid)
+        stop_loss = float(recommendation.stop_loss)
+        risk_per_share = (
+            entry_price - stop_loss
+            if side == Direction.BUY
+            else stop_loss - entry_price
+        )
+        risk_per_share = round(max(0.0, risk_per_share), 6)
+        risk_budget = round(request.account_equity * request.risk_per_trade_pct, 6)
+        max_position_value = round(request.account_equity * request.max_position_pct, 6)
+        current_position_value = self._current_position_value(recommendation.ticker)
+        remaining_position_value = round(max(0.0, max_position_value - current_position_value), 6)
+        max_risk_qty = (
+            self._floor_qty(risk_budget / risk_per_share)
+            if risk_per_share > 0
+            else 0.0
+        )
+        max_position_qty = (
+            self._floor_qty(remaining_position_value / entry_price)
+            if entry_price > 0
+            else 0.0
+        )
+        recommended_qty = min(max_risk_qty, max_position_qty)
+
+        requested_notional = round(entry_price * request.qty, 6)
+        requested_risk_amount = round(risk_per_share * request.qty, 6)
+        requested_position_pct = round(
+            (current_position_value + requested_notional) / request.account_equity,
+            6,
+        )
+        requested_risk_pct = round(requested_risk_amount / request.account_equity, 6)
+
+        violations: list[str] = []
+        if risk_per_share <= 0:
+            violations.append("invalid_stop_distance")
+        if request.qty > max_risk_qty + 1e-9:
+            violations.append("exceeds_per_trade_risk")
+        if request.qty > max_position_qty + 1e-9:
+            violations.append("exceeds_position_cap")
+
+        if not violations:
+            message_cn = (
+                f"风险校验通过。建议股数 {recommended_qty:g}，本次名义本金 "
+                f"{requested_notional:.2f}，止损风险 {requested_risk_amount:.2f}。"
+            )
+        else:
+            labels = {
+                "invalid_stop_distance": "止损距离无效",
+                "exceeds_per_trade_risk": "超过单笔风险预算",
+                "exceeds_position_cap": "超过单票仓位上限",
+            }
+            reasons = "；".join(labels.get(code, code) for code in violations)
+            message_cn = (
+                f"风险校验未通过：{reasons}。建议最多 {recommended_qty:g} 股，"
+                f"当前请求 {request.qty:g} 股。"
+            )
+
+        return PaperOrderRiskPlan(
+            recommendation_id=request.recommendation_id,
+            ticker=recommendation.ticker,
+            side=side,
+            entry_price=round(entry_price, 6),
+            stop_loss=round(stop_loss, 6),
+            risk_per_share=risk_per_share,
+            account_equity=round(request.account_equity, 6),
+            risk_budget=risk_budget,
+            max_position_value=max_position_value,
+            current_position_value=current_position_value,
+            remaining_position_value=remaining_position_value,
+            max_risk_qty=max_risk_qty,
+            max_position_qty=max_position_qty,
+            recommended_qty=recommended_qty,
+            requested_qty=round(request.qty, 6),
+            requested_notional=requested_notional,
+            requested_risk_amount=requested_risk_amount,
+            requested_position_pct=requested_position_pct,
+            requested_risk_pct=requested_risk_pct,
+            is_within_limits=not violations,
+            violations=violations,
+            message_cn=message_cn,
+        )
 
     def decide_recommendation(self, request: ApprovalDecisionRequest) -> RecommendationApproval:
         issues = self.approval_policy.validate(request)
