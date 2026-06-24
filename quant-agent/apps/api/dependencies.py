@@ -37,6 +37,8 @@ from domain.entities.models import (
     SourceSnapshotDetail,
     SourceSnapshotReplayRequest,
     SourceSnapshotSummary,
+    StrategyConfigAttribution,
+    StrategyConfigSnapshot,
     TickerPerformance,
     TradeLedgerEntry,
     TradeSide,
@@ -53,6 +55,7 @@ from infra.db.repositories import (
     RecommendationRepository,
     SignalRepository,
     SourceSnapshotRepository,
+    StrategyConfigRepository,
     TradeLedgerRepository,
 )
 from infra.observability.metrics import MetricsStore
@@ -87,6 +90,7 @@ class AppState:
     approval_repo: ApprovalRepository = field(default_factory=ApprovalRepository)
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
+    strategy_config_repo: StrategyConfigRepository = field(default_factory=StrategyConfigRepository)
 
     latest_run: ResearchRunResult | None = None
     last_research_request: ResearchRunRequest | None = None
@@ -127,6 +131,7 @@ class AppState:
         self.recommendations_by_id = {rec.id: rec for rec in output.result.recommendations}
         self.signal_repo.upsert_many(self.signals_by_ticker.values())
         self.feature_repo.upsert_many(self.features_by_ticker.values())
+        self.strategy_config_repo.upsert(output.strategy_config)
         self.recommendation_repo.upsert_many(output.result.recommendations)
         self.metrics_store.inc("research_runs")
         self.metrics_store.set_gauge("latest_recommendation_count", len(output.result.recommendations))
@@ -240,6 +245,12 @@ class AppState:
         output = self.pipeline.run(request)
         self.ingest_run_output(request, output)
         return output.result
+
+    def list_strategy_configs(self, limit: int = 50) -> list[StrategyConfigSnapshot]:
+        return self.strategy_config_repo.list_recent(limit=limit)
+
+    def get_strategy_config(self, strategy_config_id: str) -> StrategyConfigSnapshot | None:
+        return self.strategy_config_repo.get(strategy_config_id)
 
     def decide_recommendation(self, request: ApprovalDecisionRequest) -> RecommendationApproval:
         issues = self.approval_policy.validate(request)
@@ -619,6 +630,73 @@ class AppState:
             return "weak"
         return "negative"
 
+    @staticmethod
+    def _sell_window(items: list[RecommendationAttribution]) -> tuple[datetime | None, datetime | None]:
+        first_sell_at = min(
+            (item.first_sell_at for item in items if item.first_sell_at is not None),
+            default=None,
+        )
+        last_sell_at = max(
+            (item.last_sell_at for item in items if item.last_sell_at is not None),
+            default=None,
+        )
+        return first_sell_at, last_sell_at
+
+    def _group_recommendation_attribution(
+        self,
+        items: list[RecommendationAttribution],
+        pnls_by_recommendation: dict[str, list[float]],
+    ) -> dict:
+        pnls = [
+            pnl
+            for item in items
+            for pnl in pnls_by_recommendation.get(item.recommendation_id, [])
+        ]
+        wins = [pnl for pnl in pnls if pnl > 0]
+        losses = [pnl for pnl in pnls if pnl < 0]
+        sell_count = sum(item.sell_trade_count for item in items)
+        total_realized_pnl = round(sum(pnls), 6)
+        win_rate = round(len(wins) / len(pnls), 6) if pnls else 0.0
+        profit_factor = self._profit_factor(pnls)
+        expectancy_per_sell = round(sum(pnls) / len(pnls), 6) if pnls else 0.0
+        confidence_values = [item.confidence for item in items if item.confidence is not None]
+        composite_values = [item.composite for item in items if item.composite is not None]
+        performance_score = self._snapshot_performance_score(
+            total_realized_pnl=total_realized_pnl,
+            win_rate=win_rate,
+            profit_factor=profit_factor,
+            expectancy_per_sell=expectancy_per_sell,
+            recommendation_count=len(items),
+            sell_trade_count=sell_count,
+        )
+        first_sell_at, last_sell_at = self._sell_window(items)
+        return {
+            "recommendation_count": len(items),
+            "sell_trade_count": sell_count,
+            "closed_trade_count": sum(item.closed_trade_count for item in items),
+            "total_realized_pnl": total_realized_pnl,
+            "win_count": len(wins),
+            "loss_count": len(losses),
+            "flat_count": sum(item.flat_count for item in items),
+            "win_rate": win_rate,
+            "profit_factor": profit_factor,
+            "expectancy_per_sell": expectancy_per_sell,
+            "avg_confidence": (
+                round(sum(confidence_values) / len(confidence_values), 6)
+                if confidence_values
+                else None
+            ),
+            "avg_composite": (
+                round(sum(composite_values) / len(composite_values), 6)
+                if composite_values
+                else None
+            ),
+            "performance_score": performance_score,
+            "quality_grade": self._snapshot_quality_grade(performance_score, sell_count),
+            "first_sell_at": first_sell_at,
+            "last_sell_at": last_sell_at,
+        }
+
     def _get_recommendation(self, recommendation_id: str) -> Recommendation | None:
         cached = self.recommendations_by_id.get(recommendation_id)
         if cached is not None:
@@ -650,6 +728,7 @@ class AppState:
                     recommendation_id=recommendation_id,
                     ticker=recommendation.ticker if recommendation is not None else rec_trades[0].ticker,
                     source_snapshot_id=recommendation.source_snapshot_id if recommendation is not None else None,
+                    strategy_config_id=recommendation.strategy_config_id if recommendation is not None else None,
                     generated_at=recommendation.generated_at if recommendation is not None else None,
                     confidence=round(recommendation.confidence, 6) if recommendation is not None else None,
                     composite=(
@@ -682,69 +761,34 @@ class AppState:
 
         by_snapshot: list[SnapshotAttribution] = []
         for source_snapshot_id, items in snapshot_groups.items():
-            pnls = [
-                pnl
-                for item in items
-                for pnl in pnls_by_recommendation.get(item.recommendation_id, [])
-            ]
-            wins = [pnl for pnl in pnls if pnl > 0]
-            losses = [pnl for pnl in pnls if pnl < 0]
-            sell_count = sum(item.sell_trade_count for item in items)
-            closed_count = sum(item.closed_trade_count for item in items)
-            flat_count = sum(item.flat_count for item in items)
-            total_realized_pnl = round(sum(pnls), 6)
-            win_rate = round(len(wins) / len(pnls), 6) if pnls else 0.0
-            profit_factor = self._profit_factor(pnls)
-            expectancy_per_sell = round(sum(pnls) / len(pnls), 6) if pnls else 0.0
-            confidence_values = [item.confidence for item in items if item.confidence is not None]
-            composite_values = [item.composite for item in items if item.composite is not None]
-            performance_score = self._snapshot_performance_score(
-                total_realized_pnl=total_realized_pnl,
-                win_rate=win_rate,
-                profit_factor=profit_factor,
-                expectancy_per_sell=expectancy_per_sell,
-                recommendation_count=len(items),
-                sell_trade_count=sell_count,
-            )
-            first_sell_at = min(
-                (item.first_sell_at for item in items if item.first_sell_at is not None),
-                default=None,
-            )
-            last_sell_at = max(
-                (item.last_sell_at for item in items if item.last_sell_at is not None),
-                default=None,
-            )
+            group = self._group_recommendation_attribution(items, pnls_by_recommendation)
             by_snapshot.append(
                 SnapshotAttribution(
                     source_snapshot_id=source_snapshot_id,
-                    recommendation_count=len(items),
-                    sell_trade_count=sell_count,
-                    closed_trade_count=closed_count,
-                    total_realized_pnl=total_realized_pnl,
-                    win_count=len(wins),
-                    loss_count=len(losses),
-                    flat_count=flat_count,
-                    win_rate=win_rate,
-                    profit_factor=profit_factor,
-                    expectancy_per_sell=expectancy_per_sell,
-                    avg_confidence=(
-                        round(sum(confidence_values) / len(confidence_values), 6)
-                        if confidence_values
-                        else None
-                    ),
-                    avg_composite=(
-                        round(sum(composite_values) / len(composite_values), 6)
-                        if composite_values
-                        else None
-                    ),
-                    performance_score=performance_score,
-                    quality_grade=self._snapshot_quality_grade(performance_score, sell_count),
-                    first_sell_at=first_sell_at,
-                    last_sell_at=last_sell_at,
+                    **group,
                 )
             )
 
         by_snapshot.sort(key=lambda item: (item.performance_score, item.total_realized_pnl), reverse=True)
+
+        strategy_groups: dict[str, list[RecommendationAttribution]] = {}
+        for item in by_recommendation:
+            if item.strategy_config_id:
+                strategy_groups.setdefault(item.strategy_config_id, []).append(item)
+
+        by_strategy_config: list[StrategyConfigAttribution] = []
+        for strategy_config_id, items in strategy_groups.items():
+            by_strategy_config.append(
+                StrategyConfigAttribution(
+                    strategy_config_id=strategy_config_id,
+                    **self._group_recommendation_attribution(items, pnls_by_recommendation),
+                )
+            )
+
+        by_strategy_config.sort(
+            key=lambda item: (item.performance_score, item.total_realized_pnl),
+            reverse=True,
+        )
         return RecommendationAttributionReport(
             generated_at=datetime.now(timezone.utc),
             recommendation_count=len(by_recommendation),
@@ -753,6 +797,7 @@ class AppState:
             total_realized_pnl=round(sum(item.total_realized_pnl for item in by_recommendation), 6),
             by_recommendation=by_recommendation,
             by_snapshot=by_snapshot,
+            by_strategy_config=by_strategy_config,
         )
 
     def close_holding(self, ticker: str) -> HoldingWatch | None:

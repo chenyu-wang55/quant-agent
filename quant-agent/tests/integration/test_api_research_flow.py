@@ -59,7 +59,21 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     assert len(run_data["recommendations"][0]["analysis"]["why_to_buy_cn"]) > 0
     assert len(run_data["recommendations"][0]["analysis"]["why_to_sell_cn"]) > 0
     snapshot_id = run_data["source_snapshot_id"]
+    strategy_config_id = run_data["strategy_config_id"]
+    assert strategy_config_id
+    assert run_data["recommendations"][0]["strategy_config_id"] == strategy_config_id
     ticker = run_data["recommendations"][0]["ticker"]
+
+    strategy_configs_response = client.get("/strategy-configs?limit=5", headers=AUTH_HEADERS)
+    assert strategy_configs_response.status_code == 200
+    assert any(item["strategy_config_id"] == strategy_config_id for item in strategy_configs_response.json())
+
+    strategy_config_response = client.get(f"/strategy-configs/{strategy_config_id}", headers=AUTH_HEADERS)
+    assert strategy_config_response.status_code == 200
+    strategy_config = strategy_config_response.json()
+    assert strategy_config["strategy_config_id"] == strategy_config_id
+    assert strategy_config["risk_policy"]["min_confidence"] == 0.0
+    assert strategy_config["publication"]["top_n"] == 3
 
     snapshots_response = client.get("/source-snapshots?limit=5", headers=AUTH_HEADERS)
     assert snapshots_response.status_code == 200
@@ -94,7 +108,9 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     replay_data = replay_response.json()
     assert replay_data["source_snapshot_id"] == snapshot_id
     assert replay_data["universe_summary"]["snapshot"]["operation"] == "replayed"
+    assert replay_data["strategy_config_id"]
     assert len(replay_data["recommendations"]) > 0
+    assert replay_data["recommendations"][0]["strategy_config_id"] == replay_data["strategy_config_id"]
 
     recommendations_response = client.get("/recommendations/latest", headers=AUTH_HEADERS)
     assert recommendations_response.status_code == 200
@@ -103,6 +119,7 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
 
     recommendation = recommendations[0]
     recommendation_id = recommendation["id"]
+    assert recommendation["strategy_config_id"] == replay_data["strategy_config_id"]
     ticker = recommendation["ticker"]
     baseline_holdings = client.get("/portfolio/holdings?status=open", headers=AUTH_HEADERS)
     assert baseline_holdings.status_code == 200

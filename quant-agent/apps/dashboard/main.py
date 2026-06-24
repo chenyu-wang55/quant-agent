@@ -82,6 +82,7 @@ def _rec_payload(state: AppState, rec: Recommendation, current_price: float | No
     return {
         "id": rec.id,
         "ticker": rec.ticker,
+        "strategy_config_id": rec.strategy_config_id,
         "direction": _as_text(rec.direction),
         "composite": round(float(rec.score_vector.get("composite", 0.0)), 4),
         "confidence": round(float(rec.confidence), 4),
@@ -123,6 +124,8 @@ def dashboard_realtime_data(
     paper_order_count = len(state.list_paper_orders(limit=10_000))
     recent_source_snapshots = state.list_source_snapshots(limit=10)
     source_snapshot_count = len(state.list_source_snapshots(limit=10_000))
+    recent_strategy_configs = state.list_strategy_configs(limit=10)
+    strategy_config_count = len(state.list_strategy_configs(limit=10_000))
     price_lookup = _build_price_lookup(state=state, recommendations=raw_recommendations, as_of=now)
     recommendations = _select_recommendations_for_dashboard(raw_recommendations, price_lookup)
     return {
@@ -140,6 +143,7 @@ def dashboard_realtime_data(
             "sell_alert_count": len(alerts),
             "paper_order_count": paper_order_count,
             "source_snapshot_count": source_snapshot_count,
+            "strategy_config_count": strategy_config_count,
             "pending_event_count": state.event_queue.size(),
         },
         "portfolio_summary": portfolio_summary.model_dump(mode="json"),
@@ -167,6 +171,7 @@ def dashboard_realtime_data(
         ],
         "recent_paper_orders": [order.model_dump(mode="json") for order in recent_paper_orders],
         "source_snapshots": [snapshot.model_dump(mode="json") for snapshot in recent_source_snapshots],
+        "strategy_configs": [config.model_dump(mode="json") for config in recent_strategy_configs],
         "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
         "alerts": [
             {
@@ -571,6 +576,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">数据源</div><div class="v" id="provider">-</div></div>
       <div class="stat"><div class="k">推荐数量</div><div class="v" id="recCount">0</div></div>
       <div class="stat"><div class="k">快照</div><div class="v" id="snapshotCount">0</div></div>
+      <div class="stat"><div class="k">策略版本</div><div class="v" id="strategyConfigCount">0</div></div>
       <div class="stat"><div class="k">持仓监控</div><div class="v" id="holdingCount">0</div></div>
       <div class="stat"><div class="k">卖出提醒</div><div class="v" id="alertCount">0</div></div>
       <div class="stat"><div class="k">纸单</div><div class="v" id="paperOrderCount">0</div></div>
@@ -614,6 +620,17 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>Snapshot</th><th>时间</th><th>Provider</th><th>股票</th><th>Bars</th><th>News</th><th>评分</th><th>期望值</th><th>推荐</th><th>操作</th></tr></thead>
         <tbody id="sourceSnapshotBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>策略版本</h3>
+        <span class="small">每次推荐使用的风险、信号和价格计划参数</span>
+      </div>
+      <table>
+        <thead><tr><th>Strategy</th><th>Universe</th><th>Pattern</th><th>Min Conf</th><th>Signal Weights</th><th>Top N</th><th>Created</th></tr></thead>
+        <tbody id="strategyConfigBody"></tbody>
       </table>
     </div>
 
@@ -685,6 +702,10 @@ def dashboard_home() -> str:
         <thead><tr><th>Snapshot</th><th>评分</th><th>推荐数</th><th>卖出笔数</th><th>已实现盈亏</th><th>期望值</th><th>胜率</th><th>Profit Factor</th></tr></thead>
         <tbody id="snapshotAttributionBody"></tbody>
       </table>
+      <table style="margin-top:12px;">
+        <thead><tr><th>Strategy</th><th>评分</th><th>推荐数</th><th>卖出笔数</th><th>已实现盈亏</th><th>期望值</th><th>胜率</th><th>Profit Factor</th></tr></thead>
+        <tbody id="strategyAttributionBody"></tbody>
+      </table>
     </div>
 
     <div class="panel">
@@ -708,6 +729,7 @@ def dashboard_home() -> str:
     let currentHoldings = [];
     let currentAlerts = [];
     let currentSnapshots = [];
+    let currentStrategyConfigs = [];
 
     function esc(v) {
       return String(v ?? "")
@@ -834,7 +856,7 @@ def dashboard_home() -> str:
       }
       body.innerHTML = items.map((r, idx) => `
         <tr>
-          <td><strong>${esc(r.ticker)}</strong><div class="mono">${esc(r.id)}</div></td>
+          <td><strong>${esc(r.ticker)}</strong><div class="mono">${esc(r.id)}</div><div class="small mono">${esc(shortId(r.strategy_config_id, 14))}</div></td>
           <td><strong>${fmtNum(r.current_price, 2)}</strong></td>
           <td>${directionBadge(r.direction)}</td>
           <td>composite=${fmtNum(r.composite, 4)}<br/>confidence=${fmtNum(r.confidence, 3)}</td>
@@ -881,6 +903,38 @@ def dashboard_home() -> str:
           <td><button class="btn-mini" onclick="replaySnapshot(${idx})">回放</button></td>
             `;
           })()}
+        </tr>
+      `).join("");
+    }
+
+    function signalWeightsText(config) {
+      const weights = config?.signal_config || {};
+      const parts = [
+        ['T', weights.technical_weight],
+        ['N', weights.event_news_weight],
+        ['RS', weights.relative_strength_weight],
+        ['F', weights.fundamental_weight],
+        ['X', weights.execution_quality_weight],
+      ];
+      return parts.map(([label, value]) => `${label}:${fmtNullableNum(value, 2)}`).join(' ');
+    }
+
+    function renderStrategyConfigs(items) {
+      currentStrategyConfigs = items || [];
+      const body = document.getElementById("strategyConfigBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="small">暂无策略版本。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((config) => `
+        <tr>
+          <td class="mono" title="${esc(config.strategy_config_id)}">${esc(shortId(config.strategy_config_id, 18))}</td>
+          <td>${esc(config.universe)}</td>
+          <td>${esc(config.price_plan_config?.strategy_pattern || '-')}</td>
+          <td>${fmtNullableNum(config.risk_policy?.min_confidence, 2)}</td>
+          <td class="mono">${esc(signalWeightsText(config))}</td>
+          <td>${esc(config.publication?.top_n ?? '-')}</td>
+          <td class="small">${fmtTime(config.created_at)}</td>
         </tr>
       `).join("");
     }
@@ -1194,8 +1248,10 @@ def dashboard_home() -> str:
     function renderAttribution(report) {
       const recBody = document.getElementById("attributionBody");
       const snapshotBody = document.getElementById("snapshotAttributionBody");
+      const strategyBody = document.getElementById("strategyAttributionBody");
       const recRows = report?.by_recommendation || [];
       const snapshotRows = report?.by_snapshot || [];
+      const strategyRows = report?.by_strategy_config || [];
 
       if (!recRows.length) {
         recBody.innerHTML = '<tr><td colspan="8" class="small">暂无可归因的推荐卖出结果。</td></tr>';
@@ -1216,11 +1272,28 @@ def dashboard_home() -> str:
 
       if (!snapshotRows.length) {
         snapshotBody.innerHTML = '<tr><td colspan="8" class="small">暂无 snapshot 级归因。</td></tr>';
+      } else {
+        snapshotBody.innerHTML = snapshotRows.map((row) => `
+          <tr>
+            <td class="mono" title="${esc(row.source_snapshot_id)}">${esc(shortId(row.source_snapshot_id, 18))}</td>
+            <td>${snapshotScoreCell(row)}</td>
+            <td>${esc(row.recommendation_count)}</td>
+            <td>${esc(row.sell_trade_count)}</td>
+            <td>${fmtNum(row.total_realized_pnl, 2)}</td>
+            <td>${fmtNum(row.expectancy_per_sell, 2)}</td>
+            <td>${fmtPct(row.win_rate)}</td>
+            <td>${fmtNullableNum(row.profit_factor, 2)}</td>
+          </tr>
+        `).join("");
+      }
+
+      if (!strategyRows.length) {
+        strategyBody.innerHTML = '<tr><td colspan="8" class="small">暂无 strategy 级归因。</td></tr>';
         return;
       }
-      snapshotBody.innerHTML = snapshotRows.map((row) => `
+      strategyBody.innerHTML = strategyRows.map((row) => `
         <tr>
-          <td class="mono" title="${esc(row.source_snapshot_id)}">${esc(shortId(row.source_snapshot_id, 18))}</td>
+          <td class="mono" title="${esc(row.strategy_config_id)}">${esc(shortId(row.strategy_config_id, 18))}</td>
           <td>${snapshotScoreCell(row)}</td>
           <td>${esc(row.recommendation_count)}</td>
           <td>${esc(row.sell_trade_count)}</td>
@@ -1248,6 +1321,7 @@ def dashboard_home() -> str:
       document.getElementById('provider').textContent = provider;
       document.getElementById('recCount').textContent = String(data.summary?.recommendation_count ?? 0);
       document.getElementById('snapshotCount').textContent = String(data.summary?.source_snapshot_count ?? 0);
+      document.getElementById('strategyConfigCount').textContent = String(data.summary?.strategy_config_count ?? 0);
       document.getElementById('holdingCount').textContent = String(data.summary?.open_holding_count ?? 0);
       document.getElementById('alertCount').textContent = String(data.summary?.sell_alert_count ?? 0);
       document.getElementById('paperOrderCount').textContent = String(data.summary?.paper_order_count ?? 0);
@@ -1273,6 +1347,7 @@ def dashboard_home() -> str:
         data.source_snapshots || [],
         data.recommendation_attribution?.by_snapshot || []
       );
+      renderStrategyConfigs(data.strategy_configs || []);
       renderHoldings(data.holdings || []);
       renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);

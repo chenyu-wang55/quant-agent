@@ -72,6 +72,22 @@ Each `by_snapshot` row includes `performance_score`, `quality_grade`,
 `expectancy_per_sell`, win rate, profit factor, and average recommendation confidence,
 so operators can rank which captured market/news states later produced useful exits.
 
+## Strategy Config Versions
+
+Every research run also persists a stable `strategy_config_id` derived from the
+non-temporal strategy parameters: universe rules, signal weights, price-plan config,
+risk policy, publication settings, and execution mode. It intentionally excludes
+`as_of`, `source_snapshot_id`, and the free-form objective, so the same parameter set
+can be compared across many market/news snapshots.
+
+Endpoints:
+- `GET /strategy-configs`
+- `GET /strategy-configs/{strategy_config_id}`
+
+Recommendations carry both `source_snapshot_id` and `strategy_config_id`; attribution
+reports include `by_strategy_config` so operators can compare which parameter versions
+produce better realized exits.
+
 ## Database and Migrations
 
 Recommended bootstrap (idempotent):
@@ -103,6 +119,7 @@ Endpoints:
 - `GET /recommendations/{id}/evidence`
 - `GET /source-snapshots`
 - `POST /source-snapshots/{source_snapshot_id}/replay`
+- `GET /strategy-configs`
 - `GET /paper-orders`
 - `POST /paper-orders`
 - `GET /execution/kill-switch`
@@ -189,3 +206,5 @@ Recommendation attribution connects sell results back to the original `recommend
 `source_snapshot_id`, so a replayed research snapshot can be compared against later realized P&L.
 Snapshot rows also expose a 0-100 `performance_score` and `quality_grade` derived from
 realized P&L, win rate, profit factor, and expectancy per sell.
+Strategy rows expose the same metrics grouped by `strategy_config_id`, letting operators
+separate market-regime effects from parameter-version effects.

@@ -29,6 +29,8 @@ curl http://localhost:8000/recommendations/<id>/evidence
 curl http://localhost:8000/source-snapshots
 curl http://localhost:8000/source-snapshots/<source_snapshot_id>
 curl "http://localhost:8000/source-snapshots/<source_snapshot_id>/bars/MSFT?limit=5"
+curl http://localhost:8000/strategy-configs
+curl http://localhost:8000/strategy-configs/<strategy_config_id>
 curl http://localhost:8000/dashboard
 curl http://localhost:8000/dashboard/realtime-data
 curl http://localhost:8000/metrics
@@ -111,6 +113,9 @@ a replayable market/news snapshot produced useful recommendations after exits.
 Use each snapshot row's `performance_score`, `quality_grade`, `expectancy_per_sell`,
 `win_rate`, and `profit_factor` to decide whether a signal configuration should be
 kept, relaxed, or tightened before the next research batch.
+Use `by_strategy_config` in the same response to compare parameter versions across
+many snapshots; this is the check for whether a risk policy, signal weight set, or
+price-plan version deserves to remain the default.
 
 按当前卖出提醒执行建议动作：
 

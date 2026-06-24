@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+import hashlib
+import json
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -146,6 +148,58 @@ class ResearchRunRequest(BaseModel):
     risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
     publication: PublicationConfig = Field(default_factory=PublicationConfig)
     execution_mode: ExecutionMode = ExecutionMode.RESEARCH_ONLY
+
+
+class StrategyConfigSnapshot(BaseModel):
+    strategy_config_id: str
+    created_at: datetime = Field(default_factory=utc_now)
+    config_hash: str
+    run_type: RunType
+    snapshot_mode: SnapshotMode
+    universe: str
+    universe_rules: dict[str, Any]
+    signal_config: dict[str, Any]
+    price_plan_config: dict[str, Any]
+    risk_policy: dict[str, Any]
+    publication: dict[str, Any]
+    execution_mode: ExecutionMode
+
+
+def build_strategy_config_snapshot(request: ResearchRunRequest) -> StrategyConfigSnapshot:
+    payload = {
+        "run_type": request.run_type.value if isinstance(request.run_type, Enum) else str(request.run_type),
+        "snapshot_mode": (
+            request.snapshot_mode.value
+            if isinstance(request.snapshot_mode, Enum)
+            else str(request.snapshot_mode)
+        ),
+        "universe": request.universe,
+        "universe_rules": request.universe_rules.model_dump(mode="json"),
+        "signal_config": request.signal_config.model_dump(mode="json"),
+        "price_plan_config": request.price_plan_config.model_dump(mode="json"),
+        "risk_policy": request.risk_policy.model_dump(mode="json"),
+        "publication": request.publication.model_dump(mode="json"),
+        "execution_mode": (
+            request.execution_mode.value
+            if isinstance(request.execution_mode, Enum)
+            else str(request.execution_mode)
+        ),
+    }
+    config_blob = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    config_hash = hashlib.sha256(config_blob).hexdigest()
+    return StrategyConfigSnapshot(
+        strategy_config_id=f"strat_{config_hash[:16]}",
+        config_hash=config_hash,
+        run_type=RunType(payload["run_type"]),
+        snapshot_mode=SnapshotMode(payload["snapshot_mode"]),
+        universe=payload["universe"],
+        universe_rules=payload["universe_rules"],
+        signal_config=payload["signal_config"],
+        price_plan_config=payload["price_plan_config"],
+        risk_policy=payload["risk_policy"],
+        publication=payload["publication"],
+        execution_mode=ExecutionMode(payload["execution_mode"]),
+    )
 
 
 class SourceSnapshotReplayRequest(BaseModel):
@@ -301,6 +355,7 @@ class Recommendation(BaseModel):
     status: RecommendationStatus = RecommendationStatus.APPROVED
     score_vector: dict[str, float]
     source_snapshot_id: str
+    strategy_config_id: str | None = None
     feature_snapshot_id: str
     signal_snapshot_id: str
     model_version: str = "v1"
@@ -334,6 +389,7 @@ class ResearchRunResult(BaseModel):
     run_type: RunType
     generated_at: datetime
     source_snapshot_id: str
+    strategy_config_id: str | None = None
     universe_summary: dict[str, Any]
     signal_model: dict[str, Any]
     recommendations: list[Recommendation]
@@ -541,6 +597,7 @@ class RecommendationAttribution(BaseModel):
     recommendation_id: str
     ticker: str
     source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
     generated_at: datetime | None = None
     confidence: float | None = None
     composite: float | None = None
@@ -577,6 +634,26 @@ class SnapshotAttribution(BaseModel):
     last_sell_at: datetime | None = None
 
 
+class StrategyConfigAttribution(BaseModel):
+    strategy_config_id: str
+    recommendation_count: int
+    sell_trade_count: int
+    closed_trade_count: int
+    total_realized_pnl: float
+    win_count: int
+    loss_count: int
+    flat_count: int
+    win_rate: float
+    profit_factor: float | None = None
+    expectancy_per_sell: float
+    avg_confidence: float | None = None
+    avg_composite: float | None = None
+    performance_score: float
+    quality_grade: str
+    first_sell_at: datetime | None = None
+    last_sell_at: datetime | None = None
+
+
 class RecommendationAttributionReport(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
     recommendation_count: int
@@ -585,6 +662,7 @@ class RecommendationAttributionReport(BaseModel):
     total_realized_pnl: float
     by_recommendation: list[RecommendationAttribution] = Field(default_factory=list)
     by_snapshot: list[SnapshotAttribution] = Field(default_factory=list)
+    by_strategy_config: list[StrategyConfigAttribution] = Field(default_factory=list)
 
 
 class SellAlertLevel(str, Enum):

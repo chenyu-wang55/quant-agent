@@ -185,6 +185,7 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     row = recommendation_rows[0]
     assert row["ticker"] == recommendation["ticker"]
     assert row["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert row["strategy_config_id"] == recommendation["strategy_config_id"]
     assert row["sell_trade_count"] >= baseline_attr_sell_count + 2
     assert row["total_realized_pnl"] - baseline_attr_realized == pytest.approx((40 * 5) + (60 * -2))
     assert row["win_rate"] > 0
@@ -205,6 +206,21 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     }
     assert snapshot_rows[0]["avg_confidence"] is not None
     assert snapshot_rows[0]["avg_composite"] is not None
+    strategy_rows = [
+        item
+        for item in attribution["by_strategy_config"]
+        if item["strategy_config_id"] == recommendation["strategy_config_id"]
+    ]
+    assert strategy_rows
+    assert strategy_rows[0]["sell_trade_count"] >= 2
+    assert 0 <= strategy_rows[0]["performance_score"] <= 100
+    assert strategy_rows[0]["quality_grade"] in {
+        "outperforming",
+        "positive",
+        "neutral",
+        "weak",
+        "negative",
+    }
 
 
 def test_execute_sell_alert_closes_holding_and_records_trade() -> None:

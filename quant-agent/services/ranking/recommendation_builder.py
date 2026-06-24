@@ -31,6 +31,7 @@ class RecommendationBuilder:
         trade_plan: TradePlan,
         source_snapshot_id: str,
         feature_snapshot_id: str,
+        strategy_config_id: str | None = None,
     ) -> Recommendation:
         generated_at = signal.timestamp.astimezone(timezone.utc)
 
@@ -83,6 +84,7 @@ class RecommendationBuilder:
             status=RecommendationStatus.APPROVED,
             score_vector=score_vector,
             source_snapshot_id=source_snapshot_id,
+            strategy_config_id=strategy_config_id,
             feature_snapshot_id=feature_snapshot_id,
             signal_snapshot_id=signal.id,
             pattern_template=trade_plan.pattern,

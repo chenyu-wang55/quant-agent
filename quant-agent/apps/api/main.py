@@ -20,6 +20,7 @@ from apps.api.routes.recommendations import router as recommendations_router
 from apps.api.routes.research import router as research_router
 from apps.api.routes.signals import router as signals_router
 from apps.api.routes.source_snapshots import router as source_snapshots_router
+from apps.api.routes.strategy_configs import router as strategy_configs_router
 from apps.api.routes.universe import router as universe_router
 from infra.observability.logging import configure_logging
 
@@ -68,6 +69,7 @@ app.include_router(approvals_router)
 app.include_router(dashboard_router)
 app.include_router(signals_router)
 app.include_router(source_snapshots_router)
+app.include_router(strategy_configs_router)
 app.include_router(portfolio_router)
 app.include_router(paper_orders_router)
 app.include_router(positions_router)

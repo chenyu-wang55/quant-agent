@@ -32,11 +32,29 @@ class RecommendationRecord(Base):
     analysis_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     score_vector: Mapped[dict] = mapped_column(JSON, nullable=False)
     source_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    strategy_config_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     feature_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
     signal_snapshot_id: Mapped[str] = mapped_column(String(64), nullable=False)
     pattern_template: Mapped[str] = mapped_column(String(32), nullable=False)
     model_version: Mapped[str] = mapped_column(String(32), nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class StrategyConfigRecord(Base):
+    __tablename__ = "strategy_configs"
+
+    strategy_config_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    run_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot_mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    universe: Mapped[str] = mapped_column(String(64), nullable=False)
+    universe_rules_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    signal_config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    price_plan_config_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    risk_policy_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    publication_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    execution_mode: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
 class SignalSnapshotRecord(Base):

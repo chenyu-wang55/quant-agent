@@ -15,6 +15,8 @@ from domain.entities.models import (
     SecurityMetadata,
     SignalSnapshot,
     SnapshotMode,
+    StrategyConfigSnapshot,
+    build_strategy_config_snapshot,
 )
 from domain.policies.rules import RejectionReason
 from services.features.engine import FeatureEngine
@@ -32,6 +34,7 @@ class PipelineOutput:
     result: ResearchRunResult
     signals_by_ticker: dict[str, SignalSnapshot]
     features_by_ticker: dict[str, FeatureSnapshot]
+    strategy_config: StrategyConfigSnapshot
 
 
 @dataclass
@@ -66,6 +69,7 @@ class ResearchPipeline:
     def run(self, request: ResearchRunRequest) -> PipelineOutput:
         as_of = request.as_of.astimezone(timezone.utc)
         source_snapshot_id = request.source_snapshot_id or f"{as_of.isoformat()}#batch001"
+        strategy_config = build_strategy_config_snapshot(request)
         provider = self.provider
         recording_provider: SnapshotRecordingProvider | None = None
         snapshot_operation = "disabled"
@@ -185,6 +189,7 @@ class ResearchPipeline:
                     trade_plan=trade_plan,
                     source_snapshot_id=source_snapshot_id,
                     feature_snapshot_id=feature.id,
+                    strategy_config_id=strategy_config.strategy_config_id,
                 )
 
                 upcoming_earnings = provider.get_upcoming_earnings_minutes(security.ticker, as_of)
@@ -275,6 +280,7 @@ class ResearchPipeline:
             run_type=request.run_type,
             generated_at=datetime.now(timezone.utc),
             source_snapshot_id=source_snapshot_id,
+            strategy_config_id=strategy_config.strategy_config_id,
             universe_summary={
                 "universe": request.universe,
                 "initial_count": initial_count,
@@ -284,6 +290,10 @@ class ResearchPipeline:
                 "snapshot": {
                     "source_snapshot_id": source_snapshot_id,
                     "operation": snapshot_operation,
+                },
+                "strategy": {
+                    "strategy_config_id": strategy_config.strategy_config_id,
+                    "config_hash": strategy_config.config_hash,
                 },
                 "portfolio_exposure": {
                     "name_weights": self._round_weight_map(name_weights),
@@ -327,6 +337,7 @@ class ResearchPipeline:
             result=result,
             signals_by_ticker=signals_by_ticker,
             features_by_ticker=features_by_ticker,
+            strategy_config=strategy_config,
         )
 
     @staticmethod

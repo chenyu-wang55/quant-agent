@@ -28,6 +28,7 @@ from domain.entities.models import (
     SignalSnapshot,
     SourceSnapshotDetail,
     SourceSnapshotSummary,
+    StrategyConfigSnapshot,
     TradeLedgerEntry,
     TradeSide,
 )
@@ -45,6 +46,7 @@ from infra.db.models import (
     SnapshotMarketBarRecord,
     SnapshotSecurityRecord,
     SourceSnapshotRecord,
+    StrategyConfigRecord,
     TradeLedgerRecord,
 )
 from infra.db.session import SessionLocal
@@ -80,6 +82,7 @@ class RecommendationRepository:
                     analysis_json=rec.analysis.model_dump(),
                     score_vector=rec.score_vector,
                     source_snapshot_id=rec.source_snapshot_id,
+                    strategy_config_id=rec.strategy_config_id,
                     feature_snapshot_id=rec.feature_snapshot_id,
                     signal_snapshot_id=rec.signal_snapshot_id,
                     pattern_template=rec.pattern_template.value,
@@ -124,12 +127,72 @@ class RecommendationRepository:
             status=RecommendationStatus(record.status),
             score_vector=dict(record.score_vector or {}),
             source_snapshot_id=record.source_snapshot_id,
+            strategy_config_id=getattr(record, "strategy_config_id", None),
             feature_snapshot_id=record.feature_snapshot_id,
             signal_snapshot_id=record.signal_snapshot_id,
             pattern_template=PatternType(record.pattern_template),
             model_version=record.model_version,
             prompt_version=record.prompt_version,
             analysis=RecommendationAnalysis.model_validate(record.analysis_json or {}),
+        )
+
+
+class StrategyConfigRepository:
+    def upsert(self, item: StrategyConfigSnapshot) -> None:
+        with SessionLocal() as session:
+            session.merge(
+                StrategyConfigRecord(
+                    strategy_config_id=item.strategy_config_id,
+                    created_at=item.created_at,
+                    config_hash=item.config_hash,
+                    run_type=item.run_type.value,
+                    snapshot_mode=item.snapshot_mode.value,
+                    universe=item.universe,
+                    universe_rules_json=item.universe_rules,
+                    signal_config_json=item.signal_config,
+                    price_plan_config_json=item.price_plan_config,
+                    risk_policy_json=item.risk_policy,
+                    publication_json=item.publication,
+                    execution_mode=item.execution_mode.value,
+                )
+            )
+            session.commit()
+
+    def list_recent(self, limit: int = 50) -> list[StrategyConfigSnapshot]:
+        with SessionLocal() as session:
+            stmt = (
+                select(StrategyConfigRecord)
+                .order_by(StrategyConfigRecord.created_at.desc())
+                .limit(limit)
+            )
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    def get(self, strategy_config_id: str) -> StrategyConfigSnapshot | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(StrategyConfigRecord)
+                .where(StrategyConfigRecord.strategy_config_id == strategy_config_id)
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+        return self._to_domain(record) if record is not None else None
+
+    @staticmethod
+    def _to_domain(record: StrategyConfigRecord) -> StrategyConfigSnapshot:
+        return StrategyConfigSnapshot(
+            strategy_config_id=record.strategy_config_id,
+            created_at=_ensure_utc(record.created_at),
+            config_hash=record.config_hash,
+            run_type=record.run_type,
+            snapshot_mode=record.snapshot_mode,
+            universe=record.universe,
+            universe_rules=dict(record.universe_rules_json or {}),
+            signal_config=dict(record.signal_config_json or {}),
+            price_plan_config=dict(record.price_plan_config_json or {}),
+            risk_policy=dict(record.risk_policy_json or {}),
+            publication=dict(record.publication_json or {}),
+            execution_mode=record.execution_mode,
         )
 
 
