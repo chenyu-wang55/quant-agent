@@ -89,6 +89,9 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "event_trading_enabled: true" in dashboard_home.text
     assert "buyRecommendation" in dashboard_home.text
     assert "sellHolding" in dashboard_home.text
+    assert "executionModePayload" in dashboard_home.text
+    assert "...executionModePayload()" in dashboard_home.text
+    assert "Dry-run完成" in dashboard_home.text
     assert "/paper-orders" in dashboard_home.text
     assert "/paper-orders/risk-plan" in dashboard_home.text
     assert "adapter_message" in dashboard_home.text

@@ -146,6 +146,10 @@ Order requests now carry `execution_mode`: `paper` fills through the simulator, 
 `live` is accepted only as `dry_run=true` unless a future broker adapter is explicitly
 configured. Live dry-runs return a submitted audit order with `broker_order_id` and
 `adapter_message`, but do not create holdings or send anything to a broker.
+Sell requests and alert execution use the same gate. `execution_mode=live` with
+`dry_run=true` validates the exit, emits a `sell_routed` event, and returns adapter
+metadata without closing the holding or writing a sell trade. Confirmed live sells return
+`501` until a real broker adapter is configured.
 
 Default risk guardrails:
 - `min_confidence=0.72`

@@ -169,6 +169,22 @@ Set `Exec Mode` to `Live Dry Run` only for broker-adapter rehearsals. It records
 submitted audit order but does not send anything to a broker or create a monitored
 holding.
 
+Sell controls use the same execution gate:
+
+```bash
+curl -X POST http://localhost:8000/portfolio/holdings/<ticker>/sell \
+  -H "Content-Type: application/json" \
+  -d '{"sell_price":125.50,"execution_mode":"live","dry_run":true,"reason":"adapter_rehearsal"}'
+
+curl -X POST http://localhost:8000/portfolio/alerts/<ticker>/execute \
+  -H "Content-Type: application/json" \
+  -d '{"reason_code":"stop_loss_breach","execution_mode":"live","dry_run":true}'
+```
+
+Live sell dry-runs emit `sell_routed` with `applied_to_ledger=false`; they do not close
+holdings or create sell trades. Real live sells intentionally return `501` until a broker
+adapter is configured and reviewed.
+
 Kill switch can pause all execution:
 
 ```bash

@@ -304,6 +304,71 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     alerts = alert_response.json()
     assert any(item["ticker"] == ticker and item["reason_code"] == "stop_loss_breach" for item in alerts)
 
+    blocked_live_sell = client.post(
+        f"/portfolio/holdings/{ticker}/sell",
+        json={
+            "sell_price": recommendation["entry_zone_high"],
+            "execution_mode": "live",
+            "dry_run": False,
+            "confirm_live": False,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert blocked_live_sell.status_code == 400
+    assert "Live sell execution requires" in blocked_live_sell.json()["detail"]
+
+    unconfigured_live_sell = client.post(
+        f"/portfolio/holdings/{ticker}/sell",
+        json={
+            "sell_price": recommendation["entry_zone_high"],
+            "execution_mode": "live",
+            "dry_run": False,
+            "confirm_live": True,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert unconfigured_live_sell.status_code == 501
+    assert "Live broker sell adapter is not configured" in unconfigured_live_sell.json()["detail"]
+
+    dry_run_baseline_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
+    assert dry_run_baseline_trades.status_code == 200
+    dry_run_baseline_sell_count = len(dry_run_baseline_trades.json())
+    dry_run_response = client.post(
+        f"/portfolio/alerts/{ticker}/execute",
+        json={"reason_code": "stop_loss_breach", "execution_mode": "live", "dry_run": True},
+        headers=AUTH_HEADERS,
+    )
+    assert dry_run_response.status_code == 200
+    dry_run_execution = dry_run_response.json()["execution"]
+    assert dry_run_execution["execution_mode"] == "live"
+    assert dry_run_execution["dry_run"] is True
+    assert dry_run_execution["applied_to_ledger"] is False
+    assert dry_run_execution["broker_order_id"].startswith("live_sell_dryrun_")
+    assert "not sent to a broker" in dry_run_execution["adapter_message"]
+    assert dry_run_execution["holding"]["status"] == "open"
+    assert dry_run_execution["remaining_qty"] == 25
+    assert dry_run_execution["realized_pnl_delta"] == 0
+    assert dry_run_execution["estimated_realized_pnl_delta"] is not None
+
+    holdings_after_dry_run = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings_after_dry_run.status_code == 200
+    dry_run_holding = next(item for item in holdings_after_dry_run.json() if item["ticker"] == ticker)
+    assert dry_run_holding["qty"] == 25
+    assert dry_run_holding["status"] == "open"
+    trades_after_dry_run = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
+    assert trades_after_dry_run.status_code == 200
+    assert len(trades_after_dry_run.json()) == dry_run_baseline_sell_count
+
+    dry_run_events = client.post("/events/consume?limit=100", headers=AUTH_HEADERS)
+    assert dry_run_events.status_code == 200
+    assert any(
+        event["event_type"] == "sell_routed"
+        and event["payload"]["ticker"] == ticker
+        and event["payload"]["dry_run"] is True
+        and event["payload"]["applied_to_ledger"] is False
+        for event in dry_run_events.json()
+    )
+
     execute_response = client.post(
         f"/portfolio/alerts/{ticker}/execute",
         json={"reason_code": "stop_loss_breach"},
@@ -314,6 +379,10 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     assert execution["sold_qty"] == 25
     assert execution["remaining_qty"] == 0
     assert execution["holding"]["status"] == "closed"
+    assert execution["execution_mode"] == "paper"
+    assert execution["dry_run"] is False
+    assert execution["applied_to_ledger"] is True
+    assert execution["broker_order_id"].startswith("paper_sell_")
 
     sell_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
     assert sell_trades.status_code == 200

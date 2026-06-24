@@ -800,9 +800,10 @@ def dashboard_home() -> str:
     function setActionStatus(message, isError = false) {
       const status = document.getElementById('actionStatus');
       const log = document.getElementById('operationLog');
-      status.textContent = isError ? '操作失败' : '操作完成';
+      const messageText = String(message || '');
+      status.textContent = isError ? '操作失败' : (messageText.toLowerCase().includes('dry-run') ? 'Dry-run完成' : '操作完成');
       status.style.color = isError ? 'var(--danger)' : 'var(--ok)';
-      log.textContent = message;
+      log.textContent = messageText;
       log.style.color = isError ? 'var(--danger)' : 'var(--ink-soft)';
     }
 
@@ -1175,18 +1176,24 @@ def dashboard_home() -> str:
       }
     }
 
-    function paperOrderPayload(rec, qty) {
-      const buyPrice = numberValue('buyPrice') || Number(rec.entry_zone_high);
+    function executionModePayload() {
       const executionChoice = document.getElementById('executionMode')?.value || 'paper';
       const isLiveDryRun = executionChoice === 'live_dry_run';
+      return {
+        execution_mode: isLiveDryRun ? 'live' : 'paper',
+        dry_run: isLiveDryRun,
+        confirm_live: false,
+      };
+    }
+
+    function paperOrderPayload(rec, qty) {
+      const buyPrice = numberValue('buyPrice') || Number(rec.entry_zone_high);
       return {
         recommendation_id: rec.id,
         side: rec.direction || 'BUY',
         qty,
         limit_price: buyPrice,
-        execution_mode: isLiveDryRun ? 'live' : 'paper',
-        dry_run: isLiveDryRun,
-        confirm_live: false,
+        ...executionModePayload(),
         account_equity: numberValue('accountEquity') || 100000,
         risk_per_trade_pct: (numberValue('riskPct') || 1) / 100,
         max_position_pct: (numberValue('maxPositionPct') || 10) / 100,
@@ -1251,11 +1258,13 @@ def dashboard_home() -> str:
       const payload = {
         sell_price: price,
         reason: reasonValue(sellAll ? 'dashboard_exit_all' : 'dashboard_sell'),
+        ...executionModePayload(),
       };
       if (qty) payload.qty = qty;
       try {
         const result = await postJson(`/portfolio/holdings/${encodeURIComponent(holding.ticker)}/sell`, payload);
-        setActionStatus(result.message_cn || `已卖出 ${holding.ticker}`);
+        const adapterText = result.adapter_message ? `；${result.adapter_message}` : '';
+        setActionStatus((result.message_cn || `已卖出 ${holding.ticker}`) + adapterText);
         await refreshNow(false);
       } catch (err) {
         setActionStatus(String(err), true);
@@ -1271,11 +1280,13 @@ def dashboard_home() -> str:
         reason_code: alert.reason_code,
         sell_price: sellPrice,
         note: reasonValue(`alert:${alert.reason_code}`),
+        ...executionModePayload(),
       };
       if (qty) payload.qty = qty;
       try {
         const result = await postJson(`/portfolio/alerts/${encodeURIComponent(alert.ticker)}/execute`, payload);
-        setActionStatus(result.execution?.message_cn || `${alert.ticker} 已按提醒执行卖出`);
+        const adapterText = result.execution?.adapter_message ? `；${result.execution.adapter_message}` : '';
+        setActionStatus((result.execution?.message_cn || `${alert.ticker} 已按提醒执行卖出`) + adapterText);
         await refreshNow(false);
       } catch (err) {
         setActionStatus(String(err), true);

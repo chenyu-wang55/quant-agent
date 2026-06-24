@@ -116,6 +116,8 @@ def sell_holding(
         return state.sell_holding(ticker, request)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="open holding not found") from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -138,5 +140,7 @@ def execute_sell_alert(
         return state.execute_sell_alert(ticker=ticker, request=request)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="open holding not found") from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

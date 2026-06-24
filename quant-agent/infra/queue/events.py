@@ -18,6 +18,7 @@ class EventType(str, Enum):
     PAPER_FILL = "paper_fill"
     MODEL_EVALUATION = "model_evaluation"
     SELL_ALERT = "sell_alert"
+    SELL_ROUTED = "sell_routed"
     PORTFOLIO_SELL = "portfolio_sell"
 
 

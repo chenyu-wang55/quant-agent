@@ -532,6 +532,9 @@ class ManualSellRequest(BaseModel):
     sell_price: float = Field(gt=0)
     sold_at: datetime | None = None
     reason: str | None = None
+    execution_mode: OrderExecutionMode = OrderExecutionMode.PAPER
+    dry_run: bool = False
+    confirm_live: bool = False
 
 
 class HoldingWatch(BaseModel):
@@ -557,8 +560,14 @@ class SellExecutionResult(BaseModel):
     sold_qty: float
     sell_price: float
     realized_pnl_delta: float
+    estimated_realized_pnl_delta: float | None = None
     total_realized_pnl: float
     remaining_qty: float
+    execution_mode: OrderExecutionMode = OrderExecutionMode.PAPER
+    dry_run: bool = False
+    broker_order_id: str | None = None
+    adapter_message: str | None = None
+    applied_to_ledger: bool = True
     message_cn: str
 
 
@@ -568,6 +577,9 @@ class AlertSellRequest(BaseModel):
     sell_price: float | None = Field(default=None, gt=0)
     sell_all: bool | None = None
     note: str | None = None
+    execution_mode: OrderExecutionMode = OrderExecutionMode.PAPER
+    dry_run: bool = False
+    confirm_live: bool = False
 
 
 class TradeLedgerEntry(BaseModel):

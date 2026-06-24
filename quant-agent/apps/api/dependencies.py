@@ -19,6 +19,7 @@ from domain.entities.models import (
     KillSwitchState,
     ManualBuyRequest,
     ManualSellRequest,
+    OrderExecutionMode,
     PaperOrder,
     PaperOrderRequest,
     PaperOrderRiskPlan,
@@ -514,11 +515,59 @@ class AppState:
         if sell_qty > holding.qty:
             raise ValueError("sell qty cannot exceed open holding qty")
 
+        execution_mode = OrderExecutionMode(request.execution_mode)
+        if execution_mode == OrderExecutionMode.LIVE:
+            if not request.dry_run and not request.confirm_live:
+                raise ValueError("Live sell execution requires dry_run=true or confirm_live=true")
+            if not request.dry_run:
+                raise NotImplementedError("Live broker sell adapter is not configured")
+
+            estimated_delta = (request.sell_price - holding.avg_buy_price) * sell_qty
+            projected_remaining_qty = round(max(0.0, holding.qty - sell_qty), 6)
+            broker_order_id = f"live_sell_dryrun_{uuid4().hex[:12]}"
+            adapter_message = "live_sell_dry_run_only: order was validated but not sent to a broker"
+            self.publish_event(
+                EventType.SELL_ROUTED,
+                {
+                    "ticker": ticker_upper,
+                    "side": TradeSide.SELL.value,
+                    "qty": round(sell_qty, 6),
+                    "sell_price": request.sell_price,
+                    "execution_mode": execution_mode.value,
+                    "dry_run": True,
+                    "broker_order_id": broker_order_id,
+                    "adapter_message": adapter_message,
+                    "applied_to_ledger": False,
+                    "reason": request.reason,
+                },
+            )
+            return SellExecutionResult(
+                holding=holding,
+                sold_qty=round(sell_qty, 6),
+                sell_price=request.sell_price,
+                realized_pnl_delta=0.0,
+                estimated_realized_pnl_delta=round(estimated_delta, 6),
+                total_realized_pnl=holding.realized_pnl,
+                remaining_qty=holding.qty,
+                execution_mode=OrderExecutionMode.LIVE,
+                dry_run=True,
+                broker_order_id=broker_order_id,
+                adapter_message=adapter_message,
+                applied_to_ledger=False,
+                message_cn=(
+                    f"{ticker_upper} live dry-run 已校验卖出 {sell_qty:g} 股，"
+                    f"预计盈亏 {estimated_delta:.2f}，若执行后预计剩余 {projected_remaining_qty:g} 股；"
+                    "本次未发送券商，持仓和交易流水未改变。"
+                ),
+            )
+
         sold_at = request.sold_at or datetime.now(timezone.utc)
         realized_delta = (request.sell_price - holding.avg_buy_price) * sell_qty
         remaining_qty = round(max(0.0, holding.qty - sell_qty), 6)
         is_closed = remaining_qty <= 1e-9
         total_realized = round(holding.realized_pnl + realized_delta, 6)
+        broker_order_id = f"paper_sell_{uuid4().hex[:12]}"
+        adapter_message = "paper_sell_fill_recorded"
 
         updated = HoldingWatch(
             ticker=holding.ticker,
@@ -566,6 +615,11 @@ class AppState:
                 "remaining_qty": updated.qty,
                 "status": updated.status.value,
                 "reason": request.reason,
+                "execution_mode": OrderExecutionMode.PAPER.value,
+                "dry_run": False,
+                "broker_order_id": broker_order_id,
+                "adapter_message": adapter_message,
+                "applied_to_ledger": True,
             },
         )
 
@@ -575,8 +629,14 @@ class AppState:
             sold_qty=round(sell_qty, 6),
             sell_price=request.sell_price,
             realized_pnl_delta=round(realized_delta, 6),
+            estimated_realized_pnl_delta=round(realized_delta, 6),
             total_realized_pnl=total_realized,
             remaining_qty=updated.qty,
+            execution_mode=OrderExecutionMode.PAPER,
+            dry_run=False,
+            broker_order_id=broker_order_id,
+            adapter_message=adapter_message,
+            applied_to_ledger=True,
             message_cn=f"{ticker_upper} 已{action}，本次已实现盈亏 {realized_delta:.2f}。",
         )
 
@@ -1195,7 +1255,14 @@ class AppState:
         reason = request.note or f"alert:{alert.reason_code}"
         execution = self.sell_holding(
             ticker=ticker_upper,
-            request=ManualSellRequest(qty=sell_qty, sell_price=sell_price, reason=reason),
+            request=ManualSellRequest(
+                qty=sell_qty,
+                sell_price=sell_price,
+                reason=reason,
+                execution_mode=request.execution_mode,
+                dry_run=request.dry_run,
+                confirm_live=request.confirm_live,
+            ),
         )
         return AlertExecutionResult(alert=alert, execution=execution, default_action_cn=default_action_cn)
 
