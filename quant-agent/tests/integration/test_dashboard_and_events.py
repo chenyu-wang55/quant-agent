@@ -59,8 +59,10 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "Quant 实时交易看板" in dashboard_home.text
     assert "交易控制" in dashboard_home.text
     assert "交易流水" in dashboard_home.text
+    assert "纸单记录" in dashboard_home.text
     assert "交易复盘" in dashboard_home.text
     assert "推荐归因" in dashboard_home.text
+    assert "renderPaperOrders" in dashboard_home.text
     assert "renderTrades" in dashboard_home.text
     assert "renderPerformance" in dashboard_home.text
     assert "renderAttribution" in dashboard_home.text
@@ -78,6 +80,7 @@ def test_dashboard_and_event_endpoints() -> None:
     payload = realtime.json()
     assert "recommendations" in payload
     assert "summary" in payload
+    assert "recent_paper_orders" in payload
     assert "recommendation_attribution" in payload
     assert payload["summary"]["recommendation_count"] >= 1
 

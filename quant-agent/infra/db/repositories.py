@@ -16,6 +16,7 @@ from domain.entities.models import (
     MarketBar,
     NewsEvent,
     PaperOrder,
+    PaperOrderStatus,
     PatternType,
     PositionState,
     Recommendation,
@@ -242,6 +243,39 @@ class PaperOrderRepository:
             )
             session.merge(record)
             session.commit()
+
+    def list_recent(
+        self,
+        limit: int = 100,
+        recommendation_id: str | None = None,
+        side: Direction | None = None,
+        status: PaperOrderStatus | None = None,
+    ) -> list[PaperOrder]:
+        with SessionLocal() as session:
+            stmt = select(PaperOrderRecord)
+            if recommendation_id:
+                stmt = stmt.where(PaperOrderRecord.recommendation_id == recommendation_id)
+            if side is not None:
+                stmt = stmt.where(PaperOrderRecord.side == side.value)
+            if status is not None:
+                stmt = stmt.where(PaperOrderRecord.status == status.value)
+            stmt = stmt.order_by(PaperOrderRecord.submitted_at.desc()).limit(limit)
+            records = list(session.execute(stmt).scalars())
+        return [
+            PaperOrder(
+                id=record.id,
+                recommendation_id=record.recommendation_id,
+                side=Direction(record.side),
+                qty=record.qty,
+                limit_price=record.limit_price,
+                submitted_at=_ensure_utc(record.submitted_at),
+                status=PaperOrderStatus(record.status),
+                simulated_fill_price=record.simulated_fill_price,
+                filled_at=_ensure_utc(record.filled_at) if record.filled_at else None,
+                cancel_reason=record.cancel_reason,
+            )
+            for record in records
+        ]
 
 
 class PositionRepository:

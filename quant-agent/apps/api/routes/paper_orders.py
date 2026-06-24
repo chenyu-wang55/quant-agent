@@ -1,12 +1,46 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.dependencies import AppState, get_app_state
-from domain.entities.models import PaperOrder, PaperOrderRequest
+from domain.entities.models import Direction, PaperOrder, PaperOrderRequest, PaperOrderStatus
 
 
 router = APIRouter(tags=["paper-orders"])
+
+
+def _parse_side(side: str | None) -> Direction | None:
+    if side is None:
+        return None
+    normalized = side.upper()
+    if normalized in {item.value for item in Direction}:
+        return Direction(normalized)
+    raise HTTPException(status_code=400, detail="side must be BUY or SHORT")
+
+
+def _parse_status(status: str | None) -> PaperOrderStatus | None:
+    if status is None:
+        return None
+    normalized = status.lower()
+    if normalized in {item.value for item in PaperOrderStatus}:
+        return PaperOrderStatus(normalized)
+    raise HTTPException(status_code=400, detail="status must be submitted, filled, or canceled")
+
+
+@router.get("/paper-orders", response_model=list[PaperOrder])
+def list_paper_orders(
+    limit: int = Query(default=100, ge=1, le=500),
+    recommendation_id: str | None = Query(default=None),
+    side: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    state: AppState = Depends(get_app_state),
+) -> list[PaperOrder]:
+    return state.list_paper_orders(
+        limit=limit,
+        recommendation_id=recommendation_id,
+        side=_parse_side(side),
+        status=_parse_status(status),
+    )
 
 
 @router.post("/paper-orders", response_model=PaperOrder)

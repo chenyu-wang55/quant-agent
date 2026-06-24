@@ -111,6 +111,17 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     paper_order = paper_response.json()
     assert paper_order["status"] == "filled"
 
+    orders_response = client.get(
+        f"/paper-orders?recommendation_id={recommendation_id}&status=filled",
+        headers=AUTH_HEADERS,
+    )
+    assert orders_response.status_code == 200
+    order_rows = orders_response.json()
+    assert order_rows
+    assert order_rows[0]["id"] == paper_order["id"]
+    assert order_rows[0]["recommendation_id"] == recommendation_id
+    assert order_rows[0]["simulated_fill_price"] == paper_order["simulated_fill_price"]
+
     positions_response = client.get("/positions", headers=AUTH_HEADERS)
     assert positions_response.status_code == 200
     assert len(positions_response.json()) >= 1

@@ -31,6 +31,7 @@ curl http://localhost:8000/dashboard/realtime-data
 curl http://localhost:8000/metrics
 curl http://localhost:8000/execution/kill-switch
 curl http://localhost:8000/events/pending
+curl http://localhost:8000/paper-orders
 curl http://localhost:8000/portfolio/holdings
 curl http://localhost:8000/portfolio/holdings?status=closed
 curl http://localhost:8000/portfolio/summary
@@ -108,6 +109,8 @@ curl -X POST http://localhost:8000/recommendations/<id>/approval \
 curl -X POST http://localhost:8000/paper-orders \
   -H "Content-Type: application/json" \
   -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null}'
+
+curl "http://localhost:8000/paper-orders?recommendation_id=<id>&status=filled"
 ```
 
 Filled BUY paper orders automatically create/update the monitored holding and write a

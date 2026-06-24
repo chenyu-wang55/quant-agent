@@ -119,6 +119,8 @@ def dashboard_realtime_data(
     portfolio_performance = state.get_portfolio_performance()
     recommendation_attribution = state.get_recommendation_attribution()
     recent_trades = state.list_trade_ledger(limit=10)
+    recent_paper_orders = state.list_paper_orders(limit=10)
+    paper_order_count = len(state.list_paper_orders(limit=10_000))
     price_lookup = _build_price_lookup(state=state, recommendations=raw_recommendations, as_of=now)
     recommendations = _select_recommendations_for_dashboard(raw_recommendations, price_lookup)
     return {
@@ -134,6 +136,7 @@ def dashboard_realtime_data(
             "recommendation_count": len(recommendations),
             "open_holding_count": len(holdings),
             "sell_alert_count": len(alerts),
+            "paper_order_count": paper_order_count,
             "pending_event_count": state.event_queue.size(),
         },
         "portfolio_summary": portfolio_summary.model_dump(mode="json"),
@@ -159,6 +162,7 @@ def dashboard_realtime_data(
             }
             for holding in holdings
         ],
+        "recent_paper_orders": [order.model_dump(mode="json") for order in recent_paper_orders],
         "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
         "alerts": [
             {
@@ -564,6 +568,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">推荐数量</div><div class="v" id="recCount">0</div></div>
       <div class="stat"><div class="k">持仓监控</div><div class="v" id="holdingCount">0</div></div>
       <div class="stat"><div class="k">卖出提醒</div><div class="v" id="alertCount">0</div></div>
+      <div class="stat"><div class="k">纸单</div><div class="v" id="paperOrderCount">0</div></div>
       <div class="stat"><div class="k">已实现盈亏</div><div class="v" id="realizedPnl">0.00</div></div>
       <div class="stat"><div class="k">开放风险</div><div class="v" id="openRisk">0.00</div></div>
       <div class="stat"><div class="k">交易笔数</div><div class="v" id="tradeCount">0</div></div>
@@ -613,6 +618,17 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>股票</th><th>数量</th><th>成本</th><th>止损</th><th>止盈1</th><th>止盈2</th><th>已实现盈亏</th><th>最近卖出</th><th>操作</th></tr></thead>
         <tbody id="holdingBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>纸单记录</h3>
+        <span class="small">审批后的下单、成交和取消状态审计轨迹</span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>Order</th><th>推荐</th><th>方向</th><th>数量</th><th>限价</th><th>状态</th><th>成交价</th></tr></thead>
+        <tbody id="orderBody"></tbody>
       </table>
     </div>
 
@@ -983,6 +999,26 @@ def dashboard_home() -> str:
       `).join("");
     }
 
+    function renderPaperOrders(items) {
+      const body = document.getElementById("orderBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="8" class="small">暂无纸单记录。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((order) => `
+        <tr>
+          <td class="small">${fmtTime(order.submitted_at)}</td>
+          <td class="mono" title="${esc(order.id)}">${esc(shortId(order.id, 12))}</td>
+          <td class="mono" title="${esc(order.recommendation_id)}">${esc(shortId(order.recommendation_id, 12))}</td>
+          <td>${esc(order.side)}</td>
+          <td>${fmtNum(order.qty, 2)}</td>
+          <td>${fmtNullableNum(order.limit_price, 2)}</td>
+          <td>${esc(order.status)}</td>
+          <td>${fmtNullableNum(order.simulated_fill_price, 2)}</td>
+        </tr>
+      `).join("");
+    }
+
     function renderTrades(items) {
       const body = document.getElementById("tradeBody");
       if (!items || items.length === 0) {
@@ -1094,6 +1130,7 @@ def dashboard_home() -> str:
       document.getElementById('recCount').textContent = String(data.summary?.recommendation_count ?? 0);
       document.getElementById('holdingCount').textContent = String(data.summary?.open_holding_count ?? 0);
       document.getElementById('alertCount').textContent = String(data.summary?.sell_alert_count ?? 0);
+      document.getElementById('paperOrderCount').textContent = String(data.summary?.paper_order_count ?? 0);
       document.getElementById('realizedPnl').textContent = fmtNum(data.portfolio_summary?.total_realized_pnl, 2);
       document.getElementById('openRisk').textContent = fmtNum(data.portfolio_summary?.open_risk_to_stop, 2);
       document.getElementById('tradeCount').textContent = String(data.portfolio_summary?.trade_count ?? 0);
@@ -1113,6 +1150,7 @@ def dashboard_home() -> str:
 
       renderRecommendations(data.recommendations || []);
       renderHoldings(data.holdings || []);
+      renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);
       renderPerformance(data.portfolio_performance || {});
       renderAttribution(data.recommendation_attribution || {});

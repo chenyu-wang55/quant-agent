@@ -171,6 +171,31 @@ class AppState:
             },
         )
 
+    def list_paper_orders(
+        self,
+        limit: int = 100,
+        recommendation_id: str | None = None,
+        side: Direction | None = None,
+        status: PaperOrderStatus | None = None,
+    ) -> list[PaperOrder]:
+        orders = self.paper_order_repo.list_recent(
+            limit=limit,
+            recommendation_id=recommendation_id,
+            side=side,
+            status=status,
+        )
+        known_ids = {order.id for order in orders}
+        memory_only = [
+            order
+            for order in self.paper_orders
+            if order.id not in known_ids
+            and (recommendation_id is None or order.recommendation_id == recommendation_id)
+            and (side is None or order.side == side)
+            and (status is None or order.status == status)
+        ]
+        merged = sorted([*orders, *memory_only], key=lambda order: order.submitted_at, reverse=True)
+        return merged[:limit]
+
     def decide_recommendation(self, request: ApprovalDecisionRequest) -> RecommendationApproval:
         issues = self.approval_policy.validate(request)
         if issues:
