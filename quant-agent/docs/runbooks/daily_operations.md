@@ -159,6 +159,8 @@ start from the approved order fill instead of a separate manual entry.
 `/paper-orders/risk-plan` shows `recommended_qty`, stop-loss risk, position percentage,
 and any violations. `/paper-orders` enforces the same limits unless `enforce_risk_limits`
 is explicitly set to `false`.
+On the dashboard, use each recommendation row's `建议股数` button to calculate and fill
+the current risk-adjusted buy quantity before pressing `买入`.
 
 Kill switch can pause all execution:
 

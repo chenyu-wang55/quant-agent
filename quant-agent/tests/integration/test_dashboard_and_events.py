@@ -81,6 +81,8 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "executeAlert" in dashboard_home.text
     assert "执行建议" in dashboard_home.text
     assert "runResearch" in dashboard_home.text
+    assert "建议股数" in dashboard_home.text
+    assert "planBuyRecommendation" in dashboard_home.text
     assert "reject_on_material_evidence_conflict: false" in dashboard_home.text
     assert "event_trading_enabled: true" in dashboard_home.text
     assert "buyRecommendation" in dashboard_home.text

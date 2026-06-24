@@ -888,6 +888,7 @@ def dashboard_home() -> str:
           <td>
             <div class="small">审批: ${esc(r.approval_status || 'pending')}</div>
             <button class="btn-mini" onclick="approveRecommendation(${idx})">审批</button>
+            <button class="btn-mini" onclick="planBuyRecommendation(${idx})">建议股数</button>
             <button class="btn-mini" onclick="buyRecommendation(${idx})">买入</button>
             <a class="link" href="/dashboard/recommendations/${encodeURIComponent(r.id)}${pwdSuffix}" target="_blank">查看</a>
           </td>
@@ -1172,16 +1173,9 @@ def dashboard_home() -> str:
       }
     }
 
-    async function buyRecommendation(index) {
-      const rec = currentRecommendations[index];
-      if (!rec) return;
-      const qty = numberValue('buyQty');
-      if (!qty || qty <= 0) {
-        setActionStatus('买入数量必须大于 0', true);
-        return;
-      }
+    function paperOrderPayload(rec, qty) {
       const buyPrice = numberValue('buyPrice') || Number(rec.entry_zone_high);
-      const payload = {
+      return {
         recommendation_id: rec.id,
         side: rec.direction || 'BUY',
         qty,
@@ -1190,6 +1184,37 @@ def dashboard_home() -> str:
         risk_per_trade_pct: (numberValue('riskPct') || 1) / 100,
         max_position_pct: (numberValue('maxPositionPct') || 10) / 100,
       };
+    }
+
+    async function planBuyRecommendation(index) {
+      const rec = currentRecommendations[index];
+      if (!rec) return;
+      const qty = numberValue('buyQty') || 1;
+      try {
+        const plan = await postJson('/paper-orders/risk-plan', paperOrderPayload(rec, qty));
+        if (!plan.recommended_qty || plan.recommended_qty <= 0) {
+          setActionStatus(plan.message_cn || '当前账户风控下无可买股数', true);
+          return;
+        }
+        const suggestedQty = Math.max(1, Math.floor(Number(plan.recommended_qty)));
+        document.getElementById('buyQty').value = String(suggestedQty);
+        setActionStatus(
+          `建议 ${rec.ticker} 买入 ${suggestedQty} 股；单笔风险预算 ${fmtNum(plan.risk_budget, 2)}，预计止损风险 ${fmtNum(plan.risk_per_share * suggestedQty, 2)}。`
+        );
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
+    async function buyRecommendation(index) {
+      const rec = currentRecommendations[index];
+      if (!rec) return;
+      const qty = numberValue('buyQty');
+      if (!qty || qty <= 0) {
+        setActionStatus('买入数量必须大于 0', true);
+        return;
+      }
+      const payload = paperOrderPayload(rec, qty);
       try {
         const plan = await postJson('/paper-orders/risk-plan', payload);
         if (!plan.is_within_limits) {
@@ -1198,7 +1223,7 @@ def dashboard_home() -> str:
         }
         const order = await postJson('/paper-orders', payload);
         setActionStatus(
-          `已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || buyPrice, 2)}；${plan.message_cn}`
+          `已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || payload.limit_price, 2)}；${plan.message_cn}`
         );
         await refreshNow(false);
       } catch (err) {
