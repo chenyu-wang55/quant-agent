@@ -45,6 +45,26 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     )
     assert run_response.status_code == 200
     recommendation = run_response.json()["recommendations"][0]
+    baseline_summary = client.get("/portfolio/summary", headers=AUTH_HEADERS)
+    assert baseline_summary.status_code == 200
+    baseline_summary_data = baseline_summary.json()
+    baseline_realized = baseline_summary_data["total_realized_pnl"]
+    baseline_closed_count = baseline_summary_data["closed_holding_count"]
+    baseline_performance = client.get("/portfolio/performance", headers=AUTH_HEADERS)
+    assert baseline_performance.status_code == 200
+    baseline_ticker_rows = [
+        item for item in baseline_performance.json()["by_ticker"] if item["ticker"] == recommendation["ticker"]
+    ]
+    baseline_ticker_realized = baseline_ticker_rows[0]["total_realized_pnl"] if baseline_ticker_rows else 0.0
+    baseline_attribution = client.get("/portfolio/recommendation-attribution", headers=AUTH_HEADERS)
+    assert baseline_attribution.status_code == 200
+    baseline_attr_rows = [
+        item
+        for item in baseline_attribution.json()["by_recommendation"]
+        if item["recommendation_id"] == recommendation["id"]
+    ]
+    baseline_attr_realized = baseline_attr_rows[0]["total_realized_pnl"] if baseline_attr_rows else 0.0
+    baseline_attr_sell_count = baseline_attr_rows[0]["sell_trade_count"] if baseline_attr_rows else 0
 
     buy_response = client.post(
         "/portfolio/buys",
@@ -60,6 +80,13 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     )
     assert buy_response.status_code == 200
     assert buy_response.json()["ticker"] == recommendation["ticker"]
+
+    trades_after_buy = client.get(f"/portfolio/trades?ticker={recommendation['ticker']}", headers=AUTH_HEADERS)
+    assert trades_after_buy.status_code == 200
+    buy_trades = trades_after_buy.json()
+    assert len(buy_trades) >= 1
+    assert buy_trades[0]["side"] == "buy"
+    assert buy_trades[0]["qty"] == 100
 
     holdings_response = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
     assert holdings_response.status_code == 200
@@ -86,6 +113,13 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     assert partial_data["holding"]["status"] == "open"
     assert partial_data["realized_pnl_delta"] == pytest.approx(40 * 5)
 
+    summary_after_partial = client.get("/portfolio/summary", headers=AUTH_HEADERS)
+    assert summary_after_partial.status_code == 200
+    partial_summary = summary_after_partial.json()
+    assert partial_summary["open_holding_count"] == 1
+    assert partial_summary["sell_trade_count"] >= 1
+    assert partial_summary["total_realized_pnl"] - baseline_realized == pytest.approx(40 * 5)
+
     oversized_sell = client.post(
         f"/portfolio/holdings/{recommendation['ticker']}/sell",
         json={"qty": 1000, "sell_price": first_sell_price, "reason": "too_much"},
@@ -108,3 +142,52 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     holdings_after_sell = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
     assert holdings_after_sell.status_code == 200
     assert holdings_after_sell.json() == []
+
+    closed_holdings = client.get("/portfolio/holdings?status=closed", headers=AUTH_HEADERS)
+    assert closed_holdings.status_code == 200
+    assert any(item["ticker"] == recommendation["ticker"] for item in closed_holdings.json())
+
+    sell_trades = client.get(f"/portfolio/trades?ticker={recommendation['ticker']}&side=sell", headers=AUTH_HEADERS)
+    assert sell_trades.status_code == 200
+    sell_rows = sell_trades.json()
+    assert len(sell_rows) >= 2
+    assert sell_rows[0]["holding_status_after"] == "closed"
+    assert sell_rows[0]["realized_pnl_delta"] == pytest.approx(60 * -2)
+
+    final_summary = client.get("/portfolio/summary", headers=AUTH_HEADERS)
+    assert final_summary.status_code == 200
+    summary_data = final_summary.json()
+    assert summary_data["open_holding_count"] == 0
+    assert summary_data["closed_holding_count"] >= baseline_closed_count + 1
+    assert summary_data["total_realized_pnl"] - baseline_realized == pytest.approx((40 * 5) + (60 * -2))
+
+    performance_response = client.get("/portfolio/performance", headers=AUTH_HEADERS)
+    assert performance_response.status_code == 200
+    performance = performance_response.json()
+    assert performance["sell_trade_count"] >= 2
+    assert performance["win_count"] >= 1
+    assert performance["loss_count"] >= 1
+    assert performance["profit_factor"] is not None
+    ticker_rows = [item for item in performance["by_ticker"] if item["ticker"] == recommendation["ticker"]]
+    assert ticker_rows
+    assert ticker_rows[0]["total_realized_pnl"] - baseline_ticker_realized == pytest.approx((40 * 5) + (60 * -2))
+    assert ticker_rows[0]["win_rate"] > 0
+
+    attribution_response = client.get("/portfolio/recommendation-attribution", headers=AUTH_HEADERS)
+    assert attribution_response.status_code == 200
+    attribution = attribution_response.json()
+    recommendation_rows = [
+        item for item in attribution["by_recommendation"] if item["recommendation_id"] == recommendation["id"]
+    ]
+    assert recommendation_rows
+    row = recommendation_rows[0]
+    assert row["ticker"] == recommendation["ticker"]
+    assert row["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert row["sell_trade_count"] >= baseline_attr_sell_count + 2
+    assert row["total_realized_pnl"] - baseline_attr_realized == pytest.approx((40 * 5) + (60 * -2))
+    assert row["win_rate"] > 0
+    snapshot_rows = [
+        item for item in attribution["by_snapshot"] if item["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    ]
+    assert snapshot_rows
+    assert snapshot_rows[0]["sell_trade_count"] >= 2

@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
+from apps.dashboard.main import _select_recommendations_for_dashboard
 
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
@@ -57,6 +58,12 @@ def test_dashboard_and_event_endpoints() -> None:
     assert dashboard_home.status_code == 200
     assert "Quant 实时交易看板" in dashboard_home.text
     assert "交易控制" in dashboard_home.text
+    assert "交易流水" in dashboard_home.text
+    assert "交易复盘" in dashboard_home.text
+    assert "推荐归因" in dashboard_home.text
+    assert "renderTrades" in dashboard_home.text
+    assert "renderPerformance" in dashboard_home.text
+    assert "renderAttribution" in dashboard_home.text
     assert "runResearch" in dashboard_home.text
     assert "reject_on_material_evidence_conflict: false" in dashboard_home.text
     assert "event_trading_enabled: true" in dashboard_home.text
@@ -68,7 +75,17 @@ def test_dashboard_and_event_endpoints() -> None:
     payload = realtime.json()
     assert "recommendations" in payload
     assert "summary" in payload
+    assert "recommendation_attribution" in payload
     assert payload["summary"]["recommendation_count"] >= 1
+
+    rec = state.latest_run.recommendations[0]
+    stale_rec = rec.model_copy(
+        update={
+            "entry_zone_low": rec.entry_zone_low * 10,
+            "entry_zone_high": rec.entry_zone_high * 10,
+        }
+    )
+    assert _select_recommendations_for_dashboard([stale_rec], {rec.ticker: rec.entry_zone_low}) == []
 
     dashboard_detail = client.get(f"/dashboard/recommendations/{rec_id}", headers=AUTH_HEADERS)
     assert dashboard_detail.status_code == 200

@@ -93,7 +93,7 @@ Default risk guardrails:
 - `min_confidence=0.72`
 - `max_entry_gap_pct=0.30` (reject plans too far from current spot)
 - `max_name_weight=0.10`, `max_sector_weight=0.30`, and `max_correlated_cluster_weight=0.35`
-- In live mode (`snapshot_mode=latest`), engine applies calibrated confidence relaxation to preserve coverage (`effective_min_confidence = max(0.60, min_confidence - 0.08)`).
+- In live mode (`snapshot_mode=latest`), engine applies calibrated confidence relaxation to preserve coverage (`effective_min_confidence = max(0.0, min_confidence - 0.08)`).
 
 Portfolio risk is applied after candidates are ranked by composite score. The run output includes
 `universe_summary.portfolio_exposure` so operators can inspect the published name, sector, and
@@ -141,10 +141,20 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
 ## Manual Buy Tracking and Sell Alerts
 
 - Record a manual buy: `POST /portfolio/buys`
-- List open holdings: `GET /portfolio/holdings`
+- List holdings: `GET /portfolio/holdings?status=open|closed|all`
+- Portfolio summary: `GET /portfolio/summary`
+- Portfolio performance review: `GET /portfolio/performance`
+- Recommendation attribution: `GET /portfolio/recommendation-attribution`
+- Trade ledger: `GET /portfolio/trades`
 - Sell part or all of a holding: `POST /portfolio/holdings/{ticker}/sell`
 - Close a holding: `POST /portfolio/holdings/{ticker}/close`
 - Get sell alerts: `GET /portfolio/alerts`
 
 Sell alerts are Chinese-first and reason-based (stop-loss breach, target hit, regime risk-off).
 Sell controls record sell price, quantity, reason, realized P&L, and whether the holding remains open.
+Every manual buy and sell also writes an immutable trade-ledger entry so repeated ticker cycles remain auditable
+even when the current holding watch row is reopened or overwritten.
+Performance review is derived from the ledger and reports win rate, profit factor, expectancy per sell,
+best/worst realized trade, and per-ticker attribution.
+Recommendation attribution connects sell results back to the original `recommendation_id` and
+`source_snapshot_id`, so a replayed research snapshot can be compared against later realized P&L.

@@ -15,14 +15,22 @@ from domain.entities.models import (
     ManualBuyRequest,
     ManualSellRequest,
     PaperOrder,
+    PortfolioPerformance,
+    PortfolioSummary,
     PositionState,
     Recommendation,
+    RecommendationAttribution,
+    RecommendationAttributionReport,
     RecommendationApproval,
     ResearchRunRequest,
     ResearchRunResult,
     SellAlert,
     SellExecutionResult,
     SignalSnapshot,
+    SnapshotAttribution,
+    TickerPerformance,
+    TradeLedgerEntry,
+    TradeSide,
 )
 from domain.policies.approval import ApprovalDecisionRequest, ApprovalPolicy
 from infra.db.init_db import init_db
@@ -36,6 +44,7 @@ from infra.db.repositories import (
     RecommendationRepository,
     SignalRepository,
     SourceSnapshotRepository,
+    TradeLedgerRepository,
 )
 from infra.observability.metrics import MetricsStore
 from infra.queue.events import EventType, SystemEvent
@@ -65,6 +74,7 @@ class AppState:
     paper_order_repo: PaperOrderRepository = field(default_factory=PaperOrderRepository)
     position_repo: PositionRepository = field(default_factory=PositionRepository)
     holding_watch_repo: HoldingWatchRepository = field(default_factory=HoldingWatchRepository)
+    trade_ledger_repo: TradeLedgerRepository = field(default_factory=TradeLedgerRepository)
     approval_repo: ApprovalRepository = field(default_factory=ApprovalRepository)
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
@@ -81,6 +91,10 @@ class AppState:
     approvals_by_recommendation_id: dict[str, RecommendationApproval] = field(default_factory=dict)
     kill_switch: KillSwitchState = field(default_factory=lambda: KillSwitchState(enabled=False))
     recent_sell_alerts: list[SellAlert] = field(default_factory=list)
+
+    def _record_trade(self, entry: TradeLedgerEntry) -> None:
+        self.trade_ledger_repo.add(entry)
+        self.metrics_store.inc(f"trade_ledger_{entry.side.value}")
 
     def __post_init__(self) -> None:
         init_db()
@@ -229,6 +243,19 @@ class AppState:
 
         self.holdings_by_ticker[ticker] = holding
         self.holding_watch_repo.upsert(holding)
+        self._record_trade(
+            TradeLedgerEntry(
+                trade_id=uuid4().hex[:16],
+                ticker=ticker,
+                side=TradeSide.BUY,
+                qty=round(request.qty, 6),
+                price=round(request.buy_price, 6),
+                executed_at=bought_at,
+                source_recommendation_id=request.source_recommendation_id,
+                reason=request.note,
+                holding_status_after=HoldingStatus.OPEN,
+            )
+        )
         self.metrics_store.inc("manual_buys")
         self.metrics_store.set_gauge("open_holdings", len(self.list_open_holdings()))
         return holding
@@ -273,6 +300,20 @@ class AppState:
 
         self.holdings_by_ticker[ticker_upper] = updated
         self.holding_watch_repo.upsert(updated)
+        self._record_trade(
+            TradeLedgerEntry(
+                trade_id=uuid4().hex[:16],
+                ticker=ticker_upper,
+                side=TradeSide.SELL,
+                qty=round(sell_qty, 6),
+                price=round(request.sell_price, 6),
+                executed_at=sold_at,
+                source_recommendation_id=holding.source_recommendation_id,
+                reason=request.reason,
+                realized_pnl_delta=round(realized_delta, 6),
+                holding_status_after=updated.status,
+            )
+        )
         self.metrics_store.inc("manual_sells")
         self.metrics_store.set_gauge("open_holdings", len(self.list_open_holdings()))
         self.publish_event(
@@ -305,6 +346,235 @@ class AppState:
         holdings = self.holding_watch_repo.list_open()
         self.holdings_by_ticker = {item.ticker: item for item in holdings}
         return holdings
+
+    def list_holdings(self, status: HoldingStatus | None = None, limit: int = 100) -> list[HoldingWatch]:
+        if status == HoldingStatus.OPEN:
+            return self.list_open_holdings()[:limit]
+        holdings = self.holding_watch_repo.list_by_status(status=status, limit=limit)
+        for holding in holdings:
+            self.holdings_by_ticker[holding.ticker] = holding
+        return holdings
+
+    def list_trade_ledger(
+        self,
+        limit: int = 100,
+        ticker: str | None = None,
+        side: TradeSide | None = None,
+    ) -> list[TradeLedgerEntry]:
+        return self.trade_ledger_repo.list_recent(limit=limit, ticker=ticker, side=side)
+
+    def get_portfolio_summary(self, as_of: datetime | None = None) -> PortfolioSummary:
+        now = as_of or datetime.now(timezone.utc)
+        open_holdings = self.list_open_holdings()
+        trades = self.list_trade_ledger(limit=10_000)
+
+        open_cost_basis = 0.0
+        open_market_value = 0.0
+        open_unrealized_pnl = 0.0
+        open_risk_to_stop = 0.0
+        for holding in open_holdings:
+            open_cost_basis += holding.avg_buy_price * holding.qty
+            try:
+                current_price = self.provider.get_latest_price(holding.ticker, now)
+            except Exception:
+                current_price = None
+            mark = float(current_price) if current_price is not None else holding.avg_buy_price
+            open_market_value += mark * holding.qty
+            open_unrealized_pnl += (mark - holding.avg_buy_price) * holding.qty
+            open_risk_to_stop += max(0.0, mark - holding.stop_loss) * holding.qty
+
+        sell_trades = [trade for trade in trades if trade.side == TradeSide.SELL]
+        closed_trade_count = sum(1 for trade in sell_trades if trade.holding_status_after == HoldingStatus.CLOSED)
+        last_trade_at = max((trade.executed_at for trade in trades), default=None)
+        last_closed_at = max(
+            (
+                trade.executed_at
+                for trade in sell_trades
+                if trade.holding_status_after == HoldingStatus.CLOSED
+            ),
+            default=None,
+        )
+
+        return PortfolioSummary(
+            open_holding_count=len(open_holdings),
+            closed_holding_count=closed_trade_count,
+            trade_count=len(trades),
+            buy_trade_count=sum(1 for trade in trades if trade.side == TradeSide.BUY),
+            sell_trade_count=len(sell_trades),
+            open_cost_basis=round(open_cost_basis, 6),
+            open_market_value=round(open_market_value, 6),
+            open_unrealized_pnl=round(open_unrealized_pnl, 6),
+            open_risk_to_stop=round(open_risk_to_stop, 6),
+            total_realized_pnl=round(sum(trade.realized_pnl_delta for trade in sell_trades), 6),
+            last_trade_at=last_trade_at,
+            last_closed_at=last_closed_at,
+        )
+
+    @staticmethod
+    def _performance_from_trades(
+        trades: list[TradeLedgerEntry],
+        generated_at: datetime | None = None,
+    ) -> PortfolioPerformance:
+        sell_trades = [trade for trade in trades if trade.side == TradeSide.SELL]
+        sell_pnls = [trade.realized_pnl_delta for trade in sell_trades]
+        wins = [pnl for pnl in sell_pnls if pnl > 0]
+        losses = [pnl for pnl in sell_pnls if pnl < 0]
+        flat_count = sum(1 for pnl in sell_pnls if pnl == 0)
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        by_ticker: list[TickerPerformance] = []
+
+        for ticker in sorted({trade.ticker for trade in trades}):
+            ticker_trades = [trade for trade in trades if trade.ticker == ticker]
+            ticker_sells = [trade for trade in ticker_trades if trade.side == TradeSide.SELL]
+            ticker_pnls = [trade.realized_pnl_delta for trade in ticker_sells]
+            ticker_wins = [pnl for pnl in ticker_pnls if pnl > 0]
+            ticker_losses = [pnl for pnl in ticker_pnls if pnl < 0]
+            ticker_gross_loss = abs(sum(ticker_losses))
+            by_ticker.append(
+                TickerPerformance(
+                    ticker=ticker,
+                    trade_count=len(ticker_trades),
+                    sell_trade_count=len(ticker_sells),
+                    total_realized_pnl=round(sum(ticker_pnls), 6),
+                    win_count=len(ticker_wins),
+                    loss_count=len(ticker_losses),
+                    flat_count=sum(1 for pnl in ticker_pnls if pnl == 0),
+                    win_rate=round(len(ticker_wins) / len(ticker_pnls), 6) if ticker_pnls else 0.0,
+                    avg_win=round(sum(ticker_wins) / len(ticker_wins), 6) if ticker_wins else 0.0,
+                    avg_loss=round(sum(ticker_losses) / len(ticker_losses), 6) if ticker_losses else 0.0,
+                    profit_factor=round(sum(ticker_wins) / ticker_gross_loss, 6) if ticker_gross_loss > 0 else None,
+                    best_trade_pnl=round(max(ticker_pnls), 6) if ticker_pnls else 0.0,
+                    worst_trade_pnl=round(min(ticker_pnls), 6) if ticker_pnls else 0.0,
+                )
+            )
+
+        by_ticker.sort(key=lambda item: item.total_realized_pnl, reverse=True)
+        return PortfolioPerformance(
+            generated_at=generated_at or datetime.now(timezone.utc),
+            trade_count=len(trades),
+            sell_trade_count=len(sell_trades),
+            closed_trade_count=sum(1 for trade in sell_trades if trade.holding_status_after == HoldingStatus.CLOSED),
+            total_realized_pnl=round(sum(sell_pnls), 6),
+            win_count=len(wins),
+            loss_count=len(losses),
+            flat_count=flat_count,
+            win_rate=round(len(wins) / len(sell_pnls), 6) if sell_pnls else 0.0,
+            avg_win=round(gross_profit / len(wins), 6) if wins else 0.0,
+            avg_loss=round(sum(losses) / len(losses), 6) if losses else 0.0,
+            profit_factor=round(gross_profit / gross_loss, 6) if gross_loss > 0 else None,
+            expectancy_per_sell=round(sum(sell_pnls) / len(sell_pnls), 6) if sell_pnls else 0.0,
+            best_trade_pnl=round(max(sell_pnls), 6) if sell_pnls else 0.0,
+            worst_trade_pnl=round(min(sell_pnls), 6) if sell_pnls else 0.0,
+            by_ticker=by_ticker,
+        )
+
+    def get_portfolio_performance(self, limit: int = 10_000) -> PortfolioPerformance:
+        return self._performance_from_trades(
+            trades=self.list_trade_ledger(limit=limit),
+            generated_at=datetime.now(timezone.utc),
+        )
+
+    @staticmethod
+    def _profit_factor(pnls: list[float]) -> float | None:
+        gross_profit = sum(pnl for pnl in pnls if pnl > 0)
+        gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
+        return round(gross_profit / gross_loss, 6) if gross_loss > 0 else None
+
+    def _get_recommendation(self, recommendation_id: str) -> Recommendation | None:
+        cached = self.recommendations_by_id.get(recommendation_id)
+        if cached is not None:
+            return cached
+        return self.recommendation_repo.get(recommendation_id)
+
+    def get_recommendation_attribution(self, limit: int = 10_000) -> RecommendationAttributionReport:
+        trades = self.list_trade_ledger(limit=limit)
+        sell_trades = [trade for trade in trades if trade.side == TradeSide.SELL]
+        attributed = [trade for trade in sell_trades if trade.source_recommendation_id]
+        unattributed_count = len(sell_trades) - len(attributed)
+
+        grouped: dict[str, list[TradeLedgerEntry]] = {}
+        for trade in attributed:
+            grouped.setdefault(str(trade.source_recommendation_id), []).append(trade)
+
+        by_recommendation: list[RecommendationAttribution] = []
+        pnls_by_recommendation: dict[str, list[float]] = {}
+        for recommendation_id, rec_trades in grouped.items():
+            recommendation = self._get_recommendation(recommendation_id)
+            pnls = [trade.realized_pnl_delta for trade in rec_trades]
+            pnls_by_recommendation[recommendation_id] = pnls
+            wins = [pnl for pnl in pnls if pnl > 0]
+            losses = [pnl for pnl in pnls if pnl < 0]
+            first_sell_at = min((trade.executed_at for trade in rec_trades), default=None)
+            last_sell_at = max((trade.executed_at for trade in rec_trades), default=None)
+            by_recommendation.append(
+                RecommendationAttribution(
+                    recommendation_id=recommendation_id,
+                    ticker=recommendation.ticker if recommendation is not None else rec_trades[0].ticker,
+                    source_snapshot_id=recommendation.source_snapshot_id if recommendation is not None else None,
+                    generated_at=recommendation.generated_at if recommendation is not None else None,
+                    confidence=round(recommendation.confidence, 6) if recommendation is not None else None,
+                    composite=(
+                        round(float(recommendation.score_vector.get("composite", 0.0)), 6)
+                        if recommendation is not None
+                        else None
+                    ),
+                    sell_trade_count=len(rec_trades),
+                    closed_trade_count=sum(
+                        1 for trade in rec_trades if trade.holding_status_after == HoldingStatus.CLOSED
+                    ),
+                    total_realized_pnl=round(sum(pnls), 6),
+                    win_count=len(wins),
+                    loss_count=len(losses),
+                    flat_count=sum(1 for pnl in pnls if pnl == 0),
+                    win_rate=round(len(wins) / len(pnls), 6) if pnls else 0.0,
+                    profit_factor=self._profit_factor(pnls),
+                    expectancy_per_sell=round(sum(pnls) / len(pnls), 6) if pnls else 0.0,
+                    first_sell_at=first_sell_at,
+                    last_sell_at=last_sell_at,
+                )
+            )
+
+        by_recommendation.sort(key=lambda item: item.total_realized_pnl, reverse=True)
+
+        snapshot_groups: dict[str, list[RecommendationAttribution]] = {}
+        for item in by_recommendation:
+            if item.source_snapshot_id:
+                snapshot_groups.setdefault(item.source_snapshot_id, []).append(item)
+
+        by_snapshot: list[SnapshotAttribution] = []
+        for source_snapshot_id, items in snapshot_groups.items():
+            pnls = [
+                pnl
+                for item in items
+                for pnl in pnls_by_recommendation.get(item.recommendation_id, [])
+            ]
+            wins = [pnl for pnl in pnls if pnl > 0]
+            losses = [pnl for pnl in pnls if pnl < 0]
+            sell_count = sum(item.sell_trade_count for item in items)
+            by_snapshot.append(
+                SnapshotAttribution(
+                    source_snapshot_id=source_snapshot_id,
+                    recommendation_count=len(items),
+                    sell_trade_count=sell_count,
+                    total_realized_pnl=round(sum(pnls), 6),
+                    win_count=len(wins),
+                    loss_count=len(losses),
+                    win_rate=round(len(wins) / len(pnls), 6) if pnls else 0.0,
+                    profit_factor=self._profit_factor(pnls),
+                )
+            )
+
+        by_snapshot.sort(key=lambda item: item.total_realized_pnl, reverse=True)
+        return RecommendationAttributionReport(
+            generated_at=datetime.now(timezone.utc),
+            recommendation_count=len(by_recommendation),
+            attributed_sell_trade_count=len(attributed),
+            unattributed_sell_trade_count=unattributed_count,
+            total_realized_pnl=round(sum(item.total_realized_pnl for item in by_recommendation), 6),
+            by_recommendation=by_recommendation,
+            by_snapshot=by_snapshot,
+        )
 
     def close_holding(self, ticker: str) -> HoldingWatch | None:
         ticker_upper = ticker.upper()

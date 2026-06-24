@@ -32,6 +32,11 @@ curl http://localhost:8000/metrics
 curl http://localhost:8000/execution/kill-switch
 curl http://localhost:8000/events/pending
 curl http://localhost:8000/portfolio/holdings
+curl http://localhost:8000/portfolio/holdings?status=closed
+curl http://localhost:8000/portfolio/summary
+curl http://localhost:8000/portfolio/performance
+curl http://localhost:8000/portfolio/recommendation-attribution
+curl http://localhost:8000/portfolio/trades
 curl http://localhost:8000/portfolio/alerts
 ```
 
@@ -65,6 +70,20 @@ curl -X POST http://localhost:8000/portfolio/holdings/MSFT/sell \
 ```
 
 如果省略 `qty`，系统会按当前剩余数量全部卖出并关闭持仓。
+
+复盘组合状态与交易流水：
+
+```bash
+curl http://localhost:8000/portfolio/summary
+curl http://localhost:8000/portfolio/performance
+curl http://localhost:8000/portfolio/recommendation-attribution
+curl "http://localhost:8000/portfolio/trades?limit=20"
+curl "http://localhost:8000/portfolio/trades?ticker=MSFT&side=sell"
+```
+
+`/portfolio/recommendation-attribution` shows realized P&L grouped by both
+`recommendation_id` and `source_snapshot_id`, which is the daily check for whether
+a replayable market/news snapshot produced useful recommendations after exits.
 
 ## Approval Gate
 

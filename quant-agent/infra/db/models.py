@@ -135,6 +135,22 @@ class HoldingWatchRecord(Base):
     last_sell_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class TradeLedgerRecord(Base):
+    __tablename__ = "trade_ledger"
+
+    trade_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    side: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    qty: Mapped[float] = mapped_column(Float, nullable=False)
+    price: Mapped[float] = mapped_column(Float, nullable=False)
+    executed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    realized_pnl_delta: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    holding_status_after: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ApprovalDecisionRecord(Base):
     __tablename__ = "approval_decisions"
 

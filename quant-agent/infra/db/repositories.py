@@ -25,6 +25,8 @@ from domain.entities.models import (
     RiskLevel,
     SecurityMetadata,
     SignalSnapshot,
+    TradeLedgerEntry,
+    TradeSide,
 )
 from infra.db.models import (
     ApprovalDecisionRecord,
@@ -40,6 +42,7 @@ from infra.db.models import (
     SnapshotMarketBarRecord,
     SnapshotSecurityRecord,
     SourceSnapshotRecord,
+    TradeLedgerRecord,
 )
 from infra.db.session import SessionLocal
 
@@ -313,8 +316,14 @@ class HoldingWatchRepository:
         return self._to_domain(record) if record else None
 
     def list_open(self) -> list[HoldingWatch]:
+        return self.list_by_status(HoldingStatus.OPEN)
+
+    def list_by_status(self, status: HoldingStatus | None = None, limit: int = 100) -> list[HoldingWatch]:
         with SessionLocal() as session:
-            stmt = select(HoldingWatchRecord).where(HoldingWatchRecord.status == HoldingStatus.OPEN.value)
+            stmt = select(HoldingWatchRecord).order_by(HoldingWatchRecord.updated_at.desc())
+            if status is not None:
+                stmt = stmt.where(HoldingWatchRecord.status == status.value)
+            stmt = stmt.limit(limit)
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
@@ -350,6 +359,58 @@ class HoldingWatchRepository:
             closed_at=record.closed_at,
             last_sell_price=record.last_sell_price,
             last_sell_reason=record.last_sell_reason,
+        )
+
+
+class TradeLedgerRepository:
+    def add(self, entry: TradeLedgerEntry) -> None:
+        with SessionLocal() as session:
+            session.merge(
+                TradeLedgerRecord(
+                    trade_id=entry.trade_id,
+                    ticker=entry.ticker,
+                    side=entry.side.value,
+                    qty=entry.qty,
+                    price=entry.price,
+                    executed_at=entry.executed_at,
+                    source_recommendation_id=entry.source_recommendation_id,
+                    reason=entry.reason,
+                    realized_pnl_delta=entry.realized_pnl_delta,
+                    holding_status_after=entry.holding_status_after.value if entry.holding_status_after else None,
+                    created_at=entry.created_at,
+                )
+            )
+            session.commit()
+
+    def list_recent(
+        self,
+        limit: int = 100,
+        ticker: str | None = None,
+        side: TradeSide | None = None,
+    ) -> list[TradeLedgerEntry]:
+        with SessionLocal() as session:
+            stmt = select(TradeLedgerRecord).order_by(TradeLedgerRecord.executed_at.desc()).limit(limit)
+            if ticker is not None:
+                stmt = stmt.where(TradeLedgerRecord.ticker == ticker.upper())
+            if side is not None:
+                stmt = stmt.where(TradeLedgerRecord.side == side.value)
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    @staticmethod
+    def _to_domain(record: TradeLedgerRecord) -> TradeLedgerEntry:
+        return TradeLedgerEntry(
+            trade_id=record.trade_id,
+            ticker=record.ticker,
+            side=TradeSide(record.side),
+            qty=record.qty,
+            price=record.price,
+            executed_at=record.executed_at,
+            source_recommendation_id=record.source_recommendation_id,
+            reason=record.reason,
+            realized_pnl_delta=float(record.realized_pnl_delta or 0.0),
+            holding_status_after=HoldingStatus(record.holding_status_after) if record.holding_status_after else None,
+            created_at=record.created_at,
         )
 
 

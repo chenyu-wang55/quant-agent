@@ -383,6 +383,11 @@ class HoldingStatus(str, Enum):
     CLOSED = "closed"
 
 
+class TradeSide(str, Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+
 class ManualBuyRequest(BaseModel):
     ticker: str
     qty: float
@@ -428,6 +433,111 @@ class SellExecutionResult(BaseModel):
     total_realized_pnl: float
     remaining_qty: float
     message_cn: str
+
+
+class TradeLedgerEntry(BaseModel):
+    trade_id: str
+    ticker: str
+    side: TradeSide
+    qty: float
+    price: float
+    executed_at: datetime
+    source_recommendation_id: str | None = None
+    reason: str | None = None
+    realized_pnl_delta: float = 0.0
+    holding_status_after: HoldingStatus | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class PortfolioSummary(BaseModel):
+    open_holding_count: int
+    closed_holding_count: int
+    trade_count: int
+    buy_trade_count: int
+    sell_trade_count: int
+    open_cost_basis: float
+    open_market_value: float
+    open_unrealized_pnl: float
+    open_risk_to_stop: float
+    total_realized_pnl: float
+    last_trade_at: datetime | None = None
+    last_closed_at: datetime | None = None
+
+
+class TickerPerformance(BaseModel):
+    ticker: str
+    trade_count: int
+    sell_trade_count: int
+    total_realized_pnl: float
+    win_count: int
+    loss_count: int
+    flat_count: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    profit_factor: float | None = None
+    best_trade_pnl: float
+    worst_trade_pnl: float
+
+
+class PortfolioPerformance(BaseModel):
+    generated_at: datetime = Field(default_factory=utc_now)
+    trade_count: int
+    sell_trade_count: int
+    closed_trade_count: int
+    total_realized_pnl: float
+    win_count: int
+    loss_count: int
+    flat_count: int
+    win_rate: float
+    avg_win: float
+    avg_loss: float
+    profit_factor: float | None = None
+    expectancy_per_sell: float
+    best_trade_pnl: float
+    worst_trade_pnl: float
+    by_ticker: list[TickerPerformance] = Field(default_factory=list)
+
+
+class RecommendationAttribution(BaseModel):
+    recommendation_id: str
+    ticker: str
+    source_snapshot_id: str | None = None
+    generated_at: datetime | None = None
+    confidence: float | None = None
+    composite: float | None = None
+    sell_trade_count: int
+    closed_trade_count: int
+    total_realized_pnl: float
+    win_count: int
+    loss_count: int
+    flat_count: int
+    win_rate: float
+    profit_factor: float | None = None
+    expectancy_per_sell: float
+    first_sell_at: datetime | None = None
+    last_sell_at: datetime | None = None
+
+
+class SnapshotAttribution(BaseModel):
+    source_snapshot_id: str
+    recommendation_count: int
+    sell_trade_count: int
+    total_realized_pnl: float
+    win_count: int
+    loss_count: int
+    win_rate: float
+    profit_factor: float | None = None
+
+
+class RecommendationAttributionReport(BaseModel):
+    generated_at: datetime = Field(default_factory=utc_now)
+    recommendation_count: int
+    attributed_sell_trade_count: int
+    unattributed_sell_trade_count: int
+    total_realized_pnl: float
+    by_recommendation: list[RecommendationAttribution] = Field(default_factory=list)
+    by_snapshot: list[SnapshotAttribution] = Field(default_factory=list)
 
 
 class SellAlertLevel(str, Enum):

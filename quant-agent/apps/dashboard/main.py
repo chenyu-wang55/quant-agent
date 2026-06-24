@@ -56,7 +56,8 @@ def _select_recommendations_for_dashboard(
             if _is_price_plan_reasonable(candidate, price_lookup.get(ticker)):
                 replacement = candidate
                 break
-        chosen_by_ticker[ticker] = replacement or rec
+        if replacement is not None:
+            chosen_by_ticker[ticker] = replacement
 
     return list(chosen_by_ticker.values())
 
@@ -114,6 +115,10 @@ def dashboard_realtime_data(
     alerts = state.monitor_sell_alerts() if refresh_alerts else state.recent_sell_alerts
 
     now = datetime.now(timezone.utc)
+    portfolio_summary = state.get_portfolio_summary(as_of=now)
+    portfolio_performance = state.get_portfolio_performance()
+    recommendation_attribution = state.get_recommendation_attribution()
+    recent_trades = state.list_trade_ledger(limit=10)
     price_lookup = _build_price_lookup(state=state, recommendations=raw_recommendations, as_of=now)
     recommendations = _select_recommendations_for_dashboard(raw_recommendations, price_lookup)
     return {
@@ -131,6 +136,9 @@ def dashboard_realtime_data(
             "sell_alert_count": len(alerts),
             "pending_event_count": state.event_queue.size(),
         },
+        "portfolio_summary": portfolio_summary.model_dump(mode="json"),
+        "portfolio_performance": portfolio_performance.model_dump(mode="json"),
+        "recommendation_attribution": recommendation_attribution.model_dump(mode="json"),
         "recommendations": [_rec_payload(state, rec, price_lookup.get(rec.ticker.upper())) for rec in recommendations],
         "holdings": [
             {
@@ -151,6 +159,7 @@ def dashboard_realtime_data(
             }
             for holding in holdings
         ],
+        "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
         "alerts": [
             {
                 "ticker": alert.ticker,
@@ -555,6 +564,12 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">推荐数量</div><div class="v" id="recCount">0</div></div>
       <div class="stat"><div class="k">持仓监控</div><div class="v" id="holdingCount">0</div></div>
       <div class="stat"><div class="k">卖出提醒</div><div class="v" id="alertCount">0</div></div>
+      <div class="stat"><div class="k">已实现盈亏</div><div class="v" id="realizedPnl">0.00</div></div>
+      <div class="stat"><div class="k">开放风险</div><div class="v" id="openRisk">0.00</div></div>
+      <div class="stat"><div class="k">交易笔数</div><div class="v" id="tradeCount">0</div></div>
+      <div class="stat"><div class="k">胜率</div><div class="v" id="winRate">0%</div></div>
+      <div class="stat"><div class="k">Profit Factor</div><div class="v" id="profitFactor">-</div></div>
+      <div class="stat"><div class="k">归因推荐</div><div class="v" id="attributionCount">0</div></div>
       <div class="stat"><div class="k">Kill Switch</div><div class="v" id="killSwitch">-</div></div>
     </div>
 
@@ -598,6 +613,43 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>股票</th><th>数量</th><th>成本</th><th>止损</th><th>止盈1</th><th>止盈2</th><th>已实现盈亏</th><th>最近卖出</th><th>操作</th></tr></thead>
         <tbody id="holdingBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>交易流水</h3>
+        <span class="small">买入、卖出和已实现盈亏审计轨迹</span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>股票</th><th>方向</th><th>数量</th><th>价格</th><th>已实现盈亏</th><th>原因</th></tr></thead>
+        <tbody id="tradeBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>交易复盘</h3>
+        <span class="small">按股票归因的已实现盈亏、胜率与盈亏质量</span>
+      </div>
+      <table>
+        <thead><tr><th>股票</th><th>卖出笔数</th><th>已实现盈亏</th><th>胜率</th><th>均赢</th><th>均亏</th><th>Profit Factor</th></tr></thead>
+        <tbody id="performanceBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>推荐归因</h3>
+        <span class="small">把卖出结果回挂到 recommendation_id 和 source_snapshot_id</span>
+      </div>
+      <table>
+        <thead><tr><th>股票</th><th>推荐</th><th>Snapshot</th><th>卖出笔数</th><th>已实现盈亏</th><th>胜率</th><th>Profit Factor</th><th>推荐分</th></tr></thead>
+        <tbody id="attributionBody"></tbody>
+      </table>
+      <table style="margin-top:12px;">
+        <thead><tr><th>Snapshot</th><th>推荐数</th><th>卖出笔数</th><th>已实现盈亏</th><th>胜率</th><th>Profit Factor</th></tr></thead>
+        <tbody id="snapshotAttributionBody"></tbody>
       </table>
     </div>
 
@@ -912,6 +964,100 @@ def dashboard_home() -> str:
       `).join("");
     }
 
+    function renderTrades(items) {
+      const body = document.getElementById("tradeBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="small">暂无交易流水。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((t) => `
+        <tr>
+          <td class="small">${fmtTime(t.executed_at)}</td>
+          <td>${esc(t.ticker)}</td>
+          <td>${esc(t.side)}</td>
+          <td>${fmtNum(t.qty, 2)}</td>
+          <td>${fmtNum(t.price, 2)}</td>
+          <td>${fmtNum(t.realized_pnl_delta, 2)}</td>
+          <td>${esc(t.reason || '')}</td>
+        </tr>
+      `).join("");
+    }
+
+    function fmtPct(v) {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return '-';
+      return `${(n * 100).toFixed(1)}%`;
+    }
+
+    function fmtNullableNum(v, digits) {
+      if (v === null || v === undefined) return '-';
+      return fmtNum(v, digits);
+    }
+
+    function renderPerformance(perf) {
+      const body = document.getElementById("performanceBody");
+      const rows = perf?.by_ticker || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7" class="small">暂无可复盘的已实现交易。</td></tr>';
+        return;
+      }
+      body.innerHTML = rows.map((row) => `
+        <tr>
+          <td>${esc(row.ticker)}</td>
+          <td>${esc(row.sell_trade_count)}</td>
+          <td>${fmtNum(row.total_realized_pnl, 2)}</td>
+          <td>${fmtPct(row.win_rate)}</td>
+          <td>${fmtNum(row.avg_win, 2)}</td>
+          <td>${fmtNum(row.avg_loss, 2)}</td>
+          <td>${fmtNullableNum(row.profit_factor, 2)}</td>
+        </tr>
+      `).join("");
+    }
+
+    function shortId(value, size = 10) {
+      const text = String(value || '');
+      return text.length > size ? `${text.slice(0, size)}...` : text || '-';
+    }
+
+    function renderAttribution(report) {
+      const recBody = document.getElementById("attributionBody");
+      const snapshotBody = document.getElementById("snapshotAttributionBody");
+      const recRows = report?.by_recommendation || [];
+      const snapshotRows = report?.by_snapshot || [];
+
+      if (!recRows.length) {
+        recBody.innerHTML = '<tr><td colspan="8" class="small">暂无可归因的推荐卖出结果。</td></tr>';
+      } else {
+        recBody.innerHTML = recRows.map((row) => `
+          <tr>
+            <td>${esc(row.ticker)}</td>
+            <td class="mono" title="${esc(row.recommendation_id)}">${esc(shortId(row.recommendation_id, 12))}</td>
+            <td class="mono" title="${esc(row.source_snapshot_id || '')}">${esc(shortId(row.source_snapshot_id, 12))}</td>
+            <td>${esc(row.sell_trade_count)}</td>
+            <td>${fmtNum(row.total_realized_pnl, 2)}</td>
+            <td>${fmtPct(row.win_rate)}</td>
+            <td>${fmtNullableNum(row.profit_factor, 2)}</td>
+            <td>conf=${fmtNullableNum(row.confidence, 2)}<br/>comp=${fmtNullableNum(row.composite, 3)}</td>
+          </tr>
+        `).join("");
+      }
+
+      if (!snapshotRows.length) {
+        snapshotBody.innerHTML = '<tr><td colspan="6" class="small">暂无 snapshot 级归因。</td></tr>';
+        return;
+      }
+      snapshotBody.innerHTML = snapshotRows.map((row) => `
+        <tr>
+          <td class="mono" title="${esc(row.source_snapshot_id)}">${esc(shortId(row.source_snapshot_id, 18))}</td>
+          <td>${esc(row.recommendation_count)}</td>
+          <td>${esc(row.sell_trade_count)}</td>
+          <td>${fmtNum(row.total_realized_pnl, 2)}</td>
+          <td>${fmtPct(row.win_rate)}</td>
+          <td>${fmtNullableNum(row.profit_factor, 2)}</td>
+        </tr>
+      `).join("");
+    }
+
     function dashboardDataUrl() {
       const u = new URL('/dashboard/realtime-data', window.location.origin);
       u.searchParams.set('refresh_alerts', 'true');
@@ -929,6 +1075,14 @@ def dashboard_home() -> str:
       document.getElementById('recCount').textContent = String(data.summary?.recommendation_count ?? 0);
       document.getElementById('holdingCount').textContent = String(data.summary?.open_holding_count ?? 0);
       document.getElementById('alertCount').textContent = String(data.summary?.sell_alert_count ?? 0);
+      document.getElementById('realizedPnl').textContent = fmtNum(data.portfolio_summary?.total_realized_pnl, 2);
+      document.getElementById('openRisk').textContent = fmtNum(data.portfolio_summary?.open_risk_to_stop, 2);
+      document.getElementById('tradeCount').textContent = String(data.portfolio_summary?.trade_count ?? 0);
+      document.getElementById('winRate').textContent = fmtPct(data.portfolio_performance?.win_rate);
+      document.getElementById('profitFactor').textContent = fmtNullableNum(data.portfolio_performance?.profit_factor, 2);
+      document.getElementById('attributionCount').textContent = String(
+        data.recommendation_attribution?.recommendation_count ?? 0
+      );
       document.getElementById('killSwitch').innerHTML = data.kill_switch?.enabled
         ? '<span class="badge b-danger">ON</span>'
         : '<span class="badge b-ok">OFF</span>';
@@ -940,6 +1094,9 @@ def dashboard_home() -> str:
 
       renderRecommendations(data.recommendations || []);
       renderHoldings(data.holdings || []);
+      renderTrades(data.recent_trades || []);
+      renderPerformance(data.portfolio_performance || {});
+      renderAttribution(data.recommendation_attribution || {});
       renderAlerts(data.alerts || []);
     }
 
