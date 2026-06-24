@@ -119,6 +119,7 @@ def dashboard_realtime_data(
     portfolio_summary = state.get_portfolio_summary(as_of=now)
     portfolio_performance = state.get_portfolio_performance()
     recommendation_attribution = state.get_recommendation_attribution()
+    strategy_tuning = state.get_strategy_tuning_report(attribution=recommendation_attribution)
     recent_trades = state.list_trade_ledger(limit=10)
     recent_paper_orders = state.list_paper_orders(limit=10)
     paper_order_count = len(state.list_paper_orders(limit=10_000))
@@ -144,6 +145,7 @@ def dashboard_realtime_data(
             "paper_order_count": paper_order_count,
             "source_snapshot_count": source_snapshot_count,
             "strategy_config_count": strategy_config_count,
+            "strategy_tuning_count": strategy_tuning.recommendation_count,
             "pending_event_count": state.event_queue.size(),
         },
         "portfolio_summary": portfolio_summary.model_dump(mode="json"),
@@ -172,6 +174,7 @@ def dashboard_realtime_data(
         "recent_paper_orders": [order.model_dump(mode="json") for order in recent_paper_orders],
         "source_snapshots": [snapshot.model_dump(mode="json") for snapshot in recent_source_snapshots],
         "strategy_configs": [config.model_dump(mode="json") for config in recent_strategy_configs],
+        "strategy_tuning": strategy_tuning.model_dump(mode="json"),
         "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
         "alerts": [
             {
@@ -586,6 +589,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">胜率</div><div class="v" id="winRate">0%</div></div>
       <div class="stat"><div class="k">Profit Factor</div><div class="v" id="profitFactor">-</div></div>
       <div class="stat"><div class="k">归因推荐</div><div class="v" id="attributionCount">0</div></div>
+      <div class="stat"><div class="k">调参建议</div><div class="v" id="strategyTuningCount">0</div></div>
       <div class="stat"><div class="k">Kill Switch</div><div class="v" id="killSwitch">-</div></div>
     </div>
 
@@ -631,6 +635,17 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>Strategy</th><th>Universe</th><th>Pattern</th><th>Min Conf</th><th>Signal Weights</th><th>Top N</th><th>Created</th></tr></thead>
         <tbody id="strategyConfigBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>调参建议</h3>
+        <span class="small">基于 strategy 级卖出归因生成的保留、收紧或放宽建议</span>
+      </div>
+      <table>
+        <thead><tr><th>Strategy</th><th>动作</th><th>优先级</th><th>评分</th><th>样本</th><th>当前参数</th><th>建议改动</th><th>理由</th></tr></thead>
+        <tbody id="strategyTuningBody"></tbody>
       </table>
     </div>
 
@@ -730,6 +745,7 @@ def dashboard_home() -> str:
     let currentAlerts = [];
     let currentSnapshots = [];
     let currentStrategyConfigs = [];
+    let currentStrategyTuning = [];
 
     function esc(v) {
       return String(v ?? "")
@@ -937,6 +953,72 @@ def dashboard_home() -> str:
           <td class="small">${fmtTime(config.created_at)}</td>
         </tr>
       `).join("");
+    }
+
+    function tuningActionBadge(action) {
+      const labels = {
+        collect_more_data: '收集样本',
+        keep: '保留',
+        tighten: '收紧',
+        relax: '放宽',
+        review: '复盘',
+      };
+      const cls = {
+        collect_more_data: 'b-neutral',
+        keep: 'b-ok',
+        tighten: 'b-danger',
+        relax: 'b-buy',
+        review: 'b-warn',
+      }[action] || 'b-neutral';
+      return `<span class="badge ${cls}">${esc(labels[action] || action || '-')}</span>`;
+    }
+
+    function parameterSummary(params) {
+      if (!params || Object.keys(params).length === 0) return '<span class="small">无参数快照</span>';
+      const stopRange = Array.isArray(params.stop_atr_range)
+        ? params.stop_atr_range.map((x) => fmtNullableNum(x, 2)).join('-')
+        : '-';
+      return [
+        `conf ${fmtNullableNum(params.min_confidence, 2)}`,
+        `gap ${fmtNullableNum(params.max_entry_gap_pct, 2)}`,
+        `news ${fmtNullableNum(params.event_news_weight, 2)}`,
+        `stop ${stopRange}`,
+        `top ${esc(params.top_n ?? '-')}`,
+      ].join('<br/>');
+    }
+
+    function tuningChangeText(changes) {
+      const entries = Object.entries(changes || {});
+      if (!entries.length) return '<span class="small">保持当前参数</span>';
+      return entries.map(([key, change]) => {
+        const current = Array.isArray(change?.current) ? change.current.join(' / ') : change?.current;
+        const suggested = Array.isArray(change?.suggested) ? change.suggested.join(' / ') : change?.suggested;
+        return `<div><span class="mono">${esc(key)}</span><br/><span class="small">${esc(current)} → ${esc(suggested)}</span></div>`;
+      }).join('');
+    }
+
+    function renderStrategyTuning(report) {
+      currentStrategyTuning = report?.items || [];
+      const body = document.getElementById("strategyTuningBody");
+      if (!currentStrategyTuning.length) {
+        body.innerHTML = '<tr><td colspan="8" class="small">暂无调参建议。</td></tr>';
+        return;
+      }
+      body.innerHTML = currentStrategyTuning.map((item) => {
+        const metrics = item.metric_snapshot || {};
+        return `
+          <tr>
+            <td class="mono" title="${esc(item.strategy_config_id)}">${esc(shortId(item.strategy_config_id, 18))}</td>
+            <td>${tuningActionBadge(item.action)}</td>
+            <td>${esc(item.priority ?? '-')}</td>
+            <td>${snapshotScoreCell(metrics)}</td>
+            <td>rec ${esc(metrics.recommendation_count ?? 0)}<br/>sell ${esc(metrics.sell_trade_count ?? 0)}<br/>win ${fmtPct(metrics.win_rate)}</td>
+            <td>${parameterSummary(item.current_parameters)}</td>
+            <td>${tuningChangeText(item.recommended_changes)}</td>
+            <td>${esc(item.rationale_cn || '-')}</td>
+          </tr>
+        `;
+      }).join("");
     }
 
     function replayPayload(objective) {
@@ -1333,6 +1415,9 @@ def dashboard_home() -> str:
       document.getElementById('attributionCount').textContent = String(
         data.recommendation_attribution?.recommendation_count ?? 0
       );
+      document.getElementById('strategyTuningCount').textContent = String(
+        data.strategy_tuning?.recommendation_count ?? 0
+      );
       document.getElementById('killSwitch').innerHTML = data.kill_switch?.enabled
         ? '<span class="badge b-danger">ON</span>'
         : '<span class="badge b-ok">OFF</span>';
@@ -1348,6 +1433,7 @@ def dashboard_home() -> str:
         data.recommendation_attribution?.by_snapshot || []
       );
       renderStrategyConfigs(data.strategy_configs || []);
+      renderStrategyTuning(data.strategy_tuning || {});
       renderHoldings(data.holdings || []);
       renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);

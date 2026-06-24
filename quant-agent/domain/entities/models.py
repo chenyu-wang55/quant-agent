@@ -654,6 +654,31 @@ class StrategyConfigAttribution(BaseModel):
     last_sell_at: datetime | None = None
 
 
+class StrategyTuningAction(str, Enum):
+    COLLECT_MORE_DATA = "collect_more_data"
+    KEEP = "keep"
+    TIGHTEN = "tighten"
+    RELAX = "relax"
+    REVIEW = "review"
+
+
+class StrategyTuningRecommendation(BaseModel):
+    strategy_config_id: str
+    action: StrategyTuningAction
+    priority: int = Field(ge=0, le=100)
+    rationale_cn: str
+    metric_snapshot: dict[str, Any] = Field(default_factory=dict)
+    current_parameters: dict[str, Any] = Field(default_factory=dict)
+    recommended_changes: dict[str, Any] = Field(default_factory=dict)
+    generated_at: datetime = Field(default_factory=utc_now)
+
+
+class StrategyTuningReport(BaseModel):
+    generated_at: datetime = Field(default_factory=utc_now)
+    recommendation_count: int
+    items: list[StrategyTuningRecommendation] = Field(default_factory=list)
+
+
 class RecommendationAttributionReport(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
     recommendation_count: int

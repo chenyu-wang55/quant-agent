@@ -30,6 +30,7 @@ curl http://localhost:8000/source-snapshots
 curl http://localhost:8000/source-snapshots/<source_snapshot_id>
 curl "http://localhost:8000/source-snapshots/<source_snapshot_id>/bars/MSFT?limit=5"
 curl http://localhost:8000/strategy-configs
+curl http://localhost:8000/strategy-configs/tuning-report
 curl http://localhost:8000/strategy-configs/<strategy_config_id>
 curl http://localhost:8000/dashboard
 curl http://localhost:8000/dashboard/realtime-data
@@ -116,6 +117,10 @@ kept, relaxed, or tightened before the next research batch.
 Use `by_strategy_config` in the same response to compare parameter versions across
 many snapshots; this is the check for whether a risk policy, signal weight set, or
 price-plan version deserves to remain the default.
+Then use `/strategy-configs/tuning-report` as the operator-facing summary. It converts
+strategy attribution into an action (`collect_more_data`, `keep`, `tighten`, `relax`,
+or `review`) and includes concrete suggested parameter deltas when the action is to
+tighten or relax.
 
 按当前卖出提醒执行建议动作：
 

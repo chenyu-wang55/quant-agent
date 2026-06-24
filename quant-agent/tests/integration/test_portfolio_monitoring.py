@@ -222,6 +222,29 @@ def test_manual_buy_record_and_sell_alerts() -> None:
         "negative",
     }
 
+    tuning_response = client.get("/strategy-configs/tuning-report", headers=AUTH_HEADERS)
+    assert tuning_response.status_code == 200
+    tuning_report = tuning_response.json()
+    tuning_items = [
+        item
+        for item in tuning_report["items"]
+        if item["strategy_config_id"] == recommendation["strategy_config_id"]
+    ]
+    assert tuning_items
+    tuning_item = tuning_items[0]
+    assert tuning_item["action"] in {
+        "collect_more_data",
+        "keep",
+        "tighten",
+        "relax",
+        "review",
+    }
+    assert tuning_item["metric_snapshot"]["sell_trade_count"] >= 2
+    assert tuning_item["current_parameters"]["min_confidence"] == 0.0
+    assert tuning_item["rationale_cn"]
+    if tuning_item["action"] == "tighten":
+        assert "risk_policy.min_confidence" in tuning_item["recommended_changes"]
+
 
 def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     state = get_app_state()

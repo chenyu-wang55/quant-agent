@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.dependencies import AppState, get_app_state
-from domain.entities.models import StrategyConfigSnapshot
+from domain.entities.models import StrategyConfigSnapshot, StrategyTuningReport
 
 
 router = APIRouter(tags=["strategy-configs"])
@@ -15,6 +15,15 @@ def list_strategy_configs(
     state: AppState = Depends(get_app_state),
 ) -> list[StrategyConfigSnapshot]:
     return state.list_strategy_configs(limit=limit)
+
+
+@router.get("/strategy-configs/tuning-report", response_model=StrategyTuningReport)
+def get_strategy_tuning_report(
+    limit: int = Query(default=10_000, ge=1, le=50_000),
+    strategy_limit: int = Query(default=100, ge=1, le=500),
+    state: AppState = Depends(get_app_state),
+) -> StrategyTuningReport:
+    return state.get_strategy_tuning_report(limit=limit, strategy_limit=strategy_limit)
 
 
 @router.get("/strategy-configs/{strategy_config_id}", response_model=StrategyConfigSnapshot)

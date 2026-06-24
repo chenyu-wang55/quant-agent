@@ -82,11 +82,16 @@ can be compared across many market/news snapshots.
 
 Endpoints:
 - `GET /strategy-configs`
+- `GET /strategy-configs/tuning-report`
 - `GET /strategy-configs/{strategy_config_id}`
 
 Recommendations carry both `source_snapshot_id` and `strategy_config_id`; attribution
 reports include `by_strategy_config` so operators can compare which parameter versions
 produce better realized exits.
+`GET /strategy-configs/tuning-report` turns that attribution into conservative
+parameter actions: collect more data, keep, tighten, relax, or review. Tighten
+recommendations include concrete suggested deltas for confidence thresholds, entry-gap
+limits, ATR stop ranges, and signal weights.
 
 ## Database and Migrations
 
@@ -120,6 +125,7 @@ Endpoints:
 - `GET /source-snapshots`
 - `POST /source-snapshots/{source_snapshot_id}/replay`
 - `GET /strategy-configs`
+- `GET /strategy-configs/tuning-report`
 - `GET /paper-orders`
 - `POST /paper-orders`
 - `GET /execution/kill-switch`

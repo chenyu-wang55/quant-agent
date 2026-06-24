@@ -60,6 +60,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "交易控制" in dashboard_home.text
     assert "行情快照" in dashboard_home.text
     assert "策略版本" in dashboard_home.text
+    assert "调参建议" in dashboard_home.text
     assert "交易流水" in dashboard_home.text
     assert "纸单记录" in dashboard_home.text
     assert "交易复盘" in dashboard_home.text
@@ -70,6 +71,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "renderAttribution" in dashboard_home.text
     assert "renderSourceSnapshots" in dashboard_home.text
     assert "renderStrategyConfigs" in dashboard_home.text
+    assert "renderStrategyTuning" in dashboard_home.text
     assert "snapshotScoreCell" in dashboard_home.text
     assert "performance_score" in dashboard_home.text
     assert "replaySnapshot" in dashboard_home.text
@@ -89,12 +91,15 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "summary" in payload
     assert "source_snapshots" in payload
     assert "strategy_configs" in payload
+    assert "strategy_tuning" in payload
     assert "recent_paper_orders" in payload
     assert "recommendation_attribution" in payload
     assert payload["summary"]["recommendation_count"] >= 1
     assert payload["summary"]["source_snapshot_count"] >= 1
     assert payload["summary"]["strategy_config_count"] >= 1
+    assert payload["summary"]["strategy_tuning_count"] >= 1
     assert payload["strategy_configs"][0]["strategy_config_id"]
+    assert payload["strategy_tuning"]["items"][0]["strategy_config_id"]
 
     rec = state.latest_run.recommendations[0]
     stale_rec = rec.model_copy(

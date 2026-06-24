@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
 import math
+from typing import Any
 from uuid import uuid4
 
 from domain.entities.models import (
@@ -39,6 +40,9 @@ from domain.entities.models import (
     SourceSnapshotSummary,
     StrategyConfigAttribution,
     StrategyConfigSnapshot,
+    StrategyTuningAction,
+    StrategyTuningRecommendation,
+    StrategyTuningReport,
     TickerPerformance,
     TradeLedgerEntry,
     TradeSide,
@@ -702,6 +706,208 @@ class AppState:
         if cached is not None:
             return cached
         return self.recommendation_repo.get(recommendation_id)
+
+    @staticmethod
+    def _bounded_float(value: Any, default: float, lower: float, upper: float) -> float:
+        try:
+            candidate = float(value)
+        except (TypeError, ValueError):
+            candidate = default
+        return round(max(lower, min(upper, candidate)), 6)
+
+    @staticmethod
+    def _strategy_metric_snapshot(row: StrategyConfigAttribution | None) -> dict[str, Any]:
+        if row is None:
+            return {
+                "recommendation_count": 0,
+                "sell_trade_count": 0,
+                "closed_trade_count": 0,
+                "total_realized_pnl": 0.0,
+                "win_rate": 0.0,
+                "profit_factor": None,
+                "expectancy_per_sell": 0.0,
+                "performance_score": 0.0,
+                "quality_grade": "insufficient_history",
+            }
+        return {
+            "recommendation_count": row.recommendation_count,
+            "sell_trade_count": row.sell_trade_count,
+            "closed_trade_count": row.closed_trade_count,
+            "total_realized_pnl": row.total_realized_pnl,
+            "win_rate": row.win_rate,
+            "profit_factor": row.profit_factor,
+            "expectancy_per_sell": row.expectancy_per_sell,
+            "avg_confidence": row.avg_confidence,
+            "avg_composite": row.avg_composite,
+            "performance_score": row.performance_score,
+            "quality_grade": row.quality_grade,
+            "first_sell_at": row.first_sell_at,
+            "last_sell_at": row.last_sell_at,
+        }
+
+    @staticmethod
+    def _strategy_current_parameters(config: StrategyConfigSnapshot | None) -> dict[str, Any]:
+        if config is None:
+            return {}
+        risk_policy = dict(config.risk_policy or {})
+        signal_config = dict(config.signal_config or {})
+        price_plan_config = dict(config.price_plan_config or {})
+        publication = dict(config.publication or {})
+        return {
+            "universe": config.universe,
+            "strategy_pattern": price_plan_config.get("strategy_pattern"),
+            "min_confidence": risk_policy.get("min_confidence"),
+            "max_entry_gap_pct": risk_policy.get("max_entry_gap_pct"),
+            "event_trading_enabled": risk_policy.get("event_trading_enabled"),
+            "event_news_weight": signal_config.get("event_news_weight"),
+            "technical_weight": signal_config.get("technical_weight"),
+            "stop_atr_range": price_plan_config.get("stop_atr_range"),
+            "top_n": publication.get("top_n"),
+        }
+
+    def _tighten_strategy_changes(self, config: StrategyConfigSnapshot | None) -> dict[str, Any]:
+        current = self._strategy_current_parameters(config)
+        min_confidence = self._bounded_float(current.get("min_confidence"), 0.72, 0.0, 0.99)
+        max_entry_gap_pct = self._bounded_float(current.get("max_entry_gap_pct"), 0.30, 0.0, 1.0)
+        event_news_weight = self._bounded_float(current.get("event_news_weight"), 0.25, 0.0, 1.0)
+        technical_weight = self._bounded_float(current.get("technical_weight"), 0.30, 0.0, 1.0)
+        stop_range = current.get("stop_atr_range")
+        if not isinstance(stop_range, list) or len(stop_range) < 2:
+            stop_range = [1.2, 1.8]
+        stop_low = self._bounded_float(stop_range[0], 1.2, 0.1, 10.0)
+        stop_high = self._bounded_float(stop_range[1], 1.8, 0.1, 10.0)
+        return {
+            "risk_policy.min_confidence": {
+                "current": min_confidence,
+                "suggested": round(min(min_confidence + 0.05, 0.95), 2),
+            },
+            "risk_policy.max_entry_gap_pct": {
+                "current": max_entry_gap_pct,
+                "suggested": round(max(max_entry_gap_pct - 0.05, 0.05), 2),
+            },
+            "price_plan_config.stop_atr_range": {
+                "current": [stop_low, stop_high],
+                "suggested": [round(max(stop_low * 0.9, 0.6), 2), round(max(stop_high * 0.9, 0.9), 2)],
+            },
+            "signal_config.event_news_weight": {
+                "current": event_news_weight,
+                "suggested": round(max(event_news_weight - 0.03, 0.10), 2),
+            },
+            "signal_config.technical_weight": {
+                "current": technical_weight,
+                "suggested": round(min(technical_weight + 0.03, 0.55), 2),
+            },
+        }
+
+    def _relax_strategy_changes(self, config: StrategyConfigSnapshot | None) -> dict[str, Any]:
+        current = self._strategy_current_parameters(config)
+        min_confidence = self._bounded_float(current.get("min_confidence"), 0.72, 0.0, 0.99)
+        top_n = int(self._bounded_float(current.get("top_n"), 8.0, 1.0, 50.0))
+        return {
+            "risk_policy.min_confidence": {
+                "current": min_confidence,
+                "suggested": round(max(min_confidence - 0.03, 0.50), 2),
+            },
+            "publication.top_n": {
+                "current": top_n,
+                "suggested": min(top_n + 1, 12),
+            },
+        }
+
+    def _build_strategy_tuning_recommendation(
+        self,
+        strategy_config_id: str,
+        config: StrategyConfigSnapshot | None,
+        row: StrategyConfigAttribution | None,
+    ) -> StrategyTuningRecommendation:
+        metrics = self._strategy_metric_snapshot(row)
+        current_parameters = self._strategy_current_parameters(config)
+        sell_count = int(metrics["sell_trade_count"])
+        score = float(metrics["performance_score"])
+        win_rate = float(metrics["win_rate"])
+        expectancy = float(metrics["expectancy_per_sell"])
+        total_pnl = float(metrics["total_realized_pnl"])
+        profit_factor = metrics["profit_factor"]
+
+        if sell_count < 2:
+            action = StrategyTuningAction.COLLECT_MORE_DATA
+            priority = 30
+            rationale_cn = "卖出归因样本不足，先保留当前参数并继续收集真实卖出结果。"
+            recommended_changes: dict[str, Any] = {}
+        elif score < 45 or expectancy < 0 or total_pnl < 0:
+            action = StrategyTuningAction.TIGHTEN
+            priority = 90 if score < 30 or expectancy < 0 else 75
+            rationale_cn = "该策略版本卖出归因偏弱，建议先提高入选门槛并收紧入场/止损参数。"
+            recommended_changes = self._tighten_strategy_changes(config)
+        elif score >= 70 and win_rate >= 0.55 and expectancy > 0:
+            action = StrategyTuningAction.KEEP
+            priority = 20
+            rationale_cn = "该策略版本的收益、胜率和盈亏比表现较好，建议继续作为候选默认参数。"
+            recommended_changes = {}
+        elif score >= 60 and sell_count >= 5 and win_rate >= 0.55 and (
+            profit_factor is None or float(profit_factor) >= 1.3
+        ):
+            action = StrategyTuningAction.RELAX
+            priority = 45
+            rationale_cn = "该策略版本表现偏正且样本较充分，可以小幅放宽阈值以扩大候选覆盖。"
+            recommended_changes = self._relax_strategy_changes(config)
+        else:
+            action = StrategyTuningAction.REVIEW
+            priority = 55
+            rationale_cn = "该策略版本表现接近中性，建议人工复盘样本后再决定是否改参数。"
+            recommended_changes = {}
+
+        return StrategyTuningRecommendation(
+            strategy_config_id=strategy_config_id,
+            action=action,
+            priority=priority,
+            rationale_cn=rationale_cn,
+            metric_snapshot=metrics,
+            current_parameters=current_parameters,
+            recommended_changes=recommended_changes,
+            generated_at=datetime.now(timezone.utc),
+        )
+
+    def get_strategy_tuning_report(
+        self,
+        limit: int = 10_000,
+        strategy_limit: int = 100,
+        attribution: RecommendationAttributionReport | None = None,
+    ) -> StrategyTuningReport:
+        attribution_report = attribution or self.get_recommendation_attribution(limit=limit)
+        rows_by_config = {row.strategy_config_id: row for row in attribution_report.by_strategy_config}
+        configs_by_id = {
+            config.strategy_config_id: config
+            for config in self.strategy_config_repo.list_recent(limit=strategy_limit)
+        }
+        for strategy_config_id in rows_by_config:
+            if strategy_config_id not in configs_by_id:
+                config = self.strategy_config_repo.get(strategy_config_id)
+                if config is not None:
+                    configs_by_id[strategy_config_id] = config
+
+        strategy_config_ids = sorted(set(configs_by_id) | set(rows_by_config))
+        items = [
+            self._build_strategy_tuning_recommendation(
+                strategy_config_id=strategy_config_id,
+                config=configs_by_id.get(strategy_config_id),
+                row=rows_by_config.get(strategy_config_id),
+            )
+            for strategy_config_id in strategy_config_ids
+        ]
+        items.sort(
+            key=lambda item: (
+                item.priority,
+                item.metric_snapshot.get("performance_score", 0.0),
+                item.metric_snapshot.get("total_realized_pnl", 0.0),
+            ),
+            reverse=True,
+        )
+        return StrategyTuningReport(
+            generated_at=datetime.now(timezone.utc),
+            recommendation_count=len(items),
+            items=items,
+        )
 
     def get_recommendation_attribution(self, limit: int = 10_000) -> RecommendationAttributionReport:
         trades = self.list_trade_ledger(limit=limit)
