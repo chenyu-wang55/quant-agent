@@ -612,7 +612,7 @@ def dashboard_home() -> str:
         <span class="small">行情、基本面、新闻和推荐输入的可回放记录</span>
       </div>
       <table>
-        <thead><tr><th>Snapshot</th><th>时间</th><th>Provider</th><th>股票</th><th>Bars</th><th>News</th><th>推荐</th><th>操作</th></tr></thead>
+        <thead><tr><th>Snapshot</th><th>时间</th><th>Provider</th><th>股票</th><th>Bars</th><th>News</th><th>评分</th><th>期望值</th><th>推荐</th><th>操作</th></tr></thead>
         <tbody id="sourceSnapshotBody"></tbody>
       </table>
     </div>
@@ -682,7 +682,7 @@ def dashboard_home() -> str:
         <tbody id="attributionBody"></tbody>
       </table>
       <table style="margin-top:12px;">
-        <thead><tr><th>Snapshot</th><th>推荐数</th><th>卖出笔数</th><th>已实现盈亏</th><th>胜率</th><th>Profit Factor</th></tr></thead>
+        <thead><tr><th>Snapshot</th><th>评分</th><th>推荐数</th><th>卖出笔数</th><th>已实现盈亏</th><th>期望值</th><th>胜率</th><th>Profit Factor</th></tr></thead>
         <tbody id="snapshotAttributionBody"></tbody>
       </table>
     </div>
@@ -851,23 +851,36 @@ def dashboard_home() -> str:
       `).join("");
     }
 
-    function renderSourceSnapshots(items) {
+    function snapshotScoreCell(score) {
+      if (!score) return '<span class="small">unscored</span>';
+      return `${fmtNum(score.performance_score, 1)}<div class="small">${esc(score.quality_grade || '')}</div>`;
+    }
+
+    function renderSourceSnapshots(items, snapshotScores) {
       currentSnapshots = items || [];
       const body = document.getElementById("sourceSnapshotBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="8" class="small">暂无行情快照。</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="small">暂无行情快照。</td></tr>';
         return;
       }
+      const scoresBySnapshot = new Map((snapshotScores || []).map((row) => [row.source_snapshot_id, row]));
       body.innerHTML = items.map((snapshot, idx) => `
         <tr>
+          ${(() => {
+            const score = scoresBySnapshot.get(snapshot.source_snapshot_id);
+            return `
           <td class="mono" title="${esc(snapshot.source_snapshot_id)}">${esc(shortId(snapshot.source_snapshot_id, 18))}</td>
           <td class="small">${fmtTime(snapshot.as_of)}</td>
           <td>${esc(snapshot.provider_name)}</td>
           <td>${esc(snapshot.ticker_count)}</td>
           <td>${esc(snapshot.bar_count)}</td>
           <td>${esc(snapshot.event_count)}</td>
+          <td>${snapshotScoreCell(score)}</td>
+          <td>${score ? fmtNum(score.expectancy_per_sell, 2) : '-'}</td>
           <td>${esc(snapshot.recommendation_count)}</td>
           <td><button class="btn-mini" onclick="replaySnapshot(${idx})">回放</button></td>
+            `;
+          })()}
         </tr>
       `).join("");
     }
@@ -1202,15 +1215,17 @@ def dashboard_home() -> str:
       }
 
       if (!snapshotRows.length) {
-        snapshotBody.innerHTML = '<tr><td colspan="6" class="small">暂无 snapshot 级归因。</td></tr>';
+        snapshotBody.innerHTML = '<tr><td colspan="8" class="small">暂无 snapshot 级归因。</td></tr>';
         return;
       }
       snapshotBody.innerHTML = snapshotRows.map((row) => `
         <tr>
           <td class="mono" title="${esc(row.source_snapshot_id)}">${esc(shortId(row.source_snapshot_id, 18))}</td>
+          <td>${snapshotScoreCell(row)}</td>
           <td>${esc(row.recommendation_count)}</td>
           <td>${esc(row.sell_trade_count)}</td>
           <td>${fmtNum(row.total_realized_pnl, 2)}</td>
+          <td>${fmtNum(row.expectancy_per_sell, 2)}</td>
           <td>${fmtPct(row.win_rate)}</td>
           <td>${fmtNullableNum(row.profit_factor, 2)}</td>
         </tr>
@@ -1254,7 +1269,10 @@ def dashboard_home() -> str:
       document.getElementById('providerNote').textContent = `数据源可靠性: ${providerReliability(provider)}`;
 
       renderRecommendations(data.recommendations || []);
-      renderSourceSnapshots(data.source_snapshots || []);
+      renderSourceSnapshots(
+        data.source_snapshots || [],
+        data.recommendation_attribution?.by_snapshot || []
+      );
       renderHoldings(data.holdings || []);
       renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);

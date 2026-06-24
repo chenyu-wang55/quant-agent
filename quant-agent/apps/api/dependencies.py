@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
+import math
 from uuid import uuid4
 
 from domain.entities.models import (
@@ -582,6 +583,42 @@ class AppState:
         gross_loss = abs(sum(pnl for pnl in pnls if pnl < 0))
         return round(gross_profit / gross_loss, 6) if gross_loss > 0 else None
 
+    @staticmethod
+    def _snapshot_performance_score(
+        total_realized_pnl: float,
+        win_rate: float,
+        profit_factor: float | None,
+        expectancy_per_sell: float,
+        recommendation_count: int,
+        sell_trade_count: int,
+    ) -> float:
+        if sell_trade_count <= 0:
+            return 0.0
+        profit_factor_value = profit_factor
+        if profit_factor_value is None:
+            profit_factor_value = 3.0 if win_rate > 0 else 0.0
+        score = 50.0
+        score += (win_rate - 0.5) * 50.0
+        score += math.tanh(expectancy_per_sell / 500.0) * 20.0
+        pnl_scale = max(500.0, float(max(1, recommendation_count)) * 500.0)
+        score += math.tanh(total_realized_pnl / pnl_scale) * 15.0
+        score += math.tanh((profit_factor_value - 1.0) / 1.5) * 15.0
+        return round(max(0.0, min(100.0, score)), 2)
+
+    @staticmethod
+    def _snapshot_quality_grade(score: float, sell_trade_count: int) -> str:
+        if sell_trade_count <= 0:
+            return "insufficient_history"
+        if score >= 70:
+            return "outperforming"
+        if score >= 55:
+            return "positive"
+        if score >= 45:
+            return "neutral"
+        if score >= 30:
+            return "weak"
+        return "negative"
+
     def _get_recommendation(self, recommendation_id: str) -> Recommendation | None:
         cached = self.recommendations_by_id.get(recommendation_id)
         if cached is not None:
@@ -653,20 +690,61 @@ class AppState:
             wins = [pnl for pnl in pnls if pnl > 0]
             losses = [pnl for pnl in pnls if pnl < 0]
             sell_count = sum(item.sell_trade_count for item in items)
+            closed_count = sum(item.closed_trade_count for item in items)
+            flat_count = sum(item.flat_count for item in items)
+            total_realized_pnl = round(sum(pnls), 6)
+            win_rate = round(len(wins) / len(pnls), 6) if pnls else 0.0
+            profit_factor = self._profit_factor(pnls)
+            expectancy_per_sell = round(sum(pnls) / len(pnls), 6) if pnls else 0.0
+            confidence_values = [item.confidence for item in items if item.confidence is not None]
+            composite_values = [item.composite for item in items if item.composite is not None]
+            performance_score = self._snapshot_performance_score(
+                total_realized_pnl=total_realized_pnl,
+                win_rate=win_rate,
+                profit_factor=profit_factor,
+                expectancy_per_sell=expectancy_per_sell,
+                recommendation_count=len(items),
+                sell_trade_count=sell_count,
+            )
+            first_sell_at = min(
+                (item.first_sell_at for item in items if item.first_sell_at is not None),
+                default=None,
+            )
+            last_sell_at = max(
+                (item.last_sell_at for item in items if item.last_sell_at is not None),
+                default=None,
+            )
             by_snapshot.append(
                 SnapshotAttribution(
                     source_snapshot_id=source_snapshot_id,
                     recommendation_count=len(items),
                     sell_trade_count=sell_count,
-                    total_realized_pnl=round(sum(pnls), 6),
+                    closed_trade_count=closed_count,
+                    total_realized_pnl=total_realized_pnl,
                     win_count=len(wins),
                     loss_count=len(losses),
-                    win_rate=round(len(wins) / len(pnls), 6) if pnls else 0.0,
-                    profit_factor=self._profit_factor(pnls),
+                    flat_count=flat_count,
+                    win_rate=win_rate,
+                    profit_factor=profit_factor,
+                    expectancy_per_sell=expectancy_per_sell,
+                    avg_confidence=(
+                        round(sum(confidence_values) / len(confidence_values), 6)
+                        if confidence_values
+                        else None
+                    ),
+                    avg_composite=(
+                        round(sum(composite_values) / len(composite_values), 6)
+                        if composite_values
+                        else None
+                    ),
+                    performance_score=performance_score,
+                    quality_grade=self._snapshot_quality_grade(performance_score, sell_count),
+                    first_sell_at=first_sell_at,
+                    last_sell_at=last_sell_at,
                 )
             )
 
-        by_snapshot.sort(key=lambda item: item.total_realized_pnl, reverse=True)
+        by_snapshot.sort(key=lambda item: (item.performance_score, item.total_realized_pnl), reverse=True)
         return RecommendationAttributionReport(
             generated_at=datetime.now(timezone.utc),
             recommendation_count=len(by_recommendation),

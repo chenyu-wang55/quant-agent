@@ -561,11 +561,20 @@ class SnapshotAttribution(BaseModel):
     source_snapshot_id: str
     recommendation_count: int
     sell_trade_count: int
+    closed_trade_count: int
     total_realized_pnl: float
     win_count: int
     loss_count: int
+    flat_count: int
     win_rate: float
     profit_factor: float | None = None
+    expectancy_per_sell: float
+    avg_confidence: float | None = None
+    avg_composite: float | None = None
+    performance_score: float
+    quality_grade: str
+    first_sell_at: datetime | None = None
+    last_sell_at: datetime | None = None
 
 
 class RecommendationAttributionReport(BaseModel):

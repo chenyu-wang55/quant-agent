@@ -68,6 +68,8 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "renderPerformance" in dashboard_home.text
     assert "renderAttribution" in dashboard_home.text
     assert "renderSourceSnapshots" in dashboard_home.text
+    assert "snapshotScoreCell" in dashboard_home.text
+    assert "performance_score" in dashboard_home.text
     assert "replaySnapshot" in dashboard_home.text
     assert "executeAlert" in dashboard_home.text
     assert "执行建议" in dashboard_home.text

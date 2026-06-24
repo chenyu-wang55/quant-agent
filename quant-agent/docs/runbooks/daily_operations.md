@@ -108,6 +108,9 @@ curl "http://localhost:8000/portfolio/trades?ticker=MSFT&side=sell"
 `/portfolio/recommendation-attribution` shows realized P&L grouped by both
 `recommendation_id` and `source_snapshot_id`, which is the daily check for whether
 a replayable market/news snapshot produced useful recommendations after exits.
+Use each snapshot row's `performance_score`, `quality_grade`, `expectancy_per_sell`,
+`win_rate`, and `profit_factor` to decide whether a signal configuration should be
+kept, relaxed, or tightened before the next research batch.
 
 按当前卖出提醒执行建议动作：
 

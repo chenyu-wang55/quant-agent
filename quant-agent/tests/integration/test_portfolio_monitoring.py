@@ -193,6 +193,18 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     ]
     assert snapshot_rows
     assert snapshot_rows[0]["sell_trade_count"] >= 2
+    assert snapshot_rows[0]["closed_trade_count"] >= 1
+    assert snapshot_rows[0]["expectancy_per_sell"] != 0
+    assert 0 <= snapshot_rows[0]["performance_score"] <= 100
+    assert snapshot_rows[0]["quality_grade"] in {
+        "outperforming",
+        "positive",
+        "neutral",
+        "weak",
+        "negative",
+    }
+    assert snapshot_rows[0]["avg_confidence"] is not None
+    assert snapshot_rows[0]["avg_composite"] is not None
 
 
 def test_execute_sell_alert_closes_holding_and_records_trade() -> None:

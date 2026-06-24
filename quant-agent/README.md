@@ -67,6 +67,11 @@ The replay endpoint rebuilds recommendations from the stored market/news inputs 
 returns `operation=replayed`, making a live recommendation set reproducible by its
 `source_snapshot_id`.
 
+Snapshot performance is reported through `GET /portfolio/recommendation-attribution`.
+Each `by_snapshot` row includes `performance_score`, `quality_grade`,
+`expectancy_per_sell`, win rate, profit factor, and average recommendation confidence,
+so operators can rank which captured market/news states later produced useful exits.
+
 ## Database and Migrations
 
 Recommended bootstrap (idempotent):
@@ -182,3 +187,5 @@ Performance review is derived from the ledger and reports win rate, profit facto
 best/worst realized trade, and per-ticker attribution.
 Recommendation attribution connects sell results back to the original `recommendation_id` and
 `source_snapshot_id`, so a replayed research snapshot can be compared against later realized P&L.
+Snapshot rows also expose a 0-100 `performance_score` and `quality_grade` derived from
+realized P&L, win rate, profit factor, and expectancy per sell.
