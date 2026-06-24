@@ -14,6 +14,7 @@ def utc_now() -> datetime:
 class EventType(str, Enum):
     FEATURE_RECOMPUTATION = "feature_recomputation"
     RECOMMENDATION_READY = "recommendation_ready"
+    ORDER_ROUTED = "order_routed"
     PAPER_FILL = "paper_fill"
     MODEL_EVALUATION = "model_evaluation"
     SELL_ALERT = "sell_alert"

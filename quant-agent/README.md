@@ -142,6 +142,10 @@ separately from the trade ledger and P&L records.
 from account equity, per-trade risk, max position size, entry price, and stop-loss
 distance. `POST /paper-orders` enforces the same plan by default before filling a paper
 order.
+Order requests now carry `execution_mode`: `paper` fills through the simulator, while
+`live` is accepted only as `dry_run=true` unless a future broker adapter is explicitly
+configured. Live dry-runs return a submitted audit order with `broker_order_id` and
+`adapter_message`, but do not create holdings or send anything to a broker.
 
 Default risk guardrails:
 - `min_confidence=0.72`

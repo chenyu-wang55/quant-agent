@@ -67,7 +67,7 @@ from infra.db.repositories import (
 from infra.observability.metrics import MetricsStore
 from infra.queue.events import EventType, SystemEvent
 from infra.queue.in_memory import InMemoryEventQueue
-from services.execution.paper_router import PaperExecutionRouter
+from services.execution.router import ExecutionRouter
 from services.ingestion.interfaces import DataProvider
 from services.ingestion.provider_factory import build_data_provider
 from services.ranking.pipeline import PipelineOutput, ResearchPipeline
@@ -79,7 +79,7 @@ from services.risk.position_monitor import PositionMonitor
 class AppState:
     provider: DataProvider = field(default_factory=build_data_provider)
     pipeline: ResearchPipeline = field(init=False)
-    paper_router: PaperExecutionRouter = field(default_factory=PaperExecutionRouter)
+    execution_router: ExecutionRouter = field(default_factory=ExecutionRouter)
     backtest_engine: BacktestEngine = field(default_factory=BacktestEngine)
     metrics_store: MetricsStore = field(default_factory=MetricsStore)
     event_queue: InMemoryEventQueue = field(default_factory=InMemoryEventQueue)
@@ -158,6 +158,18 @@ class AppState:
         self.position_repo.replace_all(self.positions.values())
         self.metrics_store.inc("paper_orders")
         self.metrics_store.set_gauge("open_positions", sum(1 for p in self.positions.values() if p.qty > 0))
+        self.publish_event(
+            EventType.ORDER_ROUTED,
+            {
+                "order_id": order.id,
+                "recommendation_id": order.recommendation_id,
+                "execution_mode": order.execution_mode.value,
+                "dry_run": order.dry_run,
+                "status": order.status.value,
+                "broker_order_id": order.broker_order_id,
+                "adapter_message": order.adapter_message,
+            },
+        )
         if (
             recommendation is not None
             and order.status == PaperOrderStatus.FILLED
@@ -177,15 +189,15 @@ class AppState:
                     bought_at=order.filled_at or order.submitted_at,
                 )
             )
-        self.publish_event(
-            EventType.PAPER_FILL,
-            {
-                "order_id": order.id,
-                "recommendation_id": order.recommendation_id,
-                "status": order.status.value,
-                "fill_price": order.simulated_fill_price,
-            },
-        )
+            self.publish_event(
+                EventType.PAPER_FILL,
+                {
+                    "order_id": order.id,
+                    "recommendation_id": order.recommendation_id,
+                    "status": order.status.value,
+                    "fill_price": order.simulated_fill_price,
+                },
+            )
 
     def list_paper_orders(
         self,

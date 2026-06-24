@@ -131,6 +131,45 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert oversized_order.status_code == 409
     assert oversized_order.json()["detail"]["is_within_limits"] is False
 
+    blocked_live_order = client.post(
+        "/paper-orders",
+        json={
+            "recommendation_id": recommendation_id,
+            "side": "BUY",
+            "qty": 10,
+            "limit_price": None,
+            "execution_mode": "live",
+            "dry_run": False,
+            "confirm_live": False,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert blocked_live_order.status_code == 409
+    assert "Live execution requires" in blocked_live_order.json()["detail"]
+
+    live_dry_run = client.post(
+        "/paper-orders",
+        json={
+            "recommendation_id": recommendation_id,
+            "side": "BUY",
+            "qty": 10,
+            "limit_price": None,
+            "execution_mode": "live",
+            "dry_run": True,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert live_dry_run.status_code == 200
+    live_dry_run_data = live_dry_run.json()
+    assert live_dry_run_data["execution_mode"] == "live"
+    assert live_dry_run_data["dry_run"] is True
+    assert live_dry_run_data["status"] == "submitted"
+    assert live_dry_run_data["broker_order_id"].startswith("live_dryrun_")
+    assert "not sent to a broker" in live_dry_run_data["adapter_message"]
+    holdings_after_dry_run = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings_after_dry_run.status_code == 200
+    assert all(item["ticker"] != recommendation["ticker"] for item in holdings_after_dry_run.json())
+
     order_response = client.post(
         "/paper-orders",
         json={"recommendation_id": recommendation_id, "side": "BUY", "qty": 10, "limit_price": None},
@@ -138,3 +177,5 @@ def test_kill_switch_blocks_paper_orders() -> None:
     )
     assert order_response.status_code == 200
     assert order_response.json()["status"] == "filled"
+    assert order_response.json()["execution_mode"] == "paper"
+    assert order_response.json()["dry_run"] is False

@@ -369,7 +369,8 @@ def dashboard_home() -> str:
       letter-spacing: 0.25px;
     }
 
-    .field input {
+    .field input,
+    .field select {
       width: 100%;
       min-height: 35px;
       border: 1px solid var(--line-strong);
@@ -606,6 +607,7 @@ def dashboard_home() -> str:
         <div class="field"><label for="accountEquity">Account Equity</label><input id="accountEquity" type="number" min="1" step="1000" value="100000" /></div>
         <div class="field"><label for="riskPct">Risk %</label><input id="riskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
         <div class="field"><label for="maxPositionPct">Max Position %</label><input id="maxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
+        <div class="field"><label for="executionMode">Exec Mode</label><select id="executionMode"><option value="paper">Paper</option><option value="live_dry_run">Live Dry Run</option></select></div>
         <div class="field"><label for="sellQty">Sell Qty</label><input id="sellQty" type="number" min="0.0001" step="1" placeholder="all" /></div>
         <div class="field"><label for="sellPrice">Sell Price</label><input id="sellPrice" type="number" min="0.0001" step="0.01" /></div>
         <div class="field"><label for="sourceSnapshotId">Snapshot ID</label><input id="sourceSnapshotId" type="text" placeholder="source_snapshot_id" /></div>
@@ -680,7 +682,7 @@ def dashboard_home() -> str:
         <span class="small">审批后的下单、成交和取消状态审计轨迹</span>
       </div>
       <table>
-        <thead><tr><th>时间</th><th>Order</th><th>推荐</th><th>方向</th><th>数量</th><th>限价</th><th>状态</th><th>成交价</th></tr></thead>
+        <thead><tr><th>时间</th><th>Order</th><th>推荐</th><th>Exec</th><th>方向</th><th>数量</th><th>限价</th><th>状态</th><th>成交价</th><th>Adapter</th></tr></thead>
         <tbody id="orderBody"></tbody>
       </table>
     </div>
@@ -1175,11 +1177,16 @@ def dashboard_home() -> str:
 
     function paperOrderPayload(rec, qty) {
       const buyPrice = numberValue('buyPrice') || Number(rec.entry_zone_high);
+      const executionChoice = document.getElementById('executionMode')?.value || 'paper';
+      const isLiveDryRun = executionChoice === 'live_dry_run';
       return {
         recommendation_id: rec.id,
         side: rec.direction || 'BUY',
         qty,
         limit_price: buyPrice,
+        execution_mode: isLiveDryRun ? 'live' : 'paper',
+        dry_run: isLiveDryRun,
+        confirm_live: false,
         account_equity: numberValue('accountEquity') || 100000,
         risk_per_trade_pct: (numberValue('riskPct') || 1) / 100,
         max_position_pct: (numberValue('maxPositionPct') || 10) / 100,
@@ -1222,9 +1229,10 @@ def dashboard_home() -> str:
           return;
         }
         const order = await postJson('/paper-orders', payload);
-        setActionStatus(
-          `已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || payload.limit_price, 2)}；${plan.message_cn}`
-        );
+        const executionText = order.dry_run
+          ? `已完成 ${rec.ticker} ${order.execution_mode} dry-run ${qty} 股`
+          : `已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || payload.limit_price, 2)}`;
+        setActionStatus(`${executionText}；${order.adapter_message || plan.message_cn}`);
         await refreshNow(false);
       } catch (err) {
         setActionStatus(String(err), true);
@@ -1297,7 +1305,7 @@ def dashboard_home() -> str:
     function renderPaperOrders(items) {
       const body = document.getElementById("orderBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="8" class="small">暂无纸单记录。</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="small">暂无纸单记录。</td></tr>';
         return;
       }
       body.innerHTML = items.map((order) => `
@@ -1305,11 +1313,13 @@ def dashboard_home() -> str:
           <td class="small">${fmtTime(order.submitted_at)}</td>
           <td class="mono" title="${esc(order.id)}">${esc(shortId(order.id, 12))}</td>
           <td class="mono" title="${esc(order.recommendation_id)}">${esc(shortId(order.recommendation_id, 12))}</td>
+          <td>${esc(order.execution_mode || 'paper')}${order.dry_run ? '<div class="small">dry-run</div>' : ''}</td>
           <td>${esc(order.side)}</td>
           <td>${fmtNum(order.qty, 2)}</td>
           <td>${fmtNullableNum(order.limit_price, 2)}</td>
           <td>${esc(order.status)}</td>
           <td>${fmtNullableNum(order.simulated_fill_price, 2)}</td>
+          <td class="small" title="${esc(order.broker_order_id || '')}">${esc(order.adapter_message || '-')}</td>
         </tr>
       `).join("");
     }

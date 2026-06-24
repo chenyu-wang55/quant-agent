@@ -61,6 +61,11 @@ class PaperOrderStatus(str, Enum):
     CANCELED = "canceled"
 
 
+class OrderExecutionMode(str, Enum):
+    PAPER = "paper"
+    LIVE = "live"
+
+
 class ApprovalDecision(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -403,6 +408,9 @@ class PaperOrderRequest(BaseModel):
     side: Direction = Direction.BUY
     qty: float = Field(gt=0)
     limit_price: float | None = Field(default=None, gt=0)
+    execution_mode: OrderExecutionMode = OrderExecutionMode.PAPER
+    dry_run: bool = False
+    confirm_live: bool = False
     account_equity: float = Field(default=100_000.0, gt=0)
     risk_per_trade_pct: float = Field(default=0.01, gt=0, le=1.0)
     max_position_pct: float = Field(default=0.10, gt=0, le=1.0)
@@ -440,6 +448,10 @@ class PaperOrder(BaseModel):
     side: Direction
     qty: float
     limit_price: float | None
+    execution_mode: OrderExecutionMode = OrderExecutionMode.PAPER
+    dry_run: bool = False
+    broker_order_id: str | None = None
+    adapter_message: str | None = None
     submitted_at: datetime
     status: PaperOrderStatus
     simulated_fill_price: float | None = None

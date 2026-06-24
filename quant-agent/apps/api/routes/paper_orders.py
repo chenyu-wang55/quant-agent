@@ -100,11 +100,16 @@ def submit_paper_order(
     if request.enforce_risk_limits and not risk_plan.is_within_limits:
         raise HTTPException(status_code=409, detail=risk_plan.model_dump(mode="json"))
 
-    order, updated_positions = state.paper_router.submit(
-        recommendation=recommendation,
-        request=request,
-        positions=state.positions,
-    )
+    try:
+        order, updated_positions = state.execution_router.submit(
+            recommendation=recommendation,
+            request=request,
+            positions=state.positions,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
     state.positions = updated_positions
     state.record_paper_order(order, recommendation=recommendation)
     return order

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from domain.entities.models import (
+    OrderExecutionMode,
     PaperOrder,
     PaperOrderRequest,
     PaperOrderStatus,
@@ -29,6 +30,10 @@ class PaperExecutionRouter:
             side=request.side,
             qty=request.qty,
             limit_price=request.limit_price,
+            execution_mode=OrderExecutionMode.PAPER,
+            dry_run=False,
+            broker_order_id=f"paper_{uuid4().hex[:12]}",
+            adapter_message="paper_fill_simulated",
             submitted_at=submitted_at,
             status=PaperOrderStatus.FILLED,
             simulated_fill_price=round(fill_price, 4),

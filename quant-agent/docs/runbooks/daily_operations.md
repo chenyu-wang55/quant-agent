@@ -150,6 +150,10 @@ curl -X POST http://localhost:8000/paper-orders \
   -H "Content-Type: application/json" \
   -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10}'
 
+curl -X POST http://localhost:8000/paper-orders \
+  -H "Content-Type: application/json" \
+  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"execution_mode":"live","dry_run":true,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10}'
+
 curl "http://localhost:8000/paper-orders?recommendation_id=<id>&status=filled"
 ```
 
@@ -161,6 +165,9 @@ and any violations. `/paper-orders` enforces the same limits unless `enforce_ris
 is explicitly set to `false`.
 On the dashboard, use each recommendation row's `建议股数` button to calculate and fill
 the current risk-adjusted buy quantity before pressing `买入`.
+Set `Exec Mode` to `Live Dry Run` only for broker-adapter rehearsals. It records a
+submitted audit order but does not send anything to a broker or create a monitored
+holding.
 
 Kill switch can pause all execution:
 
