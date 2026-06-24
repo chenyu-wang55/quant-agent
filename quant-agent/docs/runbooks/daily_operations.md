@@ -26,6 +26,9 @@ python -m apps.worker.main monitor_positions_alerts
 curl http://localhost:8000/health
 curl http://localhost:8000/recommendations/latest
 curl http://localhost:8000/recommendations/<id>/evidence
+curl http://localhost:8000/source-snapshots
+curl http://localhost:8000/source-snapshots/<source_snapshot_id>
+curl "http://localhost:8000/source-snapshots/<source_snapshot_id>/bars/MSFT?limit=5"
 curl http://localhost:8000/dashboard
 curl http://localhost:8000/dashboard/realtime-data
 curl http://localhost:8000/metrics
@@ -44,6 +47,26 @@ curl http://localhost:8000/portfolio/alerts
 Replay a previous research snapshot by reusing its `source_snapshot_id` in
 `POST /research/run`. Check `universe_summary.snapshot.operation`; it should show
 `replayed` when the database snapshot was used instead of the live provider.
+For operator replay without rebuilding the full request, call the dedicated endpoint:
+
+```bash
+curl -X POST http://localhost:8000/source-snapshots/<source_snapshot_id>/replay \
+  -H "Content-Type: application/json" \
+  -d '{
+    "objective": "ops snapshot replay",
+    "publication": {"top_n": 5, "output_channels": ["api"]},
+    "risk_policy": {
+      "min_confidence": 0,
+      "earnings_blackout_minutes": 0,
+      "max_name_weight": 0.10,
+      "max_sector_weight": 0.30,
+      "max_gross_exposure": 1.0,
+      "max_correlated_cluster_weight": 0.35,
+      "reject_on_material_evidence_conflict": false,
+      "event_trading_enabled": true
+    }
+  }'
+```
 
 记录你实际买入的股票（用于卖出提醒）：
 

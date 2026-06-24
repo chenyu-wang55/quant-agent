@@ -57,6 +57,16 @@ The run output reports this under `universe_summary.snapshot.operation`:
 - `replayed`: provider data was loaded from an existing snapshot
 - `disabled`: the pipeline was constructed without a snapshot repository
 
+Snapshot audit and replay endpoints:
+- `GET /source-snapshots`
+- `GET /source-snapshots/{source_snapshot_id}`
+- `GET /source-snapshots/{source_snapshot_id}/bars/{ticker}`
+- `POST /source-snapshots/{source_snapshot_id}/replay`
+
+The replay endpoint rebuilds recommendations from the stored market/news inputs and
+returns `operation=replayed`, making a live recommendation set reproducible by its
+`source_snapshot_id`.
+
 ## Database and Migrations
 
 Recommended bootstrap (idempotent):
@@ -86,6 +96,8 @@ Endpoints:
 - `POST /recommendations/{id}/approval`
 - `GET /recommendations/{id}/approval`
 - `GET /recommendations/{id}/evidence`
+- `GET /source-snapshots`
+- `POST /source-snapshots/{source_snapshot_id}/replay`
 - `GET /paper-orders`
 - `POST /paper-orders`
 - `GET /execution/kill-switch`

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from domain.entities.models import (
     ApprovalDecision,
@@ -26,6 +26,8 @@ from domain.entities.models import (
     RiskLevel,
     SecurityMetadata,
     SignalSnapshot,
+    SourceSnapshotDetail,
+    SourceSnapshotSummary,
     TradeLedgerEntry,
     TradeSide,
 )
@@ -528,6 +530,38 @@ class SourceSnapshotRepository:
             )
             return session.execute(stmt).first() is not None
 
+    def list_summaries(self, limit: int = 50) -> list[SourceSnapshotSummary]:
+        with SessionLocal() as session:
+            stmt = (
+                select(SourceSnapshotRecord)
+                .order_by(SourceSnapshotRecord.created_at.desc())
+                .limit(limit)
+            )
+            records = list(session.execute(stmt).scalars())
+            return [self._to_summary(session, record) for record in records]
+
+    def get_summary(self, source_snapshot_id: str) -> SourceSnapshotSummary | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(SourceSnapshotRecord)
+                .where(SourceSnapshotRecord.source_snapshot_id == source_snapshot_id)
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+            if record is None:
+                return None
+            return self._to_summary(session, record)
+
+    def get_detail(self, source_snapshot_id: str, event_limit: int = 20) -> SourceSnapshotDetail | None:
+        summary = self.get_summary(source_snapshot_id)
+        if summary is None:
+            return None
+        return SourceSnapshotDetail(
+            **summary.model_dump(),
+            securities=self.get_securities(source_snapshot_id),
+            recent_events=self.get_events(source_snapshot_id, summary.tickers)[:event_limit],
+        )
+
     def replace_snapshot(
         self,
         source_snapshot_id: str,
@@ -633,6 +667,43 @@ class SourceSnapshotRepository:
                 )
 
             session.commit()
+
+    def _to_summary(self, session, record: SourceSnapshotRecord) -> SourceSnapshotSummary:
+        source_snapshot_id = record.source_snapshot_id
+        bar_count = session.scalar(
+            select(func.count())
+            .select_from(SnapshotMarketBarRecord)
+            .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
+        )
+        fundamental_count = session.scalar(
+            select(func.count())
+            .select_from(SnapshotFundamentalRecord)
+            .where(SnapshotFundamentalRecord.source_snapshot_id == source_snapshot_id)
+        )
+        event_count = session.scalar(
+            select(func.count())
+            .select_from(SnapshotEventRecord)
+            .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
+        )
+        recommendation_count = session.scalar(
+            select(func.count())
+            .select_from(RecommendationRecord)
+            .where(RecommendationRecord.source_snapshot_id == source_snapshot_id)
+        )
+        tickers = [str(ticker).upper() for ticker in record.tickers or []]
+        return SourceSnapshotSummary(
+            source_snapshot_id=source_snapshot_id,
+            created_at=_ensure_utc(record.created_at),
+            as_of=_ensure_utc(record.as_of),
+            universe=record.universe,
+            provider_name=record.provider_name,
+            tickers=tickers,
+            ticker_count=len(tickers),
+            bar_count=int(bar_count or 0),
+            fundamental_count=int(fundamental_count or 0),
+            event_count=int(event_count or 0),
+            recommendation_count=int(recommendation_count or 0),
+        )
 
     def get_metadata(self, source_snapshot_id: str) -> dict:
         with SessionLocal() as session:

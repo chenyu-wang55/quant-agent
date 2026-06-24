@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
@@ -23,6 +25,7 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
         "objective": "integration-test-run",
         "as_of": "2026-04-10T09:30:00Z",
         "snapshot_mode": "point_in_time",
+        "source_snapshot_id": f"api-flow-{uuid4().hex}",
         "universe": "SP500",
         "universe_rules": {
             "min_price": 5,
@@ -55,6 +58,43 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     assert run_data["recommendations"][0]["analysis"]["report_cn"] != ""
     assert len(run_data["recommendations"][0]["analysis"]["why_to_buy_cn"]) > 0
     assert len(run_data["recommendations"][0]["analysis"]["why_to_sell_cn"]) > 0
+    snapshot_id = run_data["source_snapshot_id"]
+    ticker = run_data["recommendations"][0]["ticker"]
+
+    snapshots_response = client.get("/source-snapshots?limit=5", headers=AUTH_HEADERS)
+    assert snapshots_response.status_code == 200
+    assert any(item["source_snapshot_id"] == snapshot_id for item in snapshots_response.json())
+
+    snapshot_detail_response = client.get(f"/source-snapshots/{snapshot_id}?event_limit=5", headers=AUTH_HEADERS)
+    assert snapshot_detail_response.status_code == 200
+    snapshot_detail = snapshot_detail_response.json()
+    assert snapshot_detail["source_snapshot_id"] == snapshot_id
+    assert snapshot_detail["ticker_count"] > 0
+    assert snapshot_detail["bar_count"] > 0
+    assert snapshot_detail["recommendation_count"] >= 1
+
+    snapshot_bars_response = client.get(
+        f"/source-snapshots/{snapshot_id}/bars/{ticker}?limit=3",
+        headers=AUTH_HEADERS,
+    )
+    assert snapshot_bars_response.status_code == 200
+    assert len(snapshot_bars_response.json()) == 3
+
+    replay_response = client.post(
+        f"/source-snapshots/{snapshot_id}/replay",
+        json={
+            "objective": "api snapshot replay",
+            "universe_rules": payload["universe_rules"],
+            "risk_policy": payload["risk_policy"],
+            "publication": {"top_n": 2, "output_channels": ["api"]},
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert replay_response.status_code == 200
+    replay_data = replay_response.json()
+    assert replay_data["source_snapshot_id"] == snapshot_id
+    assert replay_data["universe_summary"]["snapshot"]["operation"] == "replayed"
+    assert len(replay_data["recommendations"]) > 0
 
     recommendations_response = client.get("/recommendations/latest", headers=AUTH_HEADERS)
     assert recommendations_response.status_code == 200

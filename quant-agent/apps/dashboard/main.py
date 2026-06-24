@@ -121,6 +121,8 @@ def dashboard_realtime_data(
     recent_trades = state.list_trade_ledger(limit=10)
     recent_paper_orders = state.list_paper_orders(limit=10)
     paper_order_count = len(state.list_paper_orders(limit=10_000))
+    recent_source_snapshots = state.list_source_snapshots(limit=10)
+    source_snapshot_count = len(state.list_source_snapshots(limit=10_000))
     price_lookup = _build_price_lookup(state=state, recommendations=raw_recommendations, as_of=now)
     recommendations = _select_recommendations_for_dashboard(raw_recommendations, price_lookup)
     return {
@@ -137,6 +139,7 @@ def dashboard_realtime_data(
             "open_holding_count": len(holdings),
             "sell_alert_count": len(alerts),
             "paper_order_count": paper_order_count,
+            "source_snapshot_count": source_snapshot_count,
             "pending_event_count": state.event_queue.size(),
         },
         "portfolio_summary": portfolio_summary.model_dump(mode="json"),
@@ -163,6 +166,7 @@ def dashboard_realtime_data(
             for holding in holdings
         ],
         "recent_paper_orders": [order.model_dump(mode="json") for order in recent_paper_orders],
+        "source_snapshots": [snapshot.model_dump(mode="json") for snapshot in recent_source_snapshots],
         "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
         "alerts": [
             {
@@ -566,6 +570,7 @@ def dashboard_home() -> str:
     <div class="stats">
       <div class="stat"><div class="k">数据源</div><div class="v" id="provider">-</div></div>
       <div class="stat"><div class="k">推荐数量</div><div class="v" id="recCount">0</div></div>
+      <div class="stat"><div class="k">快照</div><div class="v" id="snapshotCount">0</div></div>
       <div class="stat"><div class="k">持仓监控</div><div class="v" id="holdingCount">0</div></div>
       <div class="stat"><div class="k">卖出提醒</div><div class="v" id="alertCount">0</div></div>
       <div class="stat"><div class="k">纸单</div><div class="v" id="paperOrderCount">0</div></div>
@@ -590,13 +595,26 @@ def dashboard_home() -> str:
         <div class="field"><label for="buyPrice">Buy Price</label><input id="buyPrice" type="number" min="0.0001" step="0.01" placeholder="entry high" /></div>
         <div class="field"><label for="sellQty">Sell Qty</label><input id="sellQty" type="number" min="0.0001" step="1" placeholder="all" /></div>
         <div class="field"><label for="sellPrice">Sell Price</label><input id="sellPrice" type="number" min="0.0001" step="0.01" /></div>
+        <div class="field"><label for="sourceSnapshotId">Snapshot ID</label><input id="sourceSnapshotId" type="text" placeholder="source_snapshot_id" /></div>
       </div>
       <div style="margin-top:9px; display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn-mini" onclick="runResearch()">运行推荐</button>
+        <button class="btn-mini" onclick="replaySnapshotByInput()">回放快照</button>
         <button class="btn-mini" onclick="refreshNow(true)">刷新状态</button>
         <input id="tradeReason" style="flex:1; min-width:220px; border:1px solid var(--line-strong); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px;" placeholder="reason" />
       </div>
       <div class="status-line" id="operationLog"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>行情快照</h3>
+        <span class="small">行情、基本面、新闻和推荐输入的可回放记录</span>
+      </div>
+      <table>
+        <thead><tr><th>Snapshot</th><th>时间</th><th>Provider</th><th>股票</th><th>Bars</th><th>News</th><th>推荐</th><th>操作</th></tr></thead>
+        <tbody id="sourceSnapshotBody"></tbody>
+      </table>
     </div>
 
     <div class="panel">
@@ -689,6 +707,7 @@ def dashboard_home() -> str:
     let currentRecommendations = [];
     let currentHoldings = [];
     let currentAlerts = [];
+    let currentSnapshots = [];
 
     function esc(v) {
       return String(v ?? "")
@@ -830,6 +849,91 @@ def dashboard_home() -> str:
           </td>
         </tr>
       `).join("");
+    }
+
+    function renderSourceSnapshots(items) {
+      currentSnapshots = items || [];
+      const body = document.getElementById("sourceSnapshotBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="8" class="small">暂无行情快照。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((snapshot, idx) => `
+        <tr>
+          <td class="mono" title="${esc(snapshot.source_snapshot_id)}">${esc(shortId(snapshot.source_snapshot_id, 18))}</td>
+          <td class="small">${fmtTime(snapshot.as_of)}</td>
+          <td>${esc(snapshot.provider_name)}</td>
+          <td>${esc(snapshot.ticker_count)}</td>
+          <td>${esc(snapshot.bar_count)}</td>
+          <td>${esc(snapshot.event_count)}</td>
+          <td>${esc(snapshot.recommendation_count)}</td>
+          <td><button class="btn-mini" onclick="replaySnapshot(${idx})">回放</button></td>
+        </tr>
+      `).join("");
+    }
+
+    function replayPayload(objective) {
+      const topN = numberValue('topN') || 5;
+      const minConfidence = numberValue('minConfidence') ?? 0;
+      return {
+        objective,
+        universe_rules: {
+          min_price: 1,
+          min_avg_dollar_volume: 1000000,
+          max_spread_bps: 100,
+          min_market_cap_usd: 100000000,
+          allowed_sectors: [],
+          max_candidates_after_filter: 50,
+        },
+        risk_policy: {
+          min_confidence: minConfidence,
+          earnings_blackout_minutes: 0,
+          max_name_weight: 0.10,
+          max_sector_weight: 0.30,
+          max_gross_exposure: 1.0,
+          max_correlated_cluster_weight: 0.35,
+          reject_on_material_evidence_conflict: false,
+          event_trading_enabled: true,
+        },
+        publication: { top_n: topN, output_channels: ['api'] },
+        execution_mode: 'research_only',
+      };
+    }
+
+    async function replaySnapshot(index) {
+      const snapshot = currentSnapshots[index];
+      if (!snapshot) return;
+      document.getElementById('sourceSnapshotId').value = snapshot.source_snapshot_id;
+      try {
+        const result = await postJson(
+          `/source-snapshots/${encodeURIComponent(snapshot.source_snapshot_id)}/replay`,
+          replayPayload('dashboard snapshot replay')
+        );
+        const op = result.universe_summary?.snapshot?.operation || 'unknown';
+        setActionStatus(`已回放 ${result.source_snapshot_id}，operation=${op}，推荐 ${result.recommendations?.length || 0} 条`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
+    async function replaySnapshotByInput() {
+      const snapshotId = document.getElementById('sourceSnapshotId')?.value?.trim();
+      if (!snapshotId) {
+        setActionStatus('请输入 snapshot id', true);
+        return;
+      }
+      try {
+        const result = await postJson(
+          `/source-snapshots/${encodeURIComponent(snapshotId)}/replay`,
+          replayPayload('dashboard snapshot replay')
+        );
+        const op = result.universe_summary?.snapshot?.operation || 'unknown';
+        setActionStatus(`已回放 ${result.source_snapshot_id}，operation=${op}，推荐 ${result.recommendations?.length || 0} 条`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
     }
 
     function renderHoldings(items) {
@@ -1128,6 +1232,7 @@ def dashboard_home() -> str:
       const provider = data.provider || '-';
       document.getElementById('provider').textContent = provider;
       document.getElementById('recCount').textContent = String(data.summary?.recommendation_count ?? 0);
+      document.getElementById('snapshotCount').textContent = String(data.summary?.source_snapshot_count ?? 0);
       document.getElementById('holdingCount').textContent = String(data.summary?.open_holding_count ?? 0);
       document.getElementById('alertCount').textContent = String(data.summary?.sell_alert_count ?? 0);
       document.getElementById('paperOrderCount').textContent = String(data.summary?.paper_order_count ?? 0);
@@ -1149,6 +1254,7 @@ def dashboard_home() -> str:
       document.getElementById('providerNote').textContent = `数据源可靠性: ${providerReliability(provider)}`;
 
       renderRecommendations(data.recommendations || []);
+      renderSourceSnapshots(data.source_snapshots || []);
       renderHoldings(data.holdings || []);
       renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);

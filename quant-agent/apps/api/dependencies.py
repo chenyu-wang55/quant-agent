@@ -31,7 +31,11 @@ from domain.entities.models import (
     SellAlert,
     SellExecutionResult,
     SignalSnapshot,
+    SnapshotMode,
     SnapshotAttribution,
+    SourceSnapshotDetail,
+    SourceSnapshotReplayRequest,
+    SourceSnapshotSummary,
     TickerPerformance,
     TradeLedgerEntry,
     TradeSide,
@@ -195,6 +199,46 @@ class AppState:
         ]
         merged = sorted([*orders, *memory_only], key=lambda order: order.submitted_at, reverse=True)
         return merged[:limit]
+
+    def list_source_snapshots(self, limit: int = 50) -> list[SourceSnapshotSummary]:
+        return self.source_snapshot_repo.list_summaries(limit=limit)
+
+    def get_source_snapshot_detail(
+        self,
+        source_snapshot_id: str,
+        event_limit: int = 20,
+    ) -> SourceSnapshotDetail | None:
+        return self.source_snapshot_repo.get_detail(
+            source_snapshot_id=source_snapshot_id,
+            event_limit=event_limit,
+        )
+
+    def replay_source_snapshot(
+        self,
+        source_snapshot_id: str,
+        replay_request: SourceSnapshotReplayRequest,
+    ) -> ResearchRunResult:
+        summary = self.source_snapshot_repo.get_summary(source_snapshot_id)
+        if summary is None:
+            raise KeyError("source snapshot not found")
+
+        request = ResearchRunRequest(
+            run_type=replay_request.run_type,
+            objective=replay_request.objective,
+            as_of=summary.as_of,
+            snapshot_mode=SnapshotMode.POINT_IN_TIME,
+            source_snapshot_id=source_snapshot_id,
+            universe=summary.universe,
+            universe_rules=replay_request.universe_rules,
+            signal_config=replay_request.signal_config,
+            price_plan_config=replay_request.price_plan_config,
+            risk_policy=replay_request.risk_policy,
+            publication=replay_request.publication,
+            execution_mode=replay_request.execution_mode,
+        )
+        output = self.pipeline.run(request)
+        self.ingest_run_output(request, output)
+        return output.result
 
     def decide_recommendation(self, request: ApprovalDecisionRequest) -> RecommendationApproval:
         issues = self.approval_policy.validate(request)

@@ -148,6 +148,17 @@ class ResearchRunRequest(BaseModel):
     execution_mode: ExecutionMode = ExecutionMode.RESEARCH_ONLY
 
 
+class SourceSnapshotReplayRequest(BaseModel):
+    run_type: RunType = RunType.RESEARCH_BATCH
+    objective: str = "Replay source snapshot"
+    universe_rules: UniverseRules = Field(default_factory=UniverseRules)
+    signal_config: SignalConfig = Field(default_factory=SignalConfig)
+    price_plan_config: PricePlanConfig = Field(default_factory=PricePlanConfig)
+    risk_policy: RiskPolicy = Field(default_factory=RiskPolicy)
+    publication: PublicationConfig = Field(default_factory=PublicationConfig)
+    execution_mode: ExecutionMode = ExecutionMode.RESEARCH_ONLY
+
+
 class SecurityMetadata(BaseModel):
     ticker: str
     sector: str
@@ -188,6 +199,25 @@ class NewsEvent(BaseModel):
     relevance: float
     horizon: str
     source_url: str
+
+
+class SourceSnapshotSummary(BaseModel):
+    source_snapshot_id: str
+    created_at: datetime
+    as_of: datetime
+    universe: str
+    provider_name: str
+    tickers: list[str]
+    ticker_count: int
+    bar_count: int
+    fundamental_count: int
+    event_count: int
+    recommendation_count: int
+
+
+class SourceSnapshotDetail(SourceSnapshotSummary):
+    securities: list[SecurityMetadata] = Field(default_factory=list)
+    recent_events: list[NewsEvent] = Field(default_factory=list)
 
 
 class FeatureSnapshot(BaseModel):
