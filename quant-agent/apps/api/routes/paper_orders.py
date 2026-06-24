@@ -42,5 +42,5 @@ def submit_paper_order(
         positions=state.positions,
     )
     state.positions = updated_positions
-    state.record_paper_order(order)
+    state.record_paper_order(order, recommendation=recommendation)
     return order

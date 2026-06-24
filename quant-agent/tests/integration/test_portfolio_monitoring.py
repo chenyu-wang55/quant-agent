@@ -45,6 +45,8 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     )
     assert run_response.status_code == 200
     recommendation = run_response.json()["recommendations"][0]
+    cleanup_response = client.post(f"/portfolio/holdings/{recommendation['ticker']}/close", headers=AUTH_HEADERS)
+    assert cleanup_response.status_code in {200, 404}
     baseline_summary = client.get("/portfolio/summary", headers=AUTH_HEADERS)
     assert baseline_summary.status_code == 200
     baseline_summary_data = baseline_summary.json()

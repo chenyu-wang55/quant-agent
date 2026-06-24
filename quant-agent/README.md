@@ -86,8 +86,14 @@ Endpoints:
 - `POST /recommendations/{id}/approval`
 - `GET /recommendations/{id}/approval`
 - `GET /recommendations/{id}/evidence`
+- `POST /paper-orders`
 - `GET /execution/kill-switch`
 - `POST /execution/kill-switch`
+
+Filled BUY paper orders are automatically synchronized into portfolio monitoring and
+the trade ledger, so approved dashboard buys flow into stop/take-profit alerts and
+later P&L attribution. Manual buys remain available for trades placed outside the
+paper router.
 
 Default risk guardrails:
 - `min_confidence=0.72`

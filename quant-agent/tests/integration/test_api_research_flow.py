@@ -61,7 +61,13 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     recommendations = recommendations_response.json()
     assert len(recommendations) > 0
 
-    recommendation_id = recommendations[0]["id"]
+    recommendation = recommendations[0]
+    recommendation_id = recommendation["id"]
+    ticker = recommendation["ticker"]
+    baseline_holdings = client.get("/portfolio/holdings?status=open", headers=AUTH_HEADERS)
+    assert baseline_holdings.status_code == 200
+    baseline_ticker_rows = [item for item in baseline_holdings.json() if item["ticker"] == ticker]
+    baseline_holding_qty = baseline_ticker_rows[0]["qty"] if baseline_ticker_rows else 0.0
 
     approval_response = client.post(
         f"/recommendations/{recommendation_id}/approval",
@@ -102,8 +108,28 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
         headers=AUTH_HEADERS,
     )
     assert paper_response.status_code == 200
-    assert paper_response.json()["status"] == "filled"
+    paper_order = paper_response.json()
+    assert paper_order["status"] == "filled"
 
     positions_response = client.get("/positions", headers=AUTH_HEADERS)
     assert positions_response.status_code == 200
     assert len(positions_response.json()) >= 1
+
+    holdings_response = client.get("/portfolio/holdings?status=open", headers=AUTH_HEADERS)
+    assert holdings_response.status_code == 200
+    holding_rows = [item for item in holdings_response.json() if item["ticker"] == ticker]
+    assert holding_rows
+    assert holding_rows[0]["qty"] >= baseline_holding_qty + 10
+    assert holding_rows[0]["source_recommendation_id"] == recommendation_id
+    assert holding_rows[0]["stop_loss"] == recommendation["stop_loss"]
+
+    trade_rows_response = client.get(f"/portfolio/trades?ticker={ticker}&side=buy", headers=AUTH_HEADERS)
+    assert trade_rows_response.status_code == 200
+    buy_rows = trade_rows_response.json()
+    assert buy_rows
+    assert buy_rows[0]["source_recommendation_id"] == recommendation_id
+    assert buy_rows[0]["reason"] == f"paper_order_fill:{paper_order['id']}"
+    assert buy_rows[0]["price"] == paper_order["simulated_fill_price"]
+
+    cleanup_response = client.post(f"/portfolio/holdings/{ticker}/close", headers=AUTH_HEADERS)
+    assert cleanup_response.status_code == 200

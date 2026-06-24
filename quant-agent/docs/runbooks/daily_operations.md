@@ -93,7 +93,15 @@ Paper-order routing requires recommendation approval first.
 curl -X POST http://localhost:8000/recommendations/<id>/approval \
   -H "Content-Type: application/json" \
   -d '{"decision":"approved","approver":"ops","notes":"approved for paper trading"}'
+
+curl -X POST http://localhost:8000/paper-orders \
+  -H "Content-Type: application/json" \
+  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null}'
 ```
+
+Filled BUY paper orders automatically create/update the monitored holding and write a
+buy row to `/portfolio/trades`, so sell alerts and later recommendation attribution
+start from the approved order fill instead of a separate manual entry.
 
 Kill switch can pause all execution:
 

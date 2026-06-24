@@ -69,6 +69,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "event_trading_enabled: true" in dashboard_home.text
     assert "buyRecommendation" in dashboard_home.text
     assert "sellHolding" in dashboard_home.text
+    assert "/paper-orders" in dashboard_home.text
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200

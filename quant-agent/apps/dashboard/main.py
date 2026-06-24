@@ -608,7 +608,7 @@ def dashboard_home() -> str:
     <div class="panel">
       <div class="panel-head">
         <h3>持仓监控</h3>
-        <span class="small">手工买入会同步进入止损/止盈监控</span>
+        <span class="small">纸单成交和手工买入会同步进入止损/止盈监控</span>
       </div>
       <table>
         <thead><tr><th>股票</th><th>数量</th><th>成本</th><th>止损</th><th>止盈1</th><th>止盈2</th><th>已实现盈亏</th><th>最近卖出</th><th>操作</th></tr></thead>
@@ -819,7 +819,7 @@ def dashboard_home() -> str:
       currentHoldings = items || [];
       const body = document.getElementById("holdingBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="9" class="small">暂无监控持仓。你可通过 POST /portfolio/buys 记录买入。</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="small">暂无监控持仓。审批后纸单买入或 POST /portfolio/buys 会进入这里。</td></tr>';
         return;
       }
       body.innerHTML = items.map((h, idx) => `
@@ -906,17 +906,13 @@ def dashboard_home() -> str:
       }
       const buyPrice = numberValue('buyPrice') || Number(rec.entry_zone_high);
       try {
-        await postJson('/portfolio/buys', {
-          ticker: rec.ticker,
+        const order = await postJson('/paper-orders', {
+          recommendation_id: rec.id,
+          side: rec.direction || 'BUY',
           qty,
-          buy_price: buyPrice,
-          source_recommendation_id: rec.id,
-          note: reasonValue('dashboard buy'),
-          stop_loss: rec.stop_loss,
-          take_profit1: rec.tp1,
-          take_profit2: rec.tp2,
+          limit_price: buyPrice,
         });
-        setActionStatus(`已记录买入 ${rec.ticker} x ${qty} @ ${fmtNum(buyPrice, 2)}`);
+        setActionStatus(`已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || buyPrice, 2)}`);
         await refreshNow(false);
       } catch (err) {
         setActionStatus(String(err), true);

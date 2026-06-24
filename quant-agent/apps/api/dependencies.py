@@ -8,6 +8,7 @@ from uuid import uuid4
 from domain.entities.models import (
     ApprovalDecision,
     BacktestRunResult,
+    Direction,
     FeatureSnapshot,
     HoldingStatus,
     HoldingWatch,
@@ -15,6 +16,7 @@ from domain.entities.models import (
     ManualBuyRequest,
     ManualSellRequest,
     PaperOrder,
+    PaperOrderStatus,
     PortfolioPerformance,
     PortfolioSummary,
     PositionState,
@@ -123,12 +125,31 @@ class AppState:
             },
         )
 
-    def record_paper_order(self, order: PaperOrder) -> None:
+    def record_paper_order(self, order: PaperOrder, recommendation: Recommendation | None = None) -> None:
         self.paper_orders.append(order)
         self.paper_order_repo.add(order)
         self.position_repo.replace_all(self.positions.values())
         self.metrics_store.inc("paper_orders")
         self.metrics_store.set_gauge("open_positions", sum(1 for p in self.positions.values() if p.qty > 0))
+        if (
+            recommendation is not None
+            and order.status == PaperOrderStatus.FILLED
+            and order.side == Direction.BUY
+            and order.simulated_fill_price is not None
+        ):
+            self.record_manual_buy(
+                ManualBuyRequest(
+                    ticker=recommendation.ticker,
+                    qty=order.qty,
+                    buy_price=order.simulated_fill_price,
+                    source_recommendation_id=recommendation.id,
+                    note=f"paper_order_fill:{order.id}",
+                    stop_loss=recommendation.stop_loss,
+                    take_profit1=recommendation.tp1,
+                    take_profit2=recommendation.tp2,
+                    bought_at=order.filled_at or order.submitted_at,
+                )
+            )
         self.publish_event(
             EventType.PAPER_FILL,
             {
