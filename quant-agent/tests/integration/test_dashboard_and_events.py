@@ -56,6 +56,12 @@ def test_dashboard_and_event_endpoints() -> None:
     dashboard_home = client.get("/dashboard", headers=AUTH_HEADERS)
     assert dashboard_home.status_code == 200
     assert "Quant 实时交易看板" in dashboard_home.text
+    assert "交易控制" in dashboard_home.text
+    assert "runResearch" in dashboard_home.text
+    assert "reject_on_material_evidence_conflict: false" in dashboard_home.text
+    assert "event_trading_enabled: true" in dashboard_home.text
+    assert "buyRecommendation" in dashboard_home.text
+    assert "sellHolding" in dashboard_home.text
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200

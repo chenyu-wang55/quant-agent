@@ -17,6 +17,7 @@ class EventType(str, Enum):
     PAPER_FILL = "paper_fill"
     MODEL_EVALUATION = "model_evaluation"
     SELL_ALERT = "sell_alert"
+    PORTFOLIO_SELL = "portfolio_sell"
 
 
 class EventStatus(str, Enum):

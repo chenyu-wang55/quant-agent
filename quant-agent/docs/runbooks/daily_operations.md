@@ -52,6 +52,20 @@ curl -X POST http://localhost:8000/portfolio/buys \
   }'
 ```
 
+部分或全部卖出并记录已实现盈亏：
+
+```bash
+curl -X POST http://localhost:8000/portfolio/holdings/MSFT/sell \
+  -H "Content-Type: application/json" \
+  -d '{
+    "qty": 50,
+    "sell_price": 410,
+    "reason": "trim_at_target"
+  }'
+```
+
+如果省略 `qty`，系统会按当前剩余数量全部卖出并关闭持仓。
+
 ## Approval Gate
 
 Paper-order routing requires recommendation approval first.

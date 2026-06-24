@@ -4,7 +4,7 @@ import os
 
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from apps.api.routes.backtests import router as backtests_router
 from apps.api.routes.approvals import router as approvals_router
@@ -53,6 +53,11 @@ async def access_password_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized: provide valid access password"},
             )
     return await call_next(request)
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
+    return Response(status_code=204)
 
 app.include_router(health_router)
 app.include_router(universe_router)

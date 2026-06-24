@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
@@ -72,9 +73,38 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     assert alerts[0]["reason_code"] == "stop_loss_breach"
     assert "止损" in alerts[0]["message_cn"]
 
-    close_response = client.post(
-        f"/portfolio/holdings/{recommendation['ticker']}/close",
+    first_sell_price = recommendation["entry_zone_high"] + 5
+    partial_sell = client.post(
+        f"/portfolio/holdings/{recommendation['ticker']}/sell",
+        json={"qty": 40, "sell_price": first_sell_price, "reason": "trim_at_target"},
         headers=AUTH_HEADERS,
     )
-    assert close_response.status_code == 200
-    assert close_response.json()["status"] == "closed"
+    assert partial_sell.status_code == 200
+    partial_data = partial_sell.json()
+    assert partial_data["sold_qty"] == 40
+    assert partial_data["remaining_qty"] == 60
+    assert partial_data["holding"]["status"] == "open"
+    assert partial_data["realized_pnl_delta"] == pytest.approx(40 * 5)
+
+    oversized_sell = client.post(
+        f"/portfolio/holdings/{recommendation['ticker']}/sell",
+        json={"qty": 1000, "sell_price": first_sell_price, "reason": "too_much"},
+        headers=AUTH_HEADERS,
+    )
+    assert oversized_sell.status_code == 400
+
+    final_sell_price = recommendation["entry_zone_high"] - 2
+    final_sell = client.post(
+        f"/portfolio/holdings/{recommendation['ticker']}/sell",
+        json={"sell_price": final_sell_price, "reason": "exit_remaining"},
+        headers=AUTH_HEADERS,
+    )
+    assert final_sell.status_code == 200
+    final_data = final_sell.json()
+    assert final_data["remaining_qty"] == 0
+    assert final_data["holding"]["status"] == "closed"
+    assert final_data["total_realized_pnl"] == pytest.approx((40 * 5) + (60 * -2))
+
+    holdings_after_sell = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings_after_sell.status_code == 200
+    assert holdings_after_sell.json() == []

@@ -298,6 +298,10 @@ class HoldingWatchRepository:
                     note=holding.note,
                     status=holding.status.value,
                     updated_at=holding.updated_at,
+                    realized_pnl=holding.realized_pnl,
+                    closed_at=holding.closed_at,
+                    last_sell_price=holding.last_sell_price,
+                    last_sell_reason=holding.last_sell_reason,
                 )
             )
             session.commit()
@@ -321,6 +325,8 @@ class HoldingWatchRepository:
             if record is None:
                 return None
             record.status = HoldingStatus.CLOSED.value
+            record.qty = 0.0
+            record.closed_at = datetime.now(timezone.utc)
             session.merge(record)
             session.commit()
             session.refresh(record)
@@ -340,6 +346,10 @@ class HoldingWatchRepository:
             note=record.note,
             status=HoldingStatus(record.status),
             updated_at=record.updated_at,
+            realized_pnl=float(record.realized_pnl or 0.0),
+            closed_at=record.closed_at,
+            last_sell_price=record.last_sell_price,
+            last_sell_reason=record.last_sell_reason,
         )
 
 

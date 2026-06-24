@@ -129,6 +129,10 @@ class HoldingWatchRecord(Base):
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    realized_pnl: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_sell_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_sell_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ApprovalDecisionRecord(Base):

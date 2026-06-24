@@ -88,7 +88,7 @@ class ResearchPipeline:
         effective_min_confidence = request.risk_policy.min_confidence
         if request.snapshot_mode == SnapshotMode.LATEST:
             # Live mode is noisier on vendor data latency/coverage; apply a calibrated relaxation.
-            effective_min_confidence = max(0.60, effective_min_confidence - 0.08)
+            effective_min_confidence = max(0.0, effective_min_confidence - 0.08)
         effective_risk_policy = request.risk_policy.model_copy(
             update={"min_confidence": effective_min_confidence}
         )

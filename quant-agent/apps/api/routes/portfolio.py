@@ -5,7 +5,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.dependencies import AppState, get_app_state
-from domain.entities.models import HoldingWatch, ManualBuyRequest, SellAlert
+from domain.entities.models import HoldingWatch, ManualBuyRequest, ManualSellRequest, SellAlert, SellExecutionResult
 
 
 router = APIRouter(tags=["portfolio"])
@@ -37,6 +37,20 @@ def close_holding(
     if closed is None:
         raise HTTPException(status_code=404, detail="holding not found")
     return closed
+
+
+@router.post("/portfolio/holdings/{ticker}/sell", response_model=SellExecutionResult)
+def sell_holding(
+    ticker: str,
+    request: ManualSellRequest,
+    state: AppState = Depends(get_app_state),
+) -> SellExecutionResult:
+    try:
+        return state.sell_holding(ticker, request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="open holding not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/portfolio/alerts", response_model=list[SellAlert])

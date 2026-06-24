@@ -144,6 +144,10 @@ def dashboard_realtime_data(
                 "source_recommendation_id": holding.source_recommendation_id,
                 "note": holding.note,
                 "status": _as_text(holding.status),
+                "realized_pnl": holding.realized_pnl,
+                "closed_at": holding.closed_at.isoformat() if holding.closed_at else None,
+                "last_sell_price": holding.last_sell_price,
+                "last_sell_reason": holding.last_sell_reason,
             }
             for holding in holdings
         ],
@@ -307,6 +311,58 @@ def dashboard_home() -> str:
       box-shadow: 0 10px 18px rgba(15, 23, 42, 0.2);
     }
 
+    .btn-mini {
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      padding: 7px 9px;
+      background: #f8fbff;
+      color: #15304a;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      margin: 0 5px 5px 0;
+      white-space: nowrap;
+    }
+
+    .btn-mini:hover { border-color: var(--brand); background: #ecfdf5; }
+    .btn-mini.danger:hover { border-color: var(--danger); background: #fef2f2; color: var(--danger); }
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(110px, 1fr));
+      gap: 9px;
+      align-items: end;
+    }
+
+    .field label {
+      display: block;
+      color: var(--ink-soft);
+      font-size: 11px;
+      font-weight: 700;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.25px;
+    }
+
+    .field input {
+      width: 100%;
+      min-height: 35px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      padding: 7px 9px;
+      color: var(--ink);
+      background: #fbfdff;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .status-line {
+      margin-top: 8px;
+      min-height: 18px;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
     .stats {
       display: grid;
       gap: 11px;
@@ -456,12 +512,14 @@ def dashboard_home() -> str:
 
     @media (max-width: 1140px) {
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .control-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
 
     @media (max-width: 980px) {
       .hero { flex-direction: column; align-items: flex-start; }
       .hero .right { text-align: left; align-items: flex-start; width: 100%; }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
 
     @media (max-width: 680px) {
@@ -473,6 +531,7 @@ def dashboard_home() -> str:
       .panel { padding: 10px; border-radius: 13px; }
       table { font-size: 12px; }
       th, td { padding: 8px 6px; }
+      .control-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -501,11 +560,32 @@ def dashboard_home() -> str:
 
     <div class="panel">
       <div class="panel-head">
+        <h3>交易控制</h3>
+        <span class="small" id="actionStatus">待命</span>
+      </div>
+      <div class="control-grid">
+        <div class="field"><label for="topN">Top N</label><input id="topN" type="number" min="1" max="20" step="1" value="5" /></div>
+        <div class="field"><label for="minConfidence">Min Confidence</label><input id="minConfidence" type="number" min="0" max="1" step="0.05" value="0" /></div>
+        <div class="field"><label for="buyQty">Buy Qty</label><input id="buyQty" type="number" min="0.0001" step="1" value="10" /></div>
+        <div class="field"><label for="buyPrice">Buy Price</label><input id="buyPrice" type="number" min="0.0001" step="0.01" placeholder="entry high" /></div>
+        <div class="field"><label for="sellQty">Sell Qty</label><input id="sellQty" type="number" min="0.0001" step="1" placeholder="all" /></div>
+        <div class="field"><label for="sellPrice">Sell Price</label><input id="sellPrice" type="number" min="0.0001" step="0.01" /></div>
+      </div>
+      <div style="margin-top:9px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn-mini" onclick="runResearch()">运行推荐</button>
+        <button class="btn-mini" onclick="refreshNow(true)">刷新状态</button>
+        <input id="tradeReason" style="flex:1; min-width:220px; border:1px solid var(--line-strong); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px;" placeholder="reason" />
+      </div>
+      <div class="status-line" id="operationLog"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
         <h3>推荐列表（原因导向）</h3>
         <span class="small">以最新快照为主，关注入场区与纪律止损</span>
       </div>
       <table>
-        <thead><tr><th>股票</th><th>现价</th><th>方向</th><th>信号</th><th>交易计划</th><th>为什么买</th><th>什么时候卖</th><th>详情</th></tr></thead>
+        <thead><tr><th>股票</th><th>现价</th><th>方向</th><th>信号</th><th>交易计划</th><th>为什么买</th><th>什么时候卖</th><th>操作</th></tr></thead>
         <tbody id="recsBody"></tbody>
       </table>
     </div>
@@ -516,7 +596,7 @@ def dashboard_home() -> str:
         <span class="small">手工买入会同步进入止损/止盈监控</span>
       </div>
       <table>
-        <thead><tr><th>股票</th><th>数量</th><th>成本</th><th>止损</th><th>止盈1</th><th>止盈2</th><th>备注</th></tr></thead>
+        <thead><tr><th>股票</th><th>数量</th><th>成本</th><th>止损</th><th>止盈1</th><th>止盈2</th><th>已实现盈亏</th><th>最近卖出</th><th>操作</th></tr></thead>
         <tbody id="holdingBody"></tbody>
       </table>
     </div>
@@ -538,6 +618,8 @@ def dashboard_home() -> str:
     const accessPwd = searchParams.get('pwd');
     const pwdSuffix = accessPwd ? `?pwd=${encodeURIComponent(accessPwd)}` : '';
     let refreshTimer = null;
+    let currentRecommendations = [];
+    let currentHoldings = [];
 
     function esc(v) {
       return String(v ?? "")
@@ -570,6 +652,51 @@ def dashboard_home() -> str:
       const date = new Date(value);
       if (Number.isNaN(date.getTime())) return esc(value || '-');
       return date.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    function numberValue(id) {
+      const raw = document.getElementById(id)?.value;
+      if (raw === undefined || raw === null || raw === '') return null;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : null;
+    }
+
+    function reasonValue(fallback) {
+      const value = document.getElementById('tradeReason')?.value?.trim();
+      return value || fallback;
+    }
+
+    function setActionStatus(message, isError = false) {
+      const status = document.getElementById('actionStatus');
+      const log = document.getElementById('operationLog');
+      status.textContent = isError ? '操作失败' : '操作完成';
+      status.style.color = isError ? 'var(--danger)' : 'var(--ok)';
+      log.textContent = message;
+      log.style.color = isError ? 'var(--danger)' : 'var(--ink-soft)';
+    }
+
+    function apiUrl(path) {
+      const u = new URL(path, window.location.origin);
+      if (accessPwd) u.searchParams.set('pwd', accessPwd);
+      return u.toString();
+    }
+
+    async function postJson(path, payload) {
+      const res = await fetch(apiUrl(path), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const text = await res.text();
+      let data = {};
+      if (text) {
+        try { data = JSON.parse(text); } catch (_) { data = { detail: text }; }
+      }
+      if (!res.ok) {
+        const detail = data.detail || `HTTP ${res.status}`;
+        throw new Error(Array.isArray(detail) ? detail.map((x) => x.msg || String(x)).join('; ') : String(detail));
+      }
+      return data;
     }
 
     function providerReliability(provider) {
@@ -611,12 +738,13 @@ def dashboard_home() -> str:
     }
 
     function renderRecommendations(items) {
+      currentRecommendations = items || [];
       const body = document.getElementById("recsBody");
       if (!items || items.length === 0) {
         body.innerHTML = '<tr><td colspan="8" class="small">暂无推荐</td></tr>';
         return;
       }
-      body.innerHTML = items.map((r) => `
+      body.innerHTML = items.map((r, idx) => `
         <tr>
           <td><strong>${esc(r.ticker)}</strong><div class="mono">${esc(r.id)}</div></td>
           <td><strong>${fmtNum(r.current_price, 2)}</strong></td>
@@ -625,18 +753,24 @@ def dashboard_home() -> str:
           <td>入场 ${fmtNum(r.entry_zone_low, 2)}-${fmtNum(r.entry_zone_high, 2)}<br/>止损 ${fmtNum(r.stop_loss, 2)}<br/>目标 ${fmtNum(r.tp1, 2)} / ${fmtNum(r.tp2, 2)}</td>
           <td><ul class="why">${(r.why_to_buy_cn || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul></td>
           <td><ul class="why">${(r.why_to_sell_cn || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul></td>
-          <td><a class="link" href="/dashboard/recommendations/${encodeURIComponent(r.id)}${pwdSuffix}" target="_blank">查看</a></td>
+          <td>
+            <div class="small">审批: ${esc(r.approval_status || 'pending')}</div>
+            <button class="btn-mini" onclick="approveRecommendation(${idx})">审批</button>
+            <button class="btn-mini" onclick="buyRecommendation(${idx})">买入</button>
+            <a class="link" href="/dashboard/recommendations/${encodeURIComponent(r.id)}${pwdSuffix}" target="_blank">查看</a>
+          </td>
         </tr>
       `).join("");
     }
 
     function renderHoldings(items) {
+      currentHoldings = items || [];
       const body = document.getElementById("holdingBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="7" class="small">暂无监控持仓。你可通过 POST /portfolio/buys 记录买入。</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="small">暂无监控持仓。你可通过 POST /portfolio/buys 记录买入。</td></tr>';
         return;
       }
-      body.innerHTML = items.map((h) => `
+      body.innerHTML = items.map((h, idx) => `
         <tr>
           <td>${esc(h.ticker)}</td>
           <td>${fmtNum(h.qty, 2)}</td>
@@ -644,9 +778,120 @@ def dashboard_home() -> str:
           <td>${fmtNum(h.stop_loss, 2)}</td>
           <td>${fmtNum(h.take_profit1, 2)}</td>
           <td>${fmtNum(h.take_profit2, 2)}</td>
-          <td>${esc(h.note || "")}</td>
+          <td>${fmtNum(h.realized_pnl, 2)}</td>
+          <td>${fmtNum(h.last_sell_price, 2)}<div class="small">${esc(h.last_sell_reason || "")}</div></td>
+          <td>
+            <button class="btn-mini danger" onclick="sellHolding(${idx}, false)">卖出</button>
+            <button class="btn-mini danger" onclick="sellHolding(${idx}, true)">清仓</button>
+            <div class="small">${esc(h.note || "")}</div>
+          </td>
         </tr>
       `).join("");
+    }
+
+    async function runResearch() {
+      const topN = numberValue('topN') || 5;
+      const minConfidence = numberValue('minConfidence') ?? 0;
+      const payload = {
+        run_type: 'research_batch',
+        objective: 'dashboard research run',
+        snapshot_mode: 'latest',
+        universe: 'SP500',
+        universe_rules: {
+          min_price: 1,
+          min_avg_dollar_volume: 1000000,
+          max_spread_bps: 100,
+          min_market_cap_usd: 100000000,
+          allowed_sectors: [],
+          max_candidates_after_filter: 50,
+        },
+        risk_policy: {
+          min_confidence: minConfidence,
+          earnings_blackout_minutes: 0,
+          max_name_weight: 0.10,
+          max_sector_weight: 0.30,
+          max_gross_exposure: 1.0,
+          max_correlated_cluster_weight: 0.35,
+          max_entry_gap_pct: 0.40,
+          reject_on_material_evidence_conflict: false,
+          event_trading_enabled: true,
+        },
+        publication: { top_n: topN, output_channels: ['api', 'dashboard'] },
+        execution_mode: 'research_only',
+      };
+      try {
+        const result = await postJson('/research/run', payload);
+        setActionStatus(`已生成 ${result.recommendations?.length || 0} 条推荐，snapshot=${result.source_snapshot_id}`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
+    async function approveRecommendation(index) {
+      const rec = currentRecommendations[index];
+      if (!rec) return;
+      try {
+        const result = await postJson(`/recommendations/${encodeURIComponent(rec.id)}/approval`, {
+          decision: 'approved',
+          approver: 'dashboard',
+          notes: reasonValue('dashboard approval'),
+        });
+        setActionStatus(`已审批 ${result.recommendation_id}`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
+    async function buyRecommendation(index) {
+      const rec = currentRecommendations[index];
+      if (!rec) return;
+      const qty = numberValue('buyQty');
+      if (!qty || qty <= 0) {
+        setActionStatus('买入数量必须大于 0', true);
+        return;
+      }
+      const buyPrice = numberValue('buyPrice') || Number(rec.entry_zone_high);
+      try {
+        await postJson('/portfolio/buys', {
+          ticker: rec.ticker,
+          qty,
+          buy_price: buyPrice,
+          source_recommendation_id: rec.id,
+          note: reasonValue('dashboard buy'),
+          stop_loss: rec.stop_loss,
+          take_profit1: rec.tp1,
+          take_profit2: rec.tp2,
+        });
+        setActionStatus(`已记录买入 ${rec.ticker} x ${qty} @ ${fmtNum(buyPrice, 2)}`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
+    async function sellHolding(index, sellAll) {
+      const holding = currentHoldings[index];
+      if (!holding) return;
+      const price = numberValue('sellPrice');
+      if (!price || price <= 0) {
+        setActionStatus('卖出价必须大于 0', true);
+        return;
+      }
+      const qty = sellAll ? null : numberValue('sellQty');
+      const payload = {
+        sell_price: price,
+        reason: reasonValue(sellAll ? 'dashboard_exit_all' : 'dashboard_sell'),
+      };
+      if (qty) payload.qty = qty;
+      try {
+        const result = await postJson(`/portfolio/holdings/${encodeURIComponent(holding.ticker)}/sell`, payload);
+        setActionStatus(result.message_cn || `已卖出 ${holding.ticker}`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
     }
 
     function renderAlerts(items) {

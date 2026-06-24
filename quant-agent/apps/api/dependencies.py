@@ -13,6 +13,7 @@ from domain.entities.models import (
     HoldingWatch,
     KillSwitchState,
     ManualBuyRequest,
+    ManualSellRequest,
     PaperOrder,
     PositionState,
     Recommendation,
@@ -20,6 +21,7 @@ from domain.entities.models import (
     ResearchRunRequest,
     ResearchRunResult,
     SellAlert,
+    SellExecutionResult,
     SignalSnapshot,
 )
 from domain.policies.approval import ApprovalDecisionRequest, ApprovalPolicy
@@ -203,6 +205,10 @@ class AppState:
                 note=request.note or existing.note,
                 status=HoldingStatus.OPEN,
                 updated_at=datetime.now(timezone.utc),
+                realized_pnl=existing.realized_pnl,
+                closed_at=None,
+                last_sell_price=existing.last_sell_price,
+                last_sell_reason=existing.last_sell_reason,
             )
         else:
             holding = HoldingWatch(
@@ -217,6 +223,8 @@ class AppState:
                 note=request.note,
                 status=HoldingStatus.OPEN,
                 updated_at=datetime.now(timezone.utc),
+                realized_pnl=0.0,
+                closed_at=None,
             )
 
         self.holdings_by_ticker[ticker] = holding
@@ -224,6 +232,72 @@ class AppState:
         self.metrics_store.inc("manual_buys")
         self.metrics_store.set_gauge("open_holdings", len(self.list_open_holdings()))
         return holding
+
+    def sell_holding(self, ticker: str, request: ManualSellRequest) -> SellExecutionResult:
+        ticker_upper = ticker.upper()
+        holding = self.holdings_by_ticker.get(ticker_upper)
+        if holding is None:
+            holding = self.holding_watch_repo.get(ticker_upper)
+        if holding is None or holding.status != HoldingStatus.OPEN:
+            raise KeyError("open holding not found")
+
+        sell_qty = request.qty if request.qty is not None else holding.qty
+        if sell_qty <= 0:
+            raise ValueError("qty must be greater than 0")
+        if sell_qty > holding.qty:
+            raise ValueError("sell qty cannot exceed open holding qty")
+
+        sold_at = request.sold_at or datetime.now(timezone.utc)
+        realized_delta = (request.sell_price - holding.avg_buy_price) * sell_qty
+        remaining_qty = round(max(0.0, holding.qty - sell_qty), 6)
+        is_closed = remaining_qty <= 1e-9
+        total_realized = round(holding.realized_pnl + realized_delta, 6)
+
+        updated = HoldingWatch(
+            ticker=holding.ticker,
+            qty=0.0 if is_closed else remaining_qty,
+            avg_buy_price=holding.avg_buy_price,
+            bought_at=holding.bought_at,
+            source_recommendation_id=holding.source_recommendation_id,
+            stop_loss=holding.stop_loss,
+            take_profit1=holding.take_profit1,
+            take_profit2=holding.take_profit2,
+            note=holding.note,
+            status=HoldingStatus.CLOSED if is_closed else HoldingStatus.OPEN,
+            updated_at=sold_at,
+            realized_pnl=total_realized,
+            closed_at=sold_at if is_closed else None,
+            last_sell_price=request.sell_price,
+            last_sell_reason=request.reason,
+        )
+
+        self.holdings_by_ticker[ticker_upper] = updated
+        self.holding_watch_repo.upsert(updated)
+        self.metrics_store.inc("manual_sells")
+        self.metrics_store.set_gauge("open_holdings", len(self.list_open_holdings()))
+        self.publish_event(
+            EventType.PORTFOLIO_SELL,
+            {
+                "ticker": ticker_upper,
+                "sold_qty": round(sell_qty, 6),
+                "sell_price": request.sell_price,
+                "realized_pnl_delta": round(realized_delta, 6),
+                "remaining_qty": updated.qty,
+                "status": updated.status.value,
+                "reason": request.reason,
+            },
+        )
+
+        action = "全部卖出并关闭持仓" if is_closed else f"卖出 {sell_qty:g} 股，剩余 {remaining_qty:g} 股"
+        return SellExecutionResult(
+            holding=updated,
+            sold_qty=round(sell_qty, 6),
+            sell_price=request.sell_price,
+            realized_pnl_delta=round(realized_delta, 6),
+            total_realized_pnl=total_realized,
+            remaining_qty=updated.qty,
+            message_cn=f"{ticker_upper} 已{action}，本次已实现盈亏 {realized_delta:.2f}。",
+        )
 
     def list_open_holdings(self) -> list[HoldingWatch]:
         if self.holdings_by_ticker:

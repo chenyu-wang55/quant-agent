@@ -61,7 +61,8 @@ class MockMarketDataProvider:
 
         for ticker, sector, market_cap in self._BASE_UNIVERSE:
             rng = _rng("universe", day_key, ticker)
-            last_price = round(20 + rng.random() * 600, 2)
+            latest_price = self.get_latest_price(ticker=ticker, as_of=as_of)
+            last_price = round(float(latest_price), 2) if latest_price is not None else round(20 + rng.random() * 600, 2)
             avg_dollar_volume = round(8_000_000 + rng.random() * 180_000_000, 2)
             spread_bps = round(4 + rng.random() * 60, 2)
             result.append(

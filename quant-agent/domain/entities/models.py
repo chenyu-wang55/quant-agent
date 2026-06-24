@@ -395,6 +395,13 @@ class ManualBuyRequest(BaseModel):
     take_profit2: float | None = None
 
 
+class ManualSellRequest(BaseModel):
+    qty: float | None = Field(default=None, gt=0)
+    sell_price: float = Field(gt=0)
+    sold_at: datetime | None = None
+    reason: str | None = None
+
+
 class HoldingWatch(BaseModel):
     ticker: str
     qty: float
@@ -407,6 +414,20 @@ class HoldingWatch(BaseModel):
     note: str | None = None
     status: HoldingStatus = HoldingStatus.OPEN
     updated_at: datetime = Field(default_factory=utc_now)
+    realized_pnl: float = 0.0
+    closed_at: datetime | None = None
+    last_sell_price: float | None = None
+    last_sell_reason: str | None = None
+
+
+class SellExecutionResult(BaseModel):
+    holding: HoldingWatch
+    sold_qty: float
+    sell_price: float
+    realized_pnl_delta: float
+    total_realized_pnl: float
+    remaining_qty: float
+    message_cn: str
 
 
 class SellAlertLevel(str, Enum):

@@ -142,7 +142,9 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
 
 - Record a manual buy: `POST /portfolio/buys`
 - List open holdings: `GET /portfolio/holdings`
+- Sell part or all of a holding: `POST /portfolio/holdings/{ticker}/sell`
 - Close a holding: `POST /portfolio/holdings/{ticker}/close`
 - Get sell alerts: `GET /portfolio/alerts`
 
 Sell alerts are Chinese-first and reason-based (stop-loss breach, target hit, regime risk-off).
+Sell controls record sell price, quantity, reason, realized P&L, and whether the holding remains open.
