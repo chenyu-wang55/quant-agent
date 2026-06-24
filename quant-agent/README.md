@@ -153,10 +153,13 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
 - Recommendation attribution: `GET /portfolio/recommendation-attribution`
 - Trade ledger: `GET /portfolio/trades`
 - Sell part or all of a holding: `POST /portfolio/holdings/{ticker}/sell`
+- Execute an active sell alert: `POST /portfolio/alerts/{ticker}/execute`
 - Close a holding: `POST /portfolio/holdings/{ticker}/close`
 - Get sell alerts: `GET /portfolio/alerts`
 
 Sell alerts are Chinese-first and reason-based (stop-loss breach, target hit, regime risk-off).
+Alert execution uses the alert reason to choose a default action: stop-loss and second target sell all,
+first target and risk-off reduce half unless `qty`, `sell_price`, or `sell_all` is supplied.
 Sell controls record sell price, quantity, reason, realized P&L, and whether the holding remains open.
 Every manual buy and sell also writes an immutable trade-ledger entry so repeated ticker cycles remain auditable
 even when the current holding watch row is reopened or overwritten.

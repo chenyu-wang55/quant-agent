@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import (
+    AlertExecutionResult,
+    AlertSellRequest,
     HoldingStatus,
     HoldingWatch,
     ManualBuyRequest,
@@ -124,3 +126,17 @@ def get_sell_alerts(
     state: AppState = Depends(get_app_state),
 ) -> list[SellAlert]:
     return state.monitor_sell_alerts(as_of=as_of)
+
+
+@router.post("/portfolio/alerts/{ticker}/execute", response_model=AlertExecutionResult)
+def execute_sell_alert(
+    ticker: str,
+    request: AlertSellRequest,
+    state: AppState = Depends(get_app_state),
+) -> AlertExecutionResult:
+    try:
+        return state.execute_sell_alert(ticker=ticker, request=request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="open holding not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

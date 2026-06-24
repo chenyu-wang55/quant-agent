@@ -6,6 +6,8 @@ from functools import lru_cache
 from uuid import uuid4
 
 from domain.entities.models import (
+    AlertExecutionResult,
+    AlertSellRequest,
     ApprovalDecision,
     BacktestRunResult,
     Direction,
@@ -93,6 +95,15 @@ class AppState:
     approvals_by_recommendation_id: dict[str, RecommendationApproval] = field(default_factory=dict)
     kill_switch: KillSwitchState = field(default_factory=lambda: KillSwitchState(enabled=False))
     recent_sell_alerts: list[SellAlert] = field(default_factory=list)
+
+    _alert_priority: dict[str, int] = field(
+        default_factory=lambda: {
+            "stop_loss_breach": 0,
+            "take_profit2_hit": 1,
+            "regime_risk_off": 2,
+            "take_profit1_hit": 3,
+        }
+    )
 
     def _record_trade(self, entry: TradeLedgerEntry) -> None:
         self.trade_ledger_repo.add(entry)
@@ -627,6 +638,45 @@ class AppState:
                 },
             )
         return alerts
+
+    def _select_sell_alert(self, ticker: str, reason_code: str | None = None) -> SellAlert | None:
+        ticker_upper = ticker.upper()
+        alerts = self.monitor_sell_alerts()
+        candidates = [alert for alert in alerts if alert.ticker.upper() == ticker_upper]
+        if reason_code is not None:
+            candidates = [alert for alert in candidates if alert.reason_code == reason_code]
+        candidates.sort(key=lambda alert: self._alert_priority.get(alert.reason_code, 99))
+        return candidates[0] if candidates else None
+
+    @staticmethod
+    def _alert_default_sell_qty(alert: SellAlert, holding: HoldingWatch) -> tuple[float | None, str]:
+        if alert.reason_code in {"stop_loss_breach", "take_profit2_hit"}:
+            return None, "执行建议: 全部卖出并关闭持仓"
+        if alert.reason_code == "take_profit1_hit":
+            return round(max(holding.qty * 0.5, 0.0), 6), "执行建议: 先卖出一半锁定利润"
+        if alert.reason_code == "regime_risk_off":
+            return round(max(holding.qty * 0.5, 0.0), 6), "执行建议: 降低一半风险暴露"
+        return round(max(holding.qty * 0.5, 0.0), 6), "执行建议: 先减仓观察"
+
+    def execute_sell_alert(self, ticker: str, request: AlertSellRequest) -> AlertExecutionResult:
+        ticker_upper = ticker.upper()
+        holding = self.holdings_by_ticker.get(ticker_upper) or self.holding_watch_repo.get(ticker_upper)
+        if holding is None or holding.status != HoldingStatus.OPEN:
+            raise KeyError("open holding not found")
+
+        alert = self._select_sell_alert(ticker=ticker_upper, reason_code=request.reason_code)
+        if alert is None:
+            raise ValueError("No active sell alert found for holding")
+
+        default_qty, default_action_cn = self._alert_default_sell_qty(alert, holding)
+        sell_qty = None if request.sell_all is True else (request.qty if request.qty is not None else default_qty)
+        sell_price = request.sell_price if request.sell_price is not None else alert.current_price
+        reason = request.note or f"alert:{alert.reason_code}"
+        execution = self.sell_holding(
+            ticker=ticker_upper,
+            request=ManualSellRequest(qty=sell_qty, sell_price=sell_price, reason=reason),
+        )
+        return AlertExecutionResult(alert=alert, execution=execution, default_action_cn=default_action_cn)
 
     def consume_events(self, limit: int = 100) -> list[SystemEvent]:
         events = self.event_queue.consume(limit=limit)

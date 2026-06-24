@@ -85,6 +85,17 @@ curl "http://localhost:8000/portfolio/trades?ticker=MSFT&side=sell"
 `recommendation_id` and `source_snapshot_id`, which is the daily check for whether
 a replayable market/news snapshot produced useful recommendations after exits.
 
+按当前卖出提醒执行建议动作：
+
+```bash
+curl -X POST http://localhost:8000/portfolio/alerts/MSFT/execute \
+  -H "Content-Type: application/json" \
+  -d '{"reason_code":"stop_loss_breach"}'
+```
+
+默认动作由提醒原因决定：止损和第二目标位会清仓，第一目标位和 risk-off 会先减半。
+需要覆盖默认动作时可传 `qty`、`sell_price` 或 `sell_all`。
+
 ## Approval Gate
 
 Paper-order routing requires recommendation approval first.

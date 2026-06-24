@@ -193,3 +193,80 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     ]
     assert snapshot_rows
     assert snapshot_rows[0]["sell_trade_count"] >= 2
+
+
+def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
+    state = get_app_state()
+    state.reset()
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "alert execution test",
+            "as_of": "2026-04-10T09:30:00Z",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "max_name_weight": 0.10,
+                "max_sector_weight": 0.30,
+                "max_gross_exposure": 1.0,
+                "max_correlated_cluster_weight": 0.35,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1000000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100000000,
+                "allowed_sectors": [],
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    ticker = recommendation["ticker"]
+    cleanup_response = client.post(f"/portfolio/holdings/{ticker}/close", headers=AUTH_HEADERS)
+    assert cleanup_response.status_code in {200, 404}
+
+    buy_response = client.post(
+        "/portfolio/buys",
+        json={
+            "ticker": ticker,
+            "qty": 25,
+            "buy_price": recommendation["entry_zone_high"],
+            "source_recommendation_id": recommendation["id"],
+            "note": "alert execution setup",
+            "stop_loss": 99999999,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert buy_response.status_code == 200
+
+    alert_response = client.get("/portfolio/alerts", headers=AUTH_HEADERS)
+    assert alert_response.status_code == 200
+    alerts = alert_response.json()
+    assert any(item["ticker"] == ticker and item["reason_code"] == "stop_loss_breach" for item in alerts)
+
+    execute_response = client.post(
+        f"/portfolio/alerts/{ticker}/execute",
+        json={"reason_code": "stop_loss_breach"},
+        headers=AUTH_HEADERS,
+    )
+    assert execute_response.status_code == 200
+    execution = execute_response.json()["execution"]
+    assert execution["sold_qty"] == 25
+    assert execution["remaining_qty"] == 0
+    assert execution["holding"]["status"] == "closed"
+
+    sell_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
+    assert sell_trades.status_code == 200
+    sell_rows = sell_trades.json()
+    assert sell_rows
+    assert sell_rows[0]["source_recommendation_id"] == recommendation["id"]
+    assert sell_rows[0]["reason"] == "alert:stop_loss_breach"

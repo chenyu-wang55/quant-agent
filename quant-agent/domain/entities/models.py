@@ -435,6 +435,14 @@ class SellExecutionResult(BaseModel):
     message_cn: str
 
 
+class AlertSellRequest(BaseModel):
+    reason_code: str | None = None
+    qty: float | None = Field(default=None, gt=0)
+    sell_price: float | None = Field(default=None, gt=0)
+    sell_all: bool | None = None
+    note: str | None = None
+
+
 class TradeLedgerEntry(BaseModel):
     trade_id: str
     ticker: str
@@ -558,3 +566,9 @@ class SellAlert(BaseModel):
     message_cn: str
     suggested_action_cn: str
     generated_at: datetime = Field(default_factory=utc_now)
+
+
+class AlertExecutionResult(BaseModel):
+    alert: SellAlert
+    execution: SellExecutionResult
+    default_action_cn: str

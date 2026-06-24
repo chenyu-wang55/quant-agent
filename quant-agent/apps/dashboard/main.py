@@ -659,7 +659,7 @@ def dashboard_home() -> str:
         <span class="small">触发条件: 止损失效 / 目标触达 / 风险偏好切换</span>
       </div>
       <table>
-        <thead><tr><th>级别</th><th>股票</th><th>原因</th><th>提醒内容</th><th>建议动作</th><th>时间</th></tr></thead>
+        <thead><tr><th>级别</th><th>股票</th><th>原因</th><th>提醒内容</th><th>建议动作</th><th>时间</th><th>操作</th></tr></thead>
         <tbody id="alertBody"></tbody>
       </table>
     </div>
@@ -672,6 +672,7 @@ def dashboard_home() -> str:
     let refreshTimer = null;
     let currentRecommendations = [];
     let currentHoldings = [];
+    let currentAlerts = [];
 
     function esc(v) {
       return String(v ?? "")
@@ -942,13 +943,34 @@ def dashboard_home() -> str:
       }
     }
 
+    async function executeAlert(index) {
+      const alert = currentAlerts[index];
+      if (!alert) return;
+      const qty = numberValue('sellQty');
+      const sellPrice = numberValue('sellPrice') || Number(alert.current_price);
+      const payload = {
+        reason_code: alert.reason_code,
+        sell_price: sellPrice,
+        note: reasonValue(`alert:${alert.reason_code}`),
+      };
+      if (qty) payload.qty = qty;
+      try {
+        const result = await postJson(`/portfolio/alerts/${encodeURIComponent(alert.ticker)}/execute`, payload);
+        setActionStatus(result.execution?.message_cn || `${alert.ticker} 已按提醒执行卖出`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
     function renderAlerts(items) {
+      currentAlerts = items || [];
       const body = document.getElementById("alertBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="6" class="small">当前无卖出提醒。</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="small">当前无卖出提醒。</td></tr>';
         return;
       }
-      body.innerHTML = items.map((a) => `
+      body.innerHTML = items.map((a, idx) => `
         <tr>
           <td>${badge(a.level)}</td>
           <td>${esc(a.ticker)}</td>
@@ -956,6 +978,7 @@ def dashboard_home() -> str:
           <td>${esc(a.message_cn)}</td>
           <td>${esc(a.suggested_action_cn)}</td>
           <td class="small">${fmtTime(a.generated_at)}</td>
+          <td><button class="btn-mini danger" onclick="executeAlert(${idx})">执行建议</button></td>
         </tr>
       `).join("");
     }
