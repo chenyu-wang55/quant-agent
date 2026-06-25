@@ -26,6 +26,8 @@ the latest market snapshot, generates recommendations, refreshes sell alerts, pr
 JSON health summary, and leaves order execution to the approval/dashboard flow. Add
 `--consume-events` only when a downstream event sink has already captured the printed
 summary and you want the in-memory queue drained.
+The JSON summary includes `system_cycle_run_id`, and the durable run history is available
+at `GET /operations/system-runs`.
 
 ## API Checks
 
@@ -42,6 +44,7 @@ curl http://localhost:8000/strategy-configs/<strategy_config_id>
 curl http://localhost:8000/dashboard
 curl http://localhost:8000/dashboard/realtime-data
 curl http://localhost:8000/metrics
+curl http://localhost:8000/operations/system-runs
 curl http://localhost:8000/execution/kill-switch
 curl http://localhost:8000/events/pending
 curl http://localhost:8000/paper-orders

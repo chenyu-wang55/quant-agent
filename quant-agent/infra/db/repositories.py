@@ -31,6 +31,7 @@ from domain.entities.models import (
     SourceSnapshotDetail,
     SourceSnapshotSummary,
     StrategyConfigSnapshot,
+    SystemCycleRun,
     TradeLedgerEntry,
     TradeSide,
 )
@@ -50,6 +51,7 @@ from infra.db.models import (
     SnapshotSecurityRecord,
     SourceSnapshotRecord,
     StrategyConfigRecord,
+    SystemCycleRunRecord,
     TradeLedgerRecord,
 )
 from infra.db.session import SessionLocal
@@ -595,6 +597,64 @@ class SellExecutionAuditRepository:
             holding_status_after=(
                 HoldingStatus(record.holding_status_after) if record.holding_status_after else None
             ),
+        )
+
+
+class SystemCycleRunRepository:
+    def add(self, item: SystemCycleRun) -> None:
+        with SessionLocal() as session:
+            session.merge(
+                SystemCycleRunRecord(
+                    id=item.id,
+                    job=item.job,
+                    started_at=item.started_at,
+                    finished_at=item.finished_at,
+                    status=item.status,
+                    source_snapshot_id=item.source_snapshot_id,
+                    strategy_config_id=item.strategy_config_id,
+                    recommendation_count=item.recommendation_count,
+                    sell_alert_count=item.sell_alert_count,
+                    consumed_event_count=item.consumed_event_count,
+                    pending_event_count=item.pending_event_count,
+                    auto_execution_enabled=1 if item.auto_execution_enabled else 0,
+                    top_recommendations_json=item.top_recommendations,
+                    sell_alerts_json=item.sell_alerts,
+                    consumed_event_type_counts_json=item.consumed_event_type_counts,
+                    metrics_json=item.metrics,
+                    error_message=item.error_message,
+                )
+            )
+            session.commit()
+
+    def list_recent(self, limit: int = 100, status: str | None = None) -> list[SystemCycleRun]:
+        with SessionLocal() as session:
+            stmt = select(SystemCycleRunRecord)
+            if status is not None:
+                stmt = stmt.where(SystemCycleRunRecord.status == status)
+            stmt = stmt.order_by(SystemCycleRunRecord.started_at.desc()).limit(limit)
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    @staticmethod
+    def _to_domain(record: SystemCycleRunRecord) -> SystemCycleRun:
+        return SystemCycleRun(
+            id=record.id,
+            job=record.job,
+            started_at=_ensure_utc(record.started_at),
+            finished_at=_ensure_utc(record.finished_at),
+            status=record.status,
+            source_snapshot_id=record.source_snapshot_id,
+            strategy_config_id=record.strategy_config_id,
+            recommendation_count=record.recommendation_count,
+            sell_alert_count=record.sell_alert_count,
+            consumed_event_count=record.consumed_event_count,
+            pending_event_count=record.pending_event_count,
+            auto_execution_enabled=bool(record.auto_execution_enabled),
+            top_recommendations=list(record.top_recommendations_json or []),
+            sell_alerts=list(record.sell_alerts_json or []),
+            consumed_event_type_counts=dict(record.consumed_event_type_counts_json or {}),
+            metrics=dict(record.metrics_json or {}),
+            error_message=record.error_message,
         )
 
 

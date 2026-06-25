@@ -195,6 +195,28 @@ class SellExecutionAuditRecord(Base):
     holding_status_after: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class SystemCycleRunRecord(Base):
+    __tablename__ = "system_cycle_runs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    job: Mapped[str] = mapped_column(String(64), nullable=False, default="system_cycle")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="success")
+    source_snapshot_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    strategy_config_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    recommendation_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sell_alert_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    consumed_event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pending_event_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_execution_enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    top_recommendations_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    sell_alerts_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    consumed_event_type_counts_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    metrics_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class ApprovalDecisionRecord(Base):
     __tablename__ = "approval_decisions"
 

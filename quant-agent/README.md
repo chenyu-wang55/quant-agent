@@ -189,6 +189,8 @@ alert, event, and metric counts. It does not auto-buy or auto-sell; execution st
 requires approval plus the paper/live-dry-run execution gates. Use `--consume-events`
 only when the printed summary is your audit sink and you want pending in-memory events
 drained after the cycle.
+Every successful cycle is persisted as a durable heartbeat and can be reviewed with
+`GET /operations/system-runs`; the JSON output includes `system_cycle_run_id`.
 
 ## Backtest (Real Historical Data)
 

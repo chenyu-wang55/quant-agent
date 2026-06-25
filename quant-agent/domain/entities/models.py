@@ -788,3 +788,23 @@ class AlertExecutionResult(BaseModel):
     alert: SellAlert
     execution: SellExecutionResult
     default_action_cn: str
+
+
+class SystemCycleRun(BaseModel):
+    id: str
+    job: str = "system_cycle"
+    started_at: datetime
+    finished_at: datetime
+    status: str = "success"
+    source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
+    recommendation_count: int = 0
+    sell_alert_count: int = 0
+    consumed_event_count: int = 0
+    pending_event_count: int = 0
+    auto_execution_enabled: bool = False
+    top_recommendations: list[dict[str, Any]] = Field(default_factory=list)
+    sell_alerts: list[dict[str, Any]] = Field(default_factory=list)
+    consumed_event_type_counts: dict[str, int] = Field(default_factory=dict)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    error_message: str | None = None

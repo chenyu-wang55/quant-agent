@@ -23,6 +23,7 @@ REQUIRED_TABLES = {
     "holding_watches",
     "trade_ledger",
     "sell_execution_audits",
+    "system_cycle_runs",
     "strategy_configs",
     "source_snapshots",
     "snapshot_securities",

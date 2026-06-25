@@ -47,6 +47,7 @@ from domain.entities.models import (
     StrategyTuningAction,
     StrategyTuningRecommendation,
     StrategyTuningReport,
+    SystemCycleRun,
     TickerPerformance,
     TradeLedgerEntry,
     TradeSide,
@@ -65,6 +66,7 @@ from infra.db.repositories import (
     SignalRepository,
     SourceSnapshotRepository,
     StrategyConfigRepository,
+    SystemCycleRunRepository,
     TradeLedgerRepository,
 )
 from infra.observability.metrics import MetricsStore
@@ -101,6 +103,7 @@ class AppState:
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
     strategy_config_repo: StrategyConfigRepository = field(default_factory=StrategyConfigRepository)
+    system_cycle_run_repo: SystemCycleRunRepository = field(default_factory=SystemCycleRunRepository)
 
     latest_run: ResearchRunResult | None = None
     last_research_request: ResearchRunRequest | None = None
@@ -131,6 +134,13 @@ class AppState:
     def _record_sell_execution_audit(self, item: SellExecutionAudit) -> None:
         self.sell_execution_audit_repo.add(item)
         self.metrics_store.inc("sell_execution_audits")
+
+    def record_system_cycle_run(self, item: SystemCycleRun) -> None:
+        self.system_cycle_run_repo.add(item)
+        self.metrics_store.inc("system_cycle_runs")
+
+    def list_system_cycle_runs(self, limit: int = 100, status: str | None = None) -> list[SystemCycleRun]:
+        return self.system_cycle_run_repo.list_recent(limit=limit, status=status)
 
     def __post_init__(self) -> None:
         init_db()

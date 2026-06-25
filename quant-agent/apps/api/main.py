@@ -13,6 +13,7 @@ from apps.api.routes.execution_controls import router as execution_controls_rout
 from apps.api.routes.events import router as events_router
 from apps.api.routes.health import router as health_router
 from apps.api.routes.metrics import router as metrics_router
+from apps.api.routes.operations import router as operations_router
 from apps.api.routes.paper_orders import router as paper_orders_router
 from apps.api.routes.portfolio import router as portfolio_router
 from apps.api.routes.positions import router as positions_router
@@ -77,6 +78,7 @@ app.include_router(backtests_router)
 app.include_router(execution_controls_router)
 app.include_router(events_router)
 app.include_router(metrics_router)
+app.include_router(operations_router)
 
 
 def run() -> None:

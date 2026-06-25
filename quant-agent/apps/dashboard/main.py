@@ -123,6 +123,8 @@ def dashboard_realtime_data(
     recent_trades = state.list_trade_ledger(limit=10)
     recent_sell_executions = state.list_sell_execution_audits(limit=10)
     sell_execution_count = len(state.list_sell_execution_audits(limit=10_000))
+    recent_system_runs = state.list_system_cycle_runs(limit=10)
+    system_run_count = len(state.list_system_cycle_runs(limit=10_000))
     recent_paper_orders = state.list_paper_orders(limit=10)
     paper_order_count = len(state.list_paper_orders(limit=10_000))
     recent_source_snapshots = state.list_source_snapshots(limit=10)
@@ -149,6 +151,7 @@ def dashboard_realtime_data(
             "source_snapshot_count": source_snapshot_count,
             "strategy_config_count": strategy_config_count,
             "strategy_tuning_count": strategy_tuning.recommendation_count,
+            "system_run_count": system_run_count,
             "pending_event_count": state.event_queue.size(),
         },
         "portfolio_summary": portfolio_summary.model_dump(mode="json"),
@@ -180,6 +183,7 @@ def dashboard_realtime_data(
         "strategy_tuning": strategy_tuning.model_dump(mode="json"),
         "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
         "recent_sell_executions": [execution.model_dump(mode="json") for execution in recent_sell_executions],
+        "recent_system_runs": [run.model_dump(mode="json") for run in recent_system_runs],
         "alerts": [
             {
                 "ticker": alert.ticker,
@@ -596,6 +600,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">Profit Factor</div><div class="v" id="profitFactor">-</div></div>
       <div class="stat"><div class="k">归因推荐</div><div class="v" id="attributionCount">0</div></div>
       <div class="stat"><div class="k">调参建议</div><div class="v" id="strategyTuningCount">0</div></div>
+      <div class="stat"><div class="k">自动循环</div><div class="v" id="systemRunCount">0</div></div>
       <div class="stat"><div class="k">Kill Switch</div><div class="v" id="killSwitch">-</div></div>
     </div>
 
@@ -656,6 +661,17 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>Strategy</th><th>动作</th><th>优先级</th><th>评分</th><th>样本</th><th>当前参数</th><th>建议改动</th><th>理由</th></tr></thead>
         <tbody id="strategyTuningBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>自动循环历史</h3>
+        <span class="small">system_cycle 的持久心跳、推荐数量、提醒数量和事件处理情况</span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>状态</th><th>推荐</th><th>提醒</th><th>事件</th><th>Snapshot</th><th>Strategy</th><th>Top</th></tr></thead>
+        <tbody id="systemRunBody"></tbody>
       </table>
     </div>
 
@@ -1042,6 +1058,32 @@ def dashboard_home() -> str:
             <td>${parameterSummary(item.current_parameters)}</td>
             <td>${tuningChangeText(item.recommended_changes)}</td>
             <td>${esc(item.rationale_cn || '-')}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
+    function renderSystemRuns(items) {
+      const body = document.getElementById("systemRunBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="8" class="small">暂无自动循环历史。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((run) => {
+        const top = (run.top_recommendations || []).slice(0, 3).map((item) => item.ticker).join(', ');
+        const statusCell = run.status === 'success'
+          ? '<span class="badge b-ok">success</span>'
+          : `<span class="badge b-danger">${esc(run.status)}</span>`;
+        return `
+          <tr>
+            <td class="small">${fmtTime(run.finished_at || run.started_at)}</td>
+            <td>${statusCell}</td>
+            <td>${esc(run.recommendation_count ?? 0)}</td>
+            <td>${esc(run.sell_alert_count ?? 0)}</td>
+            <td class="small">consumed ${esc(run.consumed_event_count ?? 0)}<br/>pending ${esc(run.pending_event_count ?? 0)}</td>
+            <td class="mono" title="${esc(run.source_snapshot_id || '')}">${esc(shortId(run.source_snapshot_id, 16))}</td>
+            <td class="mono" title="${esc(run.strategy_config_id || '')}">${esc(shortId(run.strategy_config_id, 16))}</td>
+            <td class="small">${esc(top || '-')}</td>
           </tr>
         `;
       }).join("");
@@ -1523,6 +1565,7 @@ def dashboard_home() -> str:
       document.getElementById('strategyTuningCount').textContent = String(
         data.strategy_tuning?.recommendation_count ?? 0
       );
+      document.getElementById('systemRunCount').textContent = String(data.summary?.system_run_count ?? 0);
       document.getElementById('killSwitch').innerHTML = data.kill_switch?.enabled
         ? '<span class="badge b-danger">ON</span>'
         : '<span class="badge b-ok">OFF</span>';
@@ -1539,6 +1582,7 @@ def dashboard_home() -> str:
       );
       renderStrategyConfigs(data.strategy_configs || []);
       renderStrategyTuning(data.strategy_tuning || {});
+      renderSystemRuns(data.recent_system_runs || []);
       renderHoldings(data.holdings || []);
       renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);

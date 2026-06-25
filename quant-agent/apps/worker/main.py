@@ -4,6 +4,7 @@ import argparse
 import json
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from apps.api.dependencies import get_app_state
 from domain.entities.models import (
@@ -13,6 +14,7 @@ from domain.entities.models import (
     RiskPolicy,
     RunType,
     SnapshotMode,
+    SystemCycleRun,
 )
 from infra.queue.events import EventType
 
@@ -106,55 +108,80 @@ def system_cycle(
     consume_events: bool = False,
 ) -> dict[str, Any]:
     state = get_app_state()
-    now = datetime.now(timezone.utc)
+    started_at = datetime.now(timezone.utc)
     request = ResearchRunRequest(
         run_type=RunType.RESEARCH_BATCH,
         objective="Scheduled full system cycle",
-        as_of=now,
+        as_of=started_at,
         snapshot_mode=SnapshotMode.LATEST,
         publication=PublicationConfig(top_n=top_n, output_channels=["api", "worker"]),
         risk_policy=RiskPolicy(min_confidence=min_confidence) if min_confidence is not None else RiskPolicy(),
     )
     output = state.pipeline.run(request)
     state.ingest_run_output(request, output)
-    alerts = state.monitor_sell_alerts(as_of=now)
+    alerts = state.monitor_sell_alerts(as_of=started_at)
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.event_queue.size()
+    finished_at = datetime.now(timezone.utc)
+    top_recommendations = [
+        {
+            "id": rec.id,
+            "ticker": rec.ticker,
+            "confidence": rec.confidence,
+            "entry_zone": rec.entry_zone,
+            "stop_loss": rec.stop_loss,
+            "tp1": rec.tp1,
+            "tp2": rec.tp2,
+        }
+        for rec in output.result.recommendations[:top_n]
+    ]
+    sell_alerts = [
+        {
+            "ticker": alert.ticker,
+            "level": alert.level.value,
+            "reason_code": alert.reason_code,
+            "current_price": alert.current_price,
+            "message_cn": alert.message_cn,
+            "suggested_action_cn": alert.suggested_action_cn,
+        }
+        for alert in alerts
+    ]
+    consumed_type_counts = _event_type_counts(consumed_events)
+    run = SystemCycleRun(
+        id=uuid4().hex[:16],
+        started_at=started_at,
+        finished_at=finished_at,
+        source_snapshot_id=output.result.source_snapshot_id,
+        strategy_config_id=output.result.strategy_config_id,
+        recommendation_count=len(output.result.recommendations),
+        sell_alert_count=len(alerts),
+        consumed_event_count=len(consumed_events),
+        pending_event_count=pending_event_count,
+        auto_execution_enabled=False,
+        top_recommendations=top_recommendations,
+        sell_alerts=sell_alerts,
+        consumed_event_type_counts=consumed_type_counts,
+        metrics=state.metrics_store.dump(),
+    )
+    state.record_system_cycle_run(run)
     summary = {
+        "system_cycle_run_id": run.id,
         "job": "system_cycle",
-        "generated_at": now.isoformat(),
+        "generated_at": finished_at.isoformat(),
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "status": run.status,
         "source_snapshot_id": output.result.source_snapshot_id,
         "strategy_config_id": output.result.strategy_config_id,
         "recommendation_count": len(output.result.recommendations),
-        "top_recommendations": [
-            {
-                "id": rec.id,
-                "ticker": rec.ticker,
-                "confidence": rec.confidence,
-                "entry_zone": rec.entry_zone,
-                "stop_loss": rec.stop_loss,
-                "tp1": rec.tp1,
-                "tp2": rec.tp2,
-            }
-            for rec in output.result.recommendations[:top_n]
-        ],
+        "top_recommendations": top_recommendations,
         "sell_alert_count": len(alerts),
-        "sell_alerts": [
-            {
-                "ticker": alert.ticker,
-                "level": alert.level.value,
-                "reason_code": alert.reason_code,
-                "current_price": alert.current_price,
-                "message_cn": alert.message_cn,
-                "suggested_action_cn": alert.suggested_action_cn,
-            }
-            for alert in alerts
-        ],
+        "sell_alerts": sell_alerts,
         "auto_execution_enabled": False,
         "consumed_event_count": len(consumed_events),
-        "consumed_event_type_counts": _event_type_counts(consumed_events),
+        "consumed_event_type_counts": consumed_type_counts,
         "pending_event_count": pending_event_count,
-        "metrics": state.metrics_store.dump(),
+        "metrics": run.metrics,
     }
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return summary
