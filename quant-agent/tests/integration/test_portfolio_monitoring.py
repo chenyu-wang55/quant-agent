@@ -411,3 +411,109 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     assert sell_rows
     assert sell_rows[0]["source_recommendation_id"] == recommendation["id"]
     assert sell_rows[0]["reason"] == "alert:stop_loss_breach"
+
+
+def test_update_holding_controls_records_audit_and_drives_alerts() -> None:
+    state = get_app_state()
+    state.reset()
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "holding controls audit test",
+            "as_of": "2026-04-10T09:30:00Z",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "max_name_weight": 0.10,
+                "max_sector_weight": 0.30,
+                "max_gross_exposure": 1.0,
+                "max_correlated_cluster_weight": 0.35,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1000000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100000000,
+                "allowed_sectors": [],
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    ticker = recommendation["ticker"]
+    client.post(f"/portfolio/holdings/{ticker}/close", headers=AUTH_HEADERS)
+
+    buy_response = client.post(
+        "/portfolio/buys",
+        json={
+            "ticker": ticker,
+            "qty": 25,
+            "buy_price": recommendation["entry_zone_high"],
+            "source_recommendation_id": recommendation["id"],
+            "note": "initial controls",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert buy_response.status_code == 200
+    original = buy_response.json()
+
+    invalid_response = client.patch(
+        f"/portfolio/holdings/{ticker}/controls",
+        json={
+            "stop_loss": original["take_profit1"] + 1,
+            "reason": "bad control order",
+            "updated_by": "qa",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert invalid_response.status_code == 400
+
+    control_response = client.patch(
+        f"/portfolio/holdings/{ticker}/controls",
+        json={
+            "stop_loss": 99999999,
+            "take_profit1": 100000000,
+            "take_profit2": 100000001,
+            "note": "tightened for control audit",
+            "reason": "force alert in test",
+            "updated_by": "qa",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert control_response.status_code == 200
+    updated = control_response.json()
+    assert updated["holding"]["stop_loss"] == 99999999
+    assert updated["holding"]["take_profit1"] == 100000000
+    assert updated["audit"]["old_stop_loss"] == original["stop_loss"]
+    assert updated["audit"]["new_stop_loss"] == 99999999
+    assert updated["audit"]["reason"] == "force alert in test"
+    assert updated["audit"]["updated_by"] == "qa"
+
+    audit_response = client.get(f"/portfolio/holding-control-audits?ticker={ticker}", headers=AUTH_HEADERS)
+    assert audit_response.status_code == 200
+    audits = audit_response.json()
+    assert audits
+    assert audits[0]["id"] == updated["audit"]["id"]
+    assert audits[0]["new_take_profit2"] == 100000001
+
+    event_response = client.get("/events/pending", headers=AUTH_HEADERS)
+    assert event_response.status_code == 200
+    assert any(event["event_type"] == "holding_controls_updated" for event in event_response.json())
+
+    alert_response = client.get("/portfolio/alerts", headers=AUTH_HEADERS)
+    assert alert_response.status_code == 200
+    alerts = [item for item in alert_response.json() if item["ticker"] == ticker]
+    assert alerts
+    assert alerts[0]["reason_code"] == "stop_loss_breach"
+    assert alerts[0]["stop_loss"] == 99999999
+
+    cleanup_response = client.post(f"/portfolio/holdings/{ticker}/close", headers=AUTH_HEADERS)
+    assert cleanup_response.status_code == 200

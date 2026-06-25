@@ -21,6 +21,7 @@ REQUIRED_TABLES = {
     "execution_controls",
     "market_bars",
     "holding_watches",
+    "holding_control_audits",
     "trade_ledger",
     "sell_execution_audits",
     "sell_alert_audits",

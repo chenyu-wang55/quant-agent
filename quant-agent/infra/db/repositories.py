@@ -9,6 +9,7 @@ from domain.entities.models import (
     ApprovalDecision,
     Direction,
     FeatureSnapshot,
+    HoldingControlAudit,
     FundamentalSnapshot,
     HoldingStatus,
     HoldingWatch,
@@ -42,6 +43,7 @@ from infra.db.models import (
     ExecutionControlRecord,
     FeatureSnapshotRecord,
     HoldingWatchRecord,
+    HoldingControlAuditRecord,
     PaperOrderRecord,
     PositionStateRecord,
     RecommendationRecord,
@@ -496,6 +498,58 @@ class HoldingWatchRepository:
             closed_at=record.closed_at,
             last_sell_price=record.last_sell_price,
             last_sell_reason=record.last_sell_reason,
+        )
+
+
+class HoldingControlAuditRepository:
+    def add(self, item: HoldingControlAudit) -> None:
+        with SessionLocal() as session:
+            session.merge(
+                HoldingControlAuditRecord(
+                    id=item.id,
+                    ticker=item.ticker,
+                    source_recommendation_id=item.source_recommendation_id,
+                    old_stop_loss=item.old_stop_loss,
+                    new_stop_loss=item.new_stop_loss,
+                    old_take_profit1=item.old_take_profit1,
+                    new_take_profit1=item.new_take_profit1,
+                    old_take_profit2=item.old_take_profit2,
+                    new_take_profit2=item.new_take_profit2,
+                    old_note=item.old_note,
+                    new_note=item.new_note,
+                    reason=item.reason,
+                    updated_by=item.updated_by,
+                    updated_at=item.updated_at,
+                )
+            )
+            session.commit()
+
+    def list_recent(self, limit: int = 100, ticker: str | None = None) -> list[HoldingControlAudit]:
+        with SessionLocal() as session:
+            stmt = select(HoldingControlAuditRecord)
+            if ticker is not None:
+                stmt = stmt.where(HoldingControlAuditRecord.ticker == ticker.upper())
+            stmt = stmt.order_by(HoldingControlAuditRecord.updated_at.desc()).limit(limit)
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    @staticmethod
+    def _to_domain(record: HoldingControlAuditRecord) -> HoldingControlAudit:
+        return HoldingControlAudit(
+            id=record.id,
+            ticker=record.ticker,
+            source_recommendation_id=record.source_recommendation_id,
+            old_stop_loss=record.old_stop_loss,
+            new_stop_loss=record.new_stop_loss,
+            old_take_profit1=record.old_take_profit1,
+            new_take_profit1=record.new_take_profit1,
+            old_take_profit2=record.old_take_profit2,
+            new_take_profit2=record.new_take_profit2,
+            old_note=record.old_note,
+            new_note=record.new_note,
+            reason=record.reason,
+            updated_by=record.updated_by,
+            updated_at=_ensure_utc(record.updated_at),
         )
 
 

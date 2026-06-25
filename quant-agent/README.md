@@ -239,6 +239,8 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
 - Portfolio performance review: `GET /portfolio/performance`
 - Recommendation attribution: `GET /portfolio/recommendation-attribution`
 - Trade ledger: `GET /portfolio/trades`
+- Update holding stop/target controls: `PATCH /portfolio/holdings/{ticker}/controls`
+- Holding control audit: `GET /portfolio/holding-control-audits`
 - Sell execution audit: `GET /portfolio/sell-executions`
 - Sell part or all of a holding: `POST /portfolio/holdings/{ticker}/sell`
 - Execute an active sell alert: `POST /portfolio/alerts/{ticker}/execute`
@@ -253,6 +255,9 @@ Scheduled `system_cycle` runs persist every generated sell alert into alert hist
 `monitor_run_id`, so the monitoring trail survives process restarts. Dashboard refreshes
 still compute current alerts without writing new history rows.
 Sell controls record sell price, quantity, reason, realized P&L, and whether the holding remains open.
+Holding controls can be tightened or relaxed while a position is open; every stop-loss,
+target, or note change writes a durable holding-control audit row and emits a
+`holding_controls_updated` event.
 Every manual buy and sell also writes an immutable trade-ledger entry so repeated ticker cycles remain auditable
 even when the current holding watch row is reopened or overwritten.
 Every sell route also writes a sell-execution audit row. Paper sells are marked

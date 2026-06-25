@@ -568,6 +568,15 @@ class ManualSellRequest(BaseModel):
     confirm_live: bool = False
 
 
+class HoldingControlUpdateRequest(BaseModel):
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit1: float | None = Field(default=None, gt=0)
+    take_profit2: float | None = Field(default=None, gt=0)
+    note: str | None = None
+    reason: str | None = None
+    updated_by: str = "ops"
+
+
 class HoldingWatch(BaseModel):
     ticker: str
     qty: float
@@ -584,6 +593,29 @@ class HoldingWatch(BaseModel):
     closed_at: datetime | None = None
     last_sell_price: float | None = None
     last_sell_reason: str | None = None
+
+
+class HoldingControlAudit(BaseModel):
+    id: str
+    ticker: str
+    source_recommendation_id: str | None = None
+    old_stop_loss: float
+    new_stop_loss: float
+    old_take_profit1: float
+    new_take_profit1: float
+    old_take_profit2: float
+    new_take_profit2: float
+    old_note: str | None = None
+    new_note: str | None = None
+    reason: str | None = None
+    updated_by: str
+    updated_at: datetime
+
+
+class HoldingControlUpdateResult(BaseModel):
+    holding: HoldingWatch
+    audit: HoldingControlAudit
+    message_cn: str
 
 
 class SellExecutionResult(BaseModel):

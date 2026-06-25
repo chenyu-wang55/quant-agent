@@ -8,6 +8,9 @@ from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import (
     AlertExecutionResult,
     AlertSellRequest,
+    HoldingControlAudit,
+    HoldingControlUpdateRequest,
+    HoldingControlUpdateResult,
     HoldingStatus,
     HoldingWatch,
     ManualBuyRequest,
@@ -98,6 +101,15 @@ def list_trade_ledger(
     return state.list_trade_ledger(limit=limit, ticker=ticker, side=_parse_trade_side(side))
 
 
+@router.get("/portfolio/holding-control-audits", response_model=list[HoldingControlAudit])
+def list_holding_control_audits(
+    limit: int = Query(default=100, ge=1, le=500),
+    ticker: str | None = Query(default=None),
+    state: AppState = Depends(get_app_state),
+) -> list[HoldingControlAudit]:
+    return state.list_holding_control_audits(limit=limit, ticker=ticker)
+
+
 @router.get("/portfolio/sell-executions", response_model=list[SellExecutionAudit])
 def list_sell_execution_audits(
     limit: int = Query(default=100, ge=1, le=500),
@@ -141,6 +153,20 @@ def close_holding(
     if closed is None:
         raise HTTPException(status_code=404, detail="holding not found")
     return closed
+
+
+@router.patch("/portfolio/holdings/{ticker}/controls", response_model=HoldingControlUpdateResult)
+def update_holding_controls(
+    ticker: str,
+    request: HoldingControlUpdateRequest,
+    state: AppState = Depends(get_app_state),
+) -> HoldingControlUpdateResult:
+    try:
+        return state.update_holding_controls(ticker=ticker, request=request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="open holding not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/portfolio/holdings/{ticker}/sell", response_model=SellExecutionResult)

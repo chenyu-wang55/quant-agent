@@ -115,6 +115,23 @@ curl -X POST http://localhost:8000/portfolio/buys \
   }'
 ```
 
+调整持仓的止损/止盈控制，并保留审计记录：
+
+```bash
+curl -X PATCH http://localhost:8000/portfolio/holdings/MSFT/controls \
+  -H "Content-Type: application/json" \
+  -d '{
+    "stop_loss": 390,
+    "take_profit1": 430,
+    "take_profit2": 455,
+    "note": "raised stop after breakout",
+    "reason": "lock profit after tp1",
+    "updated_by": "ops"
+  }'
+
+curl "http://localhost:8000/portfolio/holding-control-audits?ticker=MSFT"
+```
+
 部分或全部卖出并记录已实现盈亏：
 
 ```bash
@@ -137,6 +154,7 @@ curl http://localhost:8000/portfolio/performance
 curl http://localhost:8000/portfolio/recommendation-attribution
 curl "http://localhost:8000/portfolio/trades?limit=20"
 curl "http://localhost:8000/portfolio/trades?ticker=MSFT&side=sell"
+curl "http://localhost:8000/portfolio/holding-control-audits?ticker=MSFT"
 curl "http://localhost:8000/portfolio/sell-executions?ticker=MSFT"
 curl "http://localhost:8000/portfolio/alert-history?ticker=MSFT"
 ```

@@ -14,6 +14,9 @@ from domain.entities.models import (
     BacktestRunResult,
     Direction,
     FeatureSnapshot,
+    HoldingControlAudit,
+    HoldingControlUpdateRequest,
+    HoldingControlUpdateResult,
     HoldingStatus,
     HoldingWatch,
     KillSwitchState,
@@ -66,6 +69,7 @@ from infra.db.repositories import (
     ApprovalRepository,
     ExecutionControlRepository,
     FeatureRepository,
+    HoldingControlAuditRepository,
     HoldingWatchRepository,
     PaperOrderRepository,
     PositionRepository,
@@ -106,6 +110,7 @@ class AppState:
     paper_order_repo: PaperOrderRepository = field(default_factory=PaperOrderRepository)
     position_repo: PositionRepository = field(default_factory=PositionRepository)
     holding_watch_repo: HoldingWatchRepository = field(default_factory=HoldingWatchRepository)
+    holding_control_audit_repo: HoldingControlAuditRepository = field(default_factory=HoldingControlAuditRepository)
     trade_ledger_repo: TradeLedgerRepository = field(default_factory=TradeLedgerRepository)
     sell_execution_audit_repo: SellExecutionAuditRepository = field(default_factory=SellExecutionAuditRepository)
     sell_alert_audit_repo: SellAlertAuditRepository = field(default_factory=SellAlertAuditRepository)
@@ -869,6 +874,103 @@ class AppState:
         self.metrics_store.inc("manual_buys")
         self.metrics_store.set_gauge("open_holdings", len(self.list_open_holdings()))
         return holding
+
+    def update_holding_controls(
+        self,
+        ticker: str,
+        request: HoldingControlUpdateRequest,
+    ) -> HoldingControlUpdateResult:
+        ticker_upper = ticker.upper()
+        holding = self.holdings_by_ticker.get(ticker_upper)
+        if holding is None:
+            holding = self.holding_watch_repo.get(ticker_upper)
+        if holding is None or holding.status != HoldingStatus.OPEN:
+            raise KeyError("open holding not found")
+
+        if (
+            request.stop_loss is None
+            and request.take_profit1 is None
+            and request.take_profit2 is None
+            and request.note is None
+        ):
+            raise ValueError("at least one control field must be provided")
+
+        new_stop = float(request.stop_loss if request.stop_loss is not None else holding.stop_loss)
+        new_tp1 = float(request.take_profit1 if request.take_profit1 is not None else holding.take_profit1)
+        new_tp2 = float(request.take_profit2 if request.take_profit2 is not None else holding.take_profit2)
+        new_note = request.note if request.note is not None else holding.note
+        if not new_stop < new_tp1 < new_tp2:
+            raise ValueError("holding controls must satisfy stop_loss < take_profit1 < take_profit2")
+
+        updated_at = datetime.now(timezone.utc)
+        updated = HoldingWatch(
+            ticker=holding.ticker,
+            qty=holding.qty,
+            avg_buy_price=holding.avg_buy_price,
+            bought_at=holding.bought_at,
+            source_recommendation_id=holding.source_recommendation_id,
+            stop_loss=round(new_stop, 6),
+            take_profit1=round(new_tp1, 6),
+            take_profit2=round(new_tp2, 6),
+            note=new_note,
+            status=HoldingStatus.OPEN,
+            updated_at=updated_at,
+            realized_pnl=holding.realized_pnl,
+            closed_at=None,
+            last_sell_price=holding.last_sell_price,
+            last_sell_reason=holding.last_sell_reason,
+        )
+        audit = HoldingControlAudit(
+            id=uuid4().hex[:16],
+            ticker=ticker_upper,
+            source_recommendation_id=holding.source_recommendation_id,
+            old_stop_loss=holding.stop_loss,
+            new_stop_loss=updated.stop_loss,
+            old_take_profit1=holding.take_profit1,
+            new_take_profit1=updated.take_profit1,
+            old_take_profit2=holding.take_profit2,
+            new_take_profit2=updated.take_profit2,
+            old_note=holding.note,
+            new_note=updated.note,
+            reason=request.reason,
+            updated_by=request.updated_by,
+            updated_at=updated_at,
+        )
+        self.holdings_by_ticker[ticker_upper] = updated
+        self.holding_watch_repo.upsert(updated)
+        self.holding_control_audit_repo.add(audit)
+        self.metrics_store.inc("holding_control_updates")
+        self.publish_event(
+            EventType.HOLDING_CONTROLS_UPDATED,
+            {
+                "audit_id": audit.id,
+                "ticker": ticker_upper,
+                "source_recommendation_id": holding.source_recommendation_id,
+                "old_stop_loss": holding.stop_loss,
+                "new_stop_loss": updated.stop_loss,
+                "old_take_profit1": holding.take_profit1,
+                "new_take_profit1": updated.take_profit1,
+                "old_take_profit2": holding.take_profit2,
+                "new_take_profit2": updated.take_profit2,
+                "reason": request.reason,
+                "updated_by": request.updated_by,
+            },
+        )
+        return HoldingControlUpdateResult(
+            holding=updated,
+            audit=audit,
+            message_cn=(
+                f"{ticker_upper} 风控参数已更新：止损 {updated.stop_loss:.2f}，"
+                f"目标 {updated.take_profit1:.2f}/{updated.take_profit2:.2f}。"
+            ),
+        )
+
+    def list_holding_control_audits(
+        self,
+        limit: int = 100,
+        ticker: str | None = None,
+    ) -> list[HoldingControlAudit]:
+        return self.holding_control_audit_repo.list_recent(limit=limit, ticker=ticker)
 
     def sell_holding(self, ticker: str, request: ManualSellRequest) -> SellExecutionResult:
         ticker_upper = ticker.upper()

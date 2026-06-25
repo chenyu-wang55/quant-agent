@@ -20,6 +20,7 @@ class EventType(str, Enum):
     SELL_ALERT = "sell_alert"
     SELL_ROUTED = "sell_routed"
     PORTFOLIO_SELL = "portfolio_sell"
+    HOLDING_CONTROLS_UPDATED = "holding_controls_updated"
 
 
 class EventStatus(str, Enum):

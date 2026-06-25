@@ -157,6 +157,25 @@ class HoldingWatchRecord(Base):
     last_sell_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class HoldingControlAuditRecord(Base):
+    __tablename__ = "holding_control_audits"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    old_stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
+    new_stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
+    old_take_profit1: Mapped[float] = mapped_column(Float, nullable=False)
+    new_take_profit1: Mapped[float] = mapped_column(Float, nullable=False)
+    old_take_profit2: Mapped[float] = mapped_column(Float, nullable=False)
+    new_take_profit2: Mapped[float] = mapped_column(Float, nullable=False)
+    old_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    new_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class TradeLedgerRecord(Base):
     __tablename__ = "trade_ledger"
 
