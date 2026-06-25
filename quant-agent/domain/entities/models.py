@@ -445,6 +445,8 @@ class PaperOrderRequest(BaseModel):
     account_equity: float = Field(default=100_000.0, gt=0)
     risk_per_trade_pct: float = Field(default=0.01, gt=0, le=1.0)
     max_position_pct: float = Field(default=0.10, gt=0, le=1.0)
+    max_gross_exposure_pct: float = Field(default=1.0, gt=0, le=5.0)
+    max_sector_exposure_pct: float = Field(default=0.30, gt=0, le=5.0)
     enforce_risk_limits: bool = True
 
 
@@ -460,13 +462,24 @@ class PaperOrderRiskPlan(BaseModel):
     max_position_value: float
     current_position_value: float
     remaining_position_value: float
+    max_gross_exposure_value: float
+    current_gross_exposure_value: float
+    remaining_gross_exposure_value: float
+    sector: str
+    max_sector_exposure_value: float
+    current_sector_exposure_value: float
+    remaining_sector_exposure_value: float
     max_risk_qty: float
     max_position_qty: float
+    max_gross_qty: float
+    max_sector_qty: float
     recommended_qty: float
     requested_qty: float | None = None
     requested_notional: float | None = None
     requested_risk_amount: float | None = None
     requested_position_pct: float | None = None
+    requested_gross_exposure_pct: float | None = None
+    requested_sector_exposure_pct: float | None = None
     requested_risk_pct: float | None = None
     is_within_limits: bool
     violations: list[str] = Field(default_factory=list)

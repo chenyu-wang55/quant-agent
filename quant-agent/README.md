@@ -147,9 +147,9 @@ paper router.
 Use `GET /paper-orders` to audit recent submitted, filled, or canceled paper orders
 separately from the trade ledger and P&L records.
 `POST /paper-orders/risk-plan` computes the maximum and recommended order quantity
-from account equity, per-trade risk, max position size, entry price, and stop-loss
-distance. `POST /paper-orders` enforces the same plan by default before filling a paper
-order.
+from account equity, per-trade risk, max position size, max gross exposure, max
+sector exposure, entry price, and stop-loss distance. `POST /paper-orders` enforces
+the same plan by default before filling a paper order.
 Order requests now carry `execution_mode`: `paper` fills through the simulator, while
 `live` is accepted only as `dry_run=true` unless a future broker adapter is explicitly
 configured. Live dry-runs return a submitted audit order with `broker_order_id` and

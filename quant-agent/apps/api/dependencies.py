@@ -652,12 +652,34 @@ class AppState:
             holding = self.holding_watch_repo.get(ticker_upper)
         if holding is None or holding.status != HoldingStatus.OPEN:
             return 0.0
+        return self._holding_market_value(holding, as_of=as_of)
+
+    def _holding_market_value(self, holding: HoldingWatch, as_of: datetime | None = None) -> float:
         try:
-            mark = self.provider.get_latest_price(ticker_upper, as_of or datetime.now(timezone.utc))
+            mark = self.provider.get_latest_price(holding.ticker, as_of or datetime.now(timezone.utc))
         except Exception:
             mark = None
         price = float(mark) if mark is not None else holding.avg_buy_price
         return round(max(0.0, price * holding.qty), 6)
+
+    def _sector_for_ticker(self, ticker: str, source_snapshot_id: str | None = None) -> str:
+        ticker_upper = ticker.upper()
+        if source_snapshot_id:
+            try:
+                for security in self.source_snapshot_repo.get_securities(source_snapshot_id):
+                    if security.ticker.upper() == ticker_upper:
+                        return security.sector or "Unknown"
+            except Exception:
+                pass
+        return "Unknown"
+
+    def _holding_sector(self, holding: HoldingWatch, fallback_snapshot_id: str | None = None) -> str:
+        snapshot_id = fallback_snapshot_id
+        if holding.source_recommendation_id:
+            recommendation = self.recommendation_repo.get(holding.source_recommendation_id)
+            if recommendation is not None:
+                snapshot_id = recommendation.source_snapshot_id
+        return self._sector_for_ticker(holding.ticker, snapshot_id)
 
     @staticmethod
     def _floor_qty(value: float) -> float:
@@ -684,6 +706,30 @@ class AppState:
         max_position_value = round(request.account_equity * request.max_position_pct, 6)
         current_position_value = self._current_position_value(recommendation.ticker)
         remaining_position_value = round(max(0.0, max_position_value - current_position_value), 6)
+        open_holdings = self.list_open_holdings()
+        current_gross_exposure_value = round(
+            sum(self._holding_market_value(holding) for holding in open_holdings),
+            6,
+        )
+        max_gross_exposure_value = round(request.account_equity * request.max_gross_exposure_pct, 6)
+        remaining_gross_exposure_value = round(
+            max(0.0, max_gross_exposure_value - current_gross_exposure_value),
+            6,
+        )
+        sector = self._sector_for_ticker(recommendation.ticker, recommendation.source_snapshot_id)
+        current_sector_exposure_value = round(
+            sum(
+                self._holding_market_value(holding)
+                for holding in open_holdings
+                if self._holding_sector(holding, recommendation.source_snapshot_id) == sector
+            ),
+            6,
+        )
+        max_sector_exposure_value = round(request.account_equity * request.max_sector_exposure_pct, 6)
+        remaining_sector_exposure_value = round(
+            max(0.0, max_sector_exposure_value - current_sector_exposure_value),
+            6,
+        )
         max_risk_qty = (
             self._floor_qty(risk_budget / risk_per_share)
             if risk_per_share > 0
@@ -694,12 +740,30 @@ class AppState:
             if entry_price > 0
             else 0.0
         )
-        recommended_qty = min(max_risk_qty, max_position_qty)
+        max_gross_qty = (
+            self._floor_qty(remaining_gross_exposure_value / entry_price)
+            if entry_price > 0
+            else 0.0
+        )
+        max_sector_qty = (
+            self._floor_qty(remaining_sector_exposure_value / entry_price)
+            if entry_price > 0
+            else 0.0
+        )
+        recommended_qty = min(max_risk_qty, max_position_qty, max_gross_qty, max_sector_qty)
 
         requested_notional = round(entry_price * request.qty, 6)
         requested_risk_amount = round(risk_per_share * request.qty, 6)
         requested_position_pct = round(
             (current_position_value + requested_notional) / request.account_equity,
+            6,
+        )
+        requested_gross_exposure_pct = round(
+            (current_gross_exposure_value + requested_notional) / request.account_equity,
+            6,
+        )
+        requested_sector_exposure_pct = round(
+            (current_sector_exposure_value + requested_notional) / request.account_equity,
             6,
         )
         requested_risk_pct = round(requested_risk_amount / request.account_equity, 6)
@@ -711,17 +775,25 @@ class AppState:
             violations.append("exceeds_per_trade_risk")
         if request.qty > max_position_qty + 1e-9:
             violations.append("exceeds_position_cap")
+        if request.qty > max_gross_qty + 1e-9:
+            violations.append("exceeds_gross_exposure")
+        if request.qty > max_sector_qty + 1e-9:
+            violations.append("exceeds_sector_exposure")
 
         if not violations:
             message_cn = (
                 f"风险校验通过。建议股数 {recommended_qty:g}，本次名义本金 "
-                f"{requested_notional:.2f}，止损风险 {requested_risk_amount:.2f}。"
+                f"{requested_notional:.2f}，止损风险 {requested_risk_amount:.2f}，"
+                f"组合暴露 {requested_gross_exposure_pct:.1%}，{sector} 行业暴露 "
+                f"{requested_sector_exposure_pct:.1%}。"
             )
         else:
             labels = {
                 "invalid_stop_distance": "止损距离无效",
                 "exceeds_per_trade_risk": "超过单笔风险预算",
                 "exceeds_position_cap": "超过单票仓位上限",
+                "exceeds_gross_exposure": "超过组合总暴露上限",
+                "exceeds_sector_exposure": "超过行业暴露上限",
             }
             reasons = "；".join(labels.get(code, code) for code in violations)
             message_cn = (
@@ -741,13 +813,24 @@ class AppState:
             max_position_value=max_position_value,
             current_position_value=current_position_value,
             remaining_position_value=remaining_position_value,
+            max_gross_exposure_value=max_gross_exposure_value,
+            current_gross_exposure_value=current_gross_exposure_value,
+            remaining_gross_exposure_value=remaining_gross_exposure_value,
+            sector=sector,
+            max_sector_exposure_value=max_sector_exposure_value,
+            current_sector_exposure_value=current_sector_exposure_value,
+            remaining_sector_exposure_value=remaining_sector_exposure_value,
             max_risk_qty=max_risk_qty,
             max_position_qty=max_position_qty,
+            max_gross_qty=max_gross_qty,
+            max_sector_qty=max_sector_qty,
             recommended_qty=recommended_qty,
             requested_qty=round(request.qty, 6),
             requested_notional=requested_notional,
             requested_risk_amount=requested_risk_amount,
             requested_position_pct=requested_position_pct,
+            requested_gross_exposure_pct=requested_gross_exposure_pct,
+            requested_sector_exposure_pct=requested_sector_exposure_pct,
             requested_risk_pct=requested_risk_pct,
             is_within_limits=not violations,
             violations=violations,

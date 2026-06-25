@@ -67,6 +67,11 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert risk_plan["is_within_limits"] is True
     assert risk_plan["recommended_qty"] >= 10
     assert risk_plan["risk_budget"] == 1000
+    assert risk_plan["sector"]
+    assert risk_plan["max_gross_exposure_value"] == 100000
+    assert risk_plan["max_sector_exposure_value"] == 30000
+    assert risk_plan["requested_gross_exposure_pct"] > 0
+    assert risk_plan["requested_sector_exposure_pct"] > 0
 
     oversized_plan = client.post(
         "/paper-orders/risk-plan",
@@ -84,6 +89,33 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert oversized_plan.status_code == 200
     assert oversized_plan.json()["is_within_limits"] is False
     assert "exceeds_per_trade_risk" in oversized_plan.json()["violations"]
+
+    exposure_limited_plan = client.post(
+        "/paper-orders/risk-plan",
+        json={
+            "recommendation_id": recommendation_id,
+            "side": "BUY",
+            "qty": 10,
+            "limit_price": None,
+            "account_equity": 100000,
+            "risk_per_trade_pct": 0.01,
+            "max_position_pct": 0.10,
+            "max_gross_exposure_pct": 0.001,
+            "max_sector_exposure_pct": 0.001,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert exposure_limited_plan.status_code == 200
+    exposure_limited = exposure_limited_plan.json()
+    assert exposure_limited["is_within_limits"] is False
+    assert "exceeds_gross_exposure" in exposure_limited["violations"]
+    assert "exceeds_sector_exposure" in exposure_limited["violations"]
+    assert exposure_limited["recommended_qty"] == min(
+        exposure_limited["max_risk_qty"],
+        exposure_limited["max_position_qty"],
+        exposure_limited["max_gross_qty"],
+        exposure_limited["max_sector_qty"],
+    )
 
     approval_response = client.post(
         f"/recommendations/{recommendation_id}/approval",
@@ -130,6 +162,25 @@ def test_kill_switch_blocks_paper_orders() -> None:
     )
     assert oversized_order.status_code == 409
     assert oversized_order.json()["detail"]["is_within_limits"] is False
+
+    exposure_limited_order = client.post(
+        "/paper-orders",
+        json={
+            "recommendation_id": recommendation_id,
+            "side": "BUY",
+            "qty": 10,
+            "limit_price": None,
+            "account_equity": 100000,
+            "risk_per_trade_pct": 0.01,
+            "max_position_pct": 0.10,
+            "max_gross_exposure_pct": 0.001,
+            "max_sector_exposure_pct": 0.001,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert exposure_limited_order.status_code == 409
+    assert "exceeds_gross_exposure" in exposure_limited_order.json()["detail"]["violations"]
+    assert "exceeds_sector_exposure" in exposure_limited_order.json()["detail"]["violations"]
 
     blocked_live_order = client.post(
         "/paper-orders",

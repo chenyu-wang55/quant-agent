@@ -195,15 +195,15 @@ curl -X POST http://localhost:8000/recommendations/<id>/approval \
 
 curl -X POST http://localhost:8000/paper-orders/risk-plan \
   -H "Content-Type: application/json" \
-  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10}'
+  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10,"max_gross_exposure_pct":1.0,"max_sector_exposure_pct":0.30}'
 
 curl -X POST http://localhost:8000/paper-orders \
   -H "Content-Type: application/json" \
-  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10}'
+  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10,"max_gross_exposure_pct":1.0,"max_sector_exposure_pct":0.30}'
 
 curl -X POST http://localhost:8000/paper-orders \
   -H "Content-Type: application/json" \
-  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"execution_mode":"live","dry_run":true,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10}'
+  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"execution_mode":"live","dry_run":true,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10,"max_gross_exposure_pct":1.0,"max_sector_exposure_pct":0.30}'
 
 curl "http://localhost:8000/paper-orders?recommendation_id=<id>&status=filled"
 ```
@@ -212,8 +212,8 @@ Filled BUY paper orders automatically create/update the monitored holding and wr
 buy row to `/portfolio/trades`, so sell alerts and later recommendation attribution
 start from the approved order fill instead of a separate manual entry.
 `/paper-orders/risk-plan` shows `recommended_qty`, stop-loss risk, position percentage,
-and any violations. `/paper-orders` enforces the same limits unless `enforce_risk_limits`
-is explicitly set to `false`.
+gross exposure, sector exposure, and any violations. `/paper-orders` enforces the same
+limits unless `enforce_risk_limits` is explicitly set to `false`.
 On the dashboard, use each recommendation row's `建议股数` button to calculate and fill
 the current risk-adjusted buy quantity before pressing `买入`.
 Set `Exec Mode` to `Live Dry Run` only for broker-adapter rehearsals. It records a
