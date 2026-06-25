@@ -837,6 +837,53 @@ class AlertExecutionResult(BaseModel):
     default_action_cn: str
 
 
+class OperationAction(BaseModel):
+    action_type: str
+    priority: str
+    message_cn: str
+    endpoint: str | None = None
+    method: str | None = None
+    ticker: str | None = None
+    recommendation_id: str | None = None
+    source_snapshot_id: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class OperationRecommendationCandidate(BaseModel):
+    recommendation_id: str
+    ticker: str
+    approval_status: str
+    confidence: float
+    composite_score: float
+    entry_zone_low: float
+    entry_zone_high: float
+    stop_loss: float
+    tp1: float
+    tp2: float
+    source_snapshot_id: str
+    strategy_config_id: str | None = None
+
+
+class OperationControlCenter(BaseModel):
+    generated_at: datetime = Field(default_factory=utc_now)
+    kill_switch: KillSwitchState
+    latest_source_snapshot_id: str | None = None
+    latest_strategy_config_id: str | None = None
+    latest_recommendation_count: int = 0
+    pending_approval_count: int = 0
+    approved_ready_to_buy_count: int = 0
+    open_holding_count: int = 0
+    sell_alert_count: int = 0
+    urgent_sell_alert_count: int = 0
+    pending_event_count: int = 0
+    recent_order_count: int = 0
+    recent_sell_execution_count: int = 0
+    pending_approvals: list[OperationRecommendationCandidate] = Field(default_factory=list)
+    ready_to_buy: list[OperationRecommendationCandidate] = Field(default_factory=list)
+    sell_alerts: list[SellAlert] = Field(default_factory=list)
+    actions: list[OperationAction] = Field(default_factory=list)
+
+
 class SystemCycleRun(BaseModel):
     id: str
     job: str = "system_cycle"

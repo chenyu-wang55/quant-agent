@@ -20,6 +20,9 @@ from domain.entities.models import (
     ManualBuyRequest,
     ManualSellRequest,
     OrderExecutionMode,
+    OperationAction,
+    OperationControlCenter,
+    OperationRecommendationCandidate,
     PaperOrder,
     PaperOrderRequest,
     PaperOrderRiskPlan,
@@ -148,6 +151,152 @@ class AppState:
 
     def list_system_cycle_runs(self, limit: int = 100, status: str | None = None) -> list[SystemCycleRun]:
         return self.system_cycle_run_repo.list_recent(limit=limit, status=status)
+
+    def build_operation_control_center(
+        self,
+        recommendation_limit: int = 20,
+        refresh_alerts: bool = True,
+    ) -> OperationControlCenter:
+        recommendations = (
+            list(self.latest_run.recommendations)
+            if self.latest_run is not None
+            else self.recommendation_repo.list_latest(limit=recommendation_limit)
+        )[:recommendation_limit]
+        open_holdings = self.list_open_holdings()
+        open_tickers = {holding.ticker.upper() for holding in open_holdings}
+        alerts = self.monitor_sell_alerts() if refresh_alerts else list(self.recent_sell_alerts)
+        pending_approvals: list[OperationRecommendationCandidate] = []
+        ready_to_buy: list[OperationRecommendationCandidate] = []
+        actions: list[OperationAction] = []
+
+        if self.kill_switch.enabled:
+            actions.append(
+                OperationAction(
+                    action_type="execution_blocked",
+                    priority="urgent",
+                    message_cn=f"Kill switch 已开启：{self.kill_switch.reason or '未提供原因'}。买入和卖出执行会被阻断。",
+                    endpoint="/execution/kill-switch",
+                    method="POST",
+                    details={"updated_by": self.kill_switch.updated_by},
+                )
+            )
+
+        for alert in alerts:
+            priority = "urgent" if alert.level == SellAlertLevel.URGENT else "high"
+            actions.append(
+                OperationAction(
+                    action_type="sell_alert",
+                    priority=priority,
+                    message_cn=alert.message_cn,
+                    endpoint=f"/portfolio/alerts/{alert.ticker}/execute",
+                    method="POST",
+                    ticker=alert.ticker,
+                    recommendation_id=alert.source_recommendation_id,
+                    details={
+                        "reason_code": alert.reason_code,
+                        "suggested_action_cn": alert.suggested_action_cn,
+                        "current_price": alert.current_price,
+                    },
+                )
+            )
+
+        for recommendation in recommendations:
+            approval = self.get_latest_approval(recommendation.id)
+            approval_status = approval.decision.value if approval else "pending"
+            candidate = self._operation_candidate(recommendation, approval_status)
+            if approval is None:
+                pending_approvals.append(candidate)
+                actions.append(
+                    OperationAction(
+                        action_type="approve_recommendation",
+                        priority="medium",
+                        message_cn=(
+                            f"{recommendation.ticker} 推荐尚未审批；审批后才允许进入买入执行。"
+                        ),
+                        endpoint=f"/recommendations/{recommendation.id}/approval",
+                        method="POST",
+                        ticker=recommendation.ticker,
+                        recommendation_id=recommendation.id,
+                        source_snapshot_id=recommendation.source_snapshot_id,
+                    )
+                )
+            elif approval.decision == ApprovalDecision.APPROVED and recommendation.ticker.upper() not in open_tickers:
+                ready_to_buy.append(candidate)
+                actions.append(
+                    OperationAction(
+                        action_type="route_buy_order",
+                        priority="medium",
+                        message_cn=(
+                            f"{recommendation.ticker} 已审批且当前无监控持仓；可先查 risk-plan 再提交买入单。"
+                        ),
+                        endpoint="/paper-orders",
+                        method="POST",
+                        ticker=recommendation.ticker,
+                        recommendation_id=recommendation.id,
+                        source_snapshot_id=recommendation.source_snapshot_id,
+                        details={
+                            "risk_plan_endpoint": "/paper-orders/risk-plan",
+                            "entry_zone": recommendation.entry_zone,
+                            "stop_loss": recommendation.stop_loss,
+                        },
+                    )
+                )
+
+        pending_event_count = self.event_queue.size()
+        if pending_event_count > 0:
+            actions.append(
+                OperationAction(
+                    action_type="inspect_pending_events",
+                    priority="low",
+                    message_cn=f"事件队列还有 {pending_event_count} 条待处理事件，可检查或消费。",
+                    endpoint="/events/pending",
+                    method="GET",
+                    details={"pending_event_count": pending_event_count},
+                )
+            )
+
+        priority_rank = {"urgent": 0, "high": 1, "medium": 2, "low": 3}
+        actions.sort(key=lambda item: (priority_rank.get(item.priority, 9), item.action_type, item.ticker or ""))
+        latest_source_snapshot_id = self.latest_run.source_snapshot_id if self.latest_run else None
+        latest_strategy_config_id = self.latest_run.strategy_config_id if self.latest_run else None
+        return OperationControlCenter(
+            kill_switch=self.kill_switch,
+            latest_source_snapshot_id=latest_source_snapshot_id,
+            latest_strategy_config_id=latest_strategy_config_id,
+            latest_recommendation_count=len(recommendations),
+            pending_approval_count=len(pending_approvals),
+            approved_ready_to_buy_count=len(ready_to_buy),
+            open_holding_count=len(open_holdings),
+            sell_alert_count=len(alerts),
+            urgent_sell_alert_count=sum(1 for alert in alerts if alert.level == SellAlertLevel.URGENT),
+            pending_event_count=pending_event_count,
+            recent_order_count=len(self.list_paper_orders(limit=10)),
+            recent_sell_execution_count=len(self.list_sell_execution_audits(limit=10)),
+            pending_approvals=pending_approvals,
+            ready_to_buy=ready_to_buy,
+            sell_alerts=alerts,
+            actions=actions,
+        )
+
+    @staticmethod
+    def _operation_candidate(
+        recommendation: Recommendation,
+        approval_status: str,
+    ) -> OperationRecommendationCandidate:
+        return OperationRecommendationCandidate(
+            recommendation_id=recommendation.id,
+            ticker=recommendation.ticker,
+            approval_status=approval_status,
+            confidence=recommendation.confidence,
+            composite_score=round(float(recommendation.score_vector.get("composite", 0.0)), 6),
+            entry_zone_low=recommendation.entry_zone_low,
+            entry_zone_high=recommendation.entry_zone_high,
+            stop_loss=recommendation.stop_loss,
+            tp1=recommendation.tp1,
+            tp2=recommendation.tp2,
+            source_snapshot_id=recommendation.source_snapshot_id,
+            strategy_config_id=recommendation.strategy_config_id,
+        )
 
     def record_sell_alert_audits(self, alerts: list[SellAlert], monitor_run_id: str | None = None) -> list[SellAlertAudit]:
         items = [

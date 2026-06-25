@@ -47,6 +47,7 @@ curl http://localhost:8000/strategy-configs/<strategy_config_id>
 curl http://localhost:8000/dashboard
 curl http://localhost:8000/dashboard/realtime-data
 curl http://localhost:8000/metrics
+curl http://localhost:8000/operations/control-center
 curl http://localhost:8000/operations/system-runs
 curl http://localhost:8000/execution/kill-switch
 curl http://localhost:8000/events/pending
@@ -218,6 +219,14 @@ holdings or create sell trades. Real live sells intentionally return `501` until
 adapter is configured and reviewed.
 Use `GET /portfolio/sell-executions?dry_run=true` to audit rehearsed sell routes that
 were validated but not sent to a broker or ledger.
+
+Before routing buys or sells, check the read-only control center. It ranks pending
+approvals, approved recommendations ready for buy routing, active sell alerts, pending
+events, and kill-switch blockers:
+
+```bash
+curl "http://localhost:8000/operations/control-center?recommendation_limit=20"
+```
 
 Kill switch can pause all execution:
 

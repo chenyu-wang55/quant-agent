@@ -131,6 +131,7 @@ Endpoints:
 - `GET /source-snapshots`
 - `POST /source-snapshots/{source_snapshot_id}/replay`
 - `POST /source-snapshots/{source_snapshot_id}/replay/compare`
+- `GET /operations/control-center`
 - `GET /strategy-configs`
 - `GET /strategy-configs/tuning-report`
 - `GET /paper-orders`
@@ -179,8 +180,14 @@ Default real-data universe:
 - Realtime dashboard (auto-refresh by session: market open 1m, closed 30m): `GET /dashboard`
 - Realtime dashboard payload: `GET /dashboard/realtime-data`
 - Recommendation detail page: `GET /dashboard/recommendations/{id}`
+- Operations control center: `GET /operations/control-center`
 - Pending events: `GET /events/pending`
 - Consume events: `POST /events/consume?limit=100`
+
+`/operations/control-center` is the machine-readable daily cockpit: it combines the
+kill switch, pending approvals, approved recommendations ready for buy routing, active
+sell alerts, pending events, and recent execution audit counts into prioritized next
+actions. It is read-only and is safe to poll from scripts.
 
 ## Worker Automation
 
