@@ -230,10 +230,14 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
 - Execute an active sell alert: `POST /portfolio/alerts/{ticker}/execute`
 - Close a holding: `POST /portfolio/holdings/{ticker}/close`
 - Get sell alerts: `GET /portfolio/alerts`
+- Sell alert history: `GET /portfolio/alert-history`
 
 Sell alerts are Chinese-first and reason-based (stop-loss breach, target hit, regime risk-off).
 Alert execution uses the alert reason to choose a default action: stop-loss and second target sell all,
 first target and risk-off reduce half unless `qty`, `sell_price`, or `sell_all` is supplied.
+Scheduled `system_cycle` runs persist every generated sell alert into alert history with
+`monitor_run_id`, so the monitoring trail survives process restarts. Dashboard refreshes
+still compute current alerts without writing new history rows.
 Sell controls record sell price, quantity, reason, realized P&L, and whether the holding remains open.
 Every manual buy and sell also writes an immutable trade-ledger entry so repeated ticker cycles remain auditable
 even when the current holding watch row is reopened or overwritten.

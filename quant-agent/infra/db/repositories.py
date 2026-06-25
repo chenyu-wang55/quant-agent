@@ -26,6 +26,8 @@ from domain.entities.models import (
     RecommendationStatus,
     RiskLevel,
     SecurityMetadata,
+    SellAlertAudit,
+    SellAlertLevel,
     SellExecutionAudit,
     SignalSnapshot,
     SourceSnapshotDetail,
@@ -43,6 +45,7 @@ from infra.db.models import (
     PaperOrderRecord,
     PositionStateRecord,
     RecommendationRecord,
+    SellAlertAuditRecord,
     SellExecutionAuditRecord,
     SignalSnapshotRecord,
     SnapshotEventRecord,
@@ -597,6 +600,70 @@ class SellExecutionAuditRepository:
             holding_status_after=(
                 HoldingStatus(record.holding_status_after) if record.holding_status_after else None
             ),
+        )
+
+
+class SellAlertAuditRepository:
+    def add_many(self, items: Iterable[SellAlertAudit]) -> None:
+        with SessionLocal() as session:
+            for item in items:
+                session.merge(
+                    SellAlertAuditRecord(
+                        id=item.id,
+                        ticker=item.ticker,
+                        level=item.level.value,
+                        reason_code=item.reason_code,
+                        current_price=item.current_price,
+                        stop_loss=item.stop_loss,
+                        take_profit1=item.take_profit1,
+                        take_profit2=item.take_profit2,
+                        source_recommendation_id=item.source_recommendation_id,
+                        message_cn=item.message_cn,
+                        suggested_action_cn=item.suggested_action_cn,
+                        generated_at=item.generated_at,
+                        monitor_run_id=item.monitor_run_id,
+                    )
+                )
+            session.commit()
+
+    def list_recent(
+        self,
+        limit: int = 100,
+        ticker: str | None = None,
+        reason_code: str | None = None,
+        level: SellAlertLevel | None = None,
+        monitor_run_id: str | None = None,
+    ) -> list[SellAlertAudit]:
+        with SessionLocal() as session:
+            stmt = select(SellAlertAuditRecord)
+            if ticker is not None:
+                stmt = stmt.where(SellAlertAuditRecord.ticker == ticker.upper())
+            if reason_code is not None:
+                stmt = stmt.where(SellAlertAuditRecord.reason_code == reason_code)
+            if level is not None:
+                stmt = stmt.where(SellAlertAuditRecord.level == level.value)
+            if monitor_run_id is not None:
+                stmt = stmt.where(SellAlertAuditRecord.monitor_run_id == monitor_run_id)
+            stmt = stmt.order_by(SellAlertAuditRecord.generated_at.desc()).limit(limit)
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    @staticmethod
+    def _to_domain(record: SellAlertAuditRecord) -> SellAlertAudit:
+        return SellAlertAudit(
+            id=record.id,
+            ticker=record.ticker,
+            level=SellAlertLevel(record.level),
+            reason_code=record.reason_code,
+            current_price=record.current_price,
+            stop_loss=record.stop_loss,
+            take_profit1=record.take_profit1,
+            take_profit2=record.take_profit2,
+            source_recommendation_id=record.source_recommendation_id,
+            message_cn=record.message_cn,
+            suggested_action_cn=record.suggested_action_cn,
+            generated_at=_ensure_utc(record.generated_at),
+            monitor_run_id=record.monitor_run_id,
         )
 
 

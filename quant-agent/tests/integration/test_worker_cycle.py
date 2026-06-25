@@ -51,6 +51,15 @@ def test_system_cycle_generates_recommendations_and_monitors_without_auto_execut
     run_rows = run_response.json()
     assert run_rows[0]["id"] == result["system_cycle_run_id"]
     assert run_rows[0]["status"] == "success"
+    alert_history = client.get(
+        f"/portfolio/alert-history?monitor_run_id={result['system_cycle_run_id']}",
+        headers=AUTH_HEADERS,
+    )
+    assert alert_history.status_code == 200
+    alert_rows = alert_history.json()
+    assert alert_rows
+    assert any(item["ticker"] == "AAPL" for item in alert_rows)
+    assert all(item["monitor_run_id"] == result["system_cycle_run_id"] for item in alert_rows)
 
     holding = state.holding_watch_repo.get("AAPL")
     assert holding is not None

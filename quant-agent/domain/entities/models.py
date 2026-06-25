@@ -784,6 +784,22 @@ class SellAlert(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
 
 
+class SellAlertAudit(BaseModel):
+    id: str
+    ticker: str
+    level: SellAlertLevel
+    reason_code: str
+    current_price: float
+    stop_loss: float
+    take_profit1: float
+    take_profit2: float
+    source_recommendation_id: str | None = None
+    message_cn: str
+    suggested_action_cn: str
+    generated_at: datetime
+    monitor_run_id: str | None = None
+
+
 class AlertExecutionResult(BaseModel):
     alert: SellAlert
     execution: SellExecutionResult

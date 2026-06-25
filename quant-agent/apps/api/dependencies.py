@@ -34,6 +34,8 @@ from domain.entities.models import (
     ResearchRunRequest,
     ResearchRunResult,
     SellAlert,
+    SellAlertAudit,
+    SellAlertLevel,
     SellExecutionAudit,
     SellExecutionResult,
     SignalSnapshot,
@@ -62,6 +64,7 @@ from infra.db.repositories import (
     PaperOrderRepository,
     PositionRepository,
     RecommendationRepository,
+    SellAlertAuditRepository,
     SellExecutionAuditRepository,
     SignalRepository,
     SourceSnapshotRepository,
@@ -99,6 +102,7 @@ class AppState:
     holding_watch_repo: HoldingWatchRepository = field(default_factory=HoldingWatchRepository)
     trade_ledger_repo: TradeLedgerRepository = field(default_factory=TradeLedgerRepository)
     sell_execution_audit_repo: SellExecutionAuditRepository = field(default_factory=SellExecutionAuditRepository)
+    sell_alert_audit_repo: SellAlertAuditRepository = field(default_factory=SellAlertAuditRepository)
     approval_repo: ApprovalRepository = field(default_factory=ApprovalRepository)
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
@@ -141,6 +145,46 @@ class AppState:
 
     def list_system_cycle_runs(self, limit: int = 100, status: str | None = None) -> list[SystemCycleRun]:
         return self.system_cycle_run_repo.list_recent(limit=limit, status=status)
+
+    def record_sell_alert_audits(self, alerts: list[SellAlert], monitor_run_id: str | None = None) -> list[SellAlertAudit]:
+        items = [
+            SellAlertAudit(
+                id=uuid4().hex[:16],
+                ticker=alert.ticker,
+                level=alert.level,
+                reason_code=alert.reason_code,
+                current_price=alert.current_price,
+                stop_loss=alert.stop_loss,
+                take_profit1=alert.take_profit1,
+                take_profit2=alert.take_profit2,
+                source_recommendation_id=alert.source_recommendation_id,
+                message_cn=alert.message_cn,
+                suggested_action_cn=alert.suggested_action_cn,
+                generated_at=alert.generated_at,
+                monitor_run_id=monitor_run_id,
+            )
+            for alert in alerts
+        ]
+        if items:
+            self.sell_alert_audit_repo.add_many(items)
+            self.metrics_store.inc("sell_alert_audits", len(items))
+        return items
+
+    def list_sell_alert_audits(
+        self,
+        limit: int = 100,
+        ticker: str | None = None,
+        reason_code: str | None = None,
+        level: SellAlertLevel | None = None,
+        monitor_run_id: str | None = None,
+    ) -> list[SellAlertAudit]:
+        return self.sell_alert_audit_repo.list_recent(
+            limit=limit,
+            ticker=ticker,
+            reason_code=reason_code,
+            level=level,
+            monitor_run_id=monitor_run_id,
+        )
 
     def __post_init__(self) -> None:
         init_db()

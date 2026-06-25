@@ -195,6 +195,24 @@ class SellExecutionAuditRecord(Base):
     holding_status_after: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
 
+class SellAlertAuditRecord(Base):
+    __tablename__ = "sell_alert_audits"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    level: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    reason_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    current_price: Mapped[float] = mapped_column(Float, nullable=False)
+    stop_loss: Mapped[float] = mapped_column(Float, nullable=False)
+    take_profit1: Mapped[float] = mapped_column(Float, nullable=False)
+    take_profit2: Mapped[float] = mapped_column(Float, nullable=False)
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    message_cn: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_action_cn: Mapped[str] = mapped_column(Text, nullable=False)
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    monitor_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+
 class SystemCycleRunRecord(Base):
     __tablename__ = "system_cycle_runs"
 

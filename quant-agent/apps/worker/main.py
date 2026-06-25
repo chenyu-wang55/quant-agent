@@ -109,6 +109,7 @@ def system_cycle(
 ) -> dict[str, Any]:
     state = get_app_state()
     started_at = datetime.now(timezone.utc)
+    run_id = uuid4().hex[:16]
     request = ResearchRunRequest(
         run_type=RunType.RESEARCH_BATCH,
         objective="Scheduled full system cycle",
@@ -120,6 +121,7 @@ def system_cycle(
     output = state.pipeline.run(request)
     state.ingest_run_output(request, output)
     alerts = state.monitor_sell_alerts(as_of=started_at)
+    state.record_sell_alert_audits(alerts, monitor_run_id=run_id)
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.event_queue.size()
     finished_at = datetime.now(timezone.utc)
@@ -148,7 +150,7 @@ def system_cycle(
     ]
     consumed_type_counts = _event_type_counts(consumed_events)
     run = SystemCycleRun(
-        id=uuid4().hex[:16],
+        id=run_id,
         started_at=started_at,
         finished_at=finished_at,
         source_snapshot_id=output.result.source_snapshot_id,

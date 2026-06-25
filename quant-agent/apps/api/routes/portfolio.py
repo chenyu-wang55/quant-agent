@@ -16,6 +16,8 @@ from domain.entities.models import (
     PortfolioSummary,
     RecommendationAttributionReport,
     SellAlert,
+    SellAlertAudit,
+    SellAlertLevel,
     SellExecutionAudit,
     SellExecutionResult,
     TradeLedgerEntry,
@@ -109,6 +111,24 @@ def list_sell_execution_audits(
         ticker=ticker,
         dry_run=dry_run,
         applied_to_ledger=applied_to_ledger,
+    )
+
+
+@router.get("/portfolio/alert-history", response_model=list[SellAlertAudit])
+def list_sell_alert_audits(
+    limit: int = Query(default=100, ge=1, le=500),
+    ticker: str | None = Query(default=None),
+    reason_code: str | None = Query(default=None),
+    level: SellAlertLevel | None = Query(default=None),
+    monitor_run_id: str | None = Query(default=None),
+    state: AppState = Depends(get_app_state),
+) -> list[SellAlertAudit]:
+    return state.list_sell_alert_audits(
+        limit=limit,
+        ticker=ticker,
+        reason_code=reason_code,
+        level=level,
+        monitor_run_id=monitor_run_id,
     )
 
 
