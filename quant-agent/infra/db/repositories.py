@@ -26,6 +26,7 @@ from domain.entities.models import (
     RecommendationStatus,
     RiskLevel,
     SecurityMetadata,
+    SellExecutionAudit,
     SignalSnapshot,
     SourceSnapshotDetail,
     SourceSnapshotSummary,
@@ -41,6 +42,7 @@ from infra.db.models import (
     PaperOrderRecord,
     PositionStateRecord,
     RecommendationRecord,
+    SellExecutionAuditRecord,
     SignalSnapshotRecord,
     SnapshotEventRecord,
     SnapshotFundamentalRecord,
@@ -519,6 +521,80 @@ class TradeLedgerRepository:
             realized_pnl_delta=float(record.realized_pnl_delta or 0.0),
             holding_status_after=HoldingStatus(record.holding_status_after) if record.holding_status_after else None,
             created_at=record.created_at,
+        )
+
+
+class SellExecutionAuditRepository:
+    def add(self, item: SellExecutionAudit) -> None:
+        with SessionLocal() as session:
+            session.merge(
+                SellExecutionAuditRecord(
+                    id=item.id,
+                    ticker=item.ticker,
+                    qty=item.qty,
+                    sell_price=item.sell_price,
+                    submitted_at=item.submitted_at,
+                    execution_mode=item.execution_mode.value,
+                    dry_run=1 if item.dry_run else 0,
+                    broker_order_id=item.broker_order_id,
+                    adapter_message=item.adapter_message,
+                    applied_to_ledger=1 if item.applied_to_ledger else 0,
+                    status=item.status,
+                    reason=item.reason,
+                    source_recommendation_id=item.source_recommendation_id,
+                    realized_pnl_delta=item.realized_pnl_delta,
+                    estimated_realized_pnl_delta=item.estimated_realized_pnl_delta,
+                    remaining_qty=item.remaining_qty,
+                    holding_status_after=(
+                        item.holding_status_after.value if item.holding_status_after else None
+                    ),
+                )
+            )
+            session.commit()
+
+    def list_recent(
+        self,
+        limit: int = 100,
+        ticker: str | None = None,
+        dry_run: bool | None = None,
+        applied_to_ledger: bool | None = None,
+    ) -> list[SellExecutionAudit]:
+        with SessionLocal() as session:
+            stmt = select(SellExecutionAuditRecord)
+            if ticker is not None:
+                stmt = stmt.where(SellExecutionAuditRecord.ticker == ticker.upper())
+            if dry_run is not None:
+                stmt = stmt.where(SellExecutionAuditRecord.dry_run == (1 if dry_run else 0))
+            if applied_to_ledger is not None:
+                stmt = stmt.where(
+                    SellExecutionAuditRecord.applied_to_ledger == (1 if applied_to_ledger else 0)
+                )
+            stmt = stmt.order_by(SellExecutionAuditRecord.submitted_at.desc()).limit(limit)
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    @staticmethod
+    def _to_domain(record: SellExecutionAuditRecord) -> SellExecutionAudit:
+        return SellExecutionAudit(
+            id=record.id,
+            ticker=record.ticker,
+            qty=record.qty,
+            sell_price=record.sell_price,
+            submitted_at=_ensure_utc(record.submitted_at),
+            execution_mode=OrderExecutionMode(record.execution_mode),
+            dry_run=bool(record.dry_run),
+            broker_order_id=record.broker_order_id,
+            adapter_message=record.adapter_message,
+            applied_to_ledger=bool(record.applied_to_ledger),
+            status=record.status,
+            reason=record.reason,
+            source_recommendation_id=record.source_recommendation_id,
+            realized_pnl_delta=float(record.realized_pnl_delta or 0.0),
+            estimated_realized_pnl_delta=record.estimated_realized_pnl_delta,
+            remaining_qty=record.remaining_qty,
+            holding_status_after=(
+                HoldingStatus(record.holding_status_after) if record.holding_status_after else None
+            ),
         )
 
 

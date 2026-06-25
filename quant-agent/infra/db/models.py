@@ -173,6 +173,28 @@ class TradeLedgerRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+class SellExecutionAuditRecord(Base):
+    __tablename__ = "sell_execution_audits"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    qty: Mapped[float] = mapped_column(Float, nullable=False)
+    sell_price: Mapped[float] = mapped_column(Float, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    execution_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="paper")
+    dry_run: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    broker_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    adapter_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    applied_to_ledger: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="recorded")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_recommendation_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    realized_pnl_delta: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    estimated_realized_pnl_delta: Mapped[float | None] = mapped_column(Float, nullable=True)
+    remaining_qty: Mapped[float] = mapped_column(Float, nullable=False)
+    holding_status_after: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
+
 class ApprovalDecisionRecord(Base):
     __tablename__ = "approval_decisions"
 

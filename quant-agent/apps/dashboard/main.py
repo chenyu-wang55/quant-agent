@@ -121,6 +121,8 @@ def dashboard_realtime_data(
     recommendation_attribution = state.get_recommendation_attribution()
     strategy_tuning = state.get_strategy_tuning_report(attribution=recommendation_attribution)
     recent_trades = state.list_trade_ledger(limit=10)
+    recent_sell_executions = state.list_sell_execution_audits(limit=10)
+    sell_execution_count = len(state.list_sell_execution_audits(limit=10_000))
     recent_paper_orders = state.list_paper_orders(limit=10)
     paper_order_count = len(state.list_paper_orders(limit=10_000))
     recent_source_snapshots = state.list_source_snapshots(limit=10)
@@ -143,6 +145,7 @@ def dashboard_realtime_data(
             "open_holding_count": len(holdings),
             "sell_alert_count": len(alerts),
             "paper_order_count": paper_order_count,
+            "sell_execution_count": sell_execution_count,
             "source_snapshot_count": source_snapshot_count,
             "strategy_config_count": strategy_config_count,
             "strategy_tuning_count": strategy_tuning.recommendation_count,
@@ -176,6 +179,7 @@ def dashboard_realtime_data(
         "strategy_configs": [config.model_dump(mode="json") for config in recent_strategy_configs],
         "strategy_tuning": strategy_tuning.model_dump(mode="json"),
         "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
+        "recent_sell_executions": [execution.model_dump(mode="json") for execution in recent_sell_executions],
         "alerts": [
             {
                 "ticker": alert.ticker,
@@ -584,6 +588,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">持仓监控</div><div class="v" id="holdingCount">0</div></div>
       <div class="stat"><div class="k">卖出提醒</div><div class="v" id="alertCount">0</div></div>
       <div class="stat"><div class="k">纸单</div><div class="v" id="paperOrderCount">0</div></div>
+      <div class="stat"><div class="k">卖出审计</div><div class="v" id="sellExecutionCount">0</div></div>
       <div class="stat"><div class="k">已实现盈亏</div><div class="v" id="realizedPnl">0.00</div></div>
       <div class="stat"><div class="k">开放风险</div><div class="v" id="openRisk">0.00</div></div>
       <div class="stat"><div class="k">交易笔数</div><div class="v" id="tradeCount">0</div></div>
@@ -695,6 +700,17 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>时间</th><th>股票</th><th>方向</th><th>数量</th><th>价格</th><th>已实现盈亏</th><th>原因</th></tr></thead>
         <tbody id="tradeBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>卖出执行审计</h3>
+        <span class="small">记录 paper sell 与 live dry-run，区分是否真正写入交易流水</span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>Exec</th><th>股票</th><th>数量</th><th>价格</th><th>状态</th><th>Ledger</th><th>预计/实际盈亏</th><th>原因</th><th>Adapter</th></tr></thead>
+        <tbody id="sellExecutionBody"></tbody>
       </table>
     </div>
 
@@ -1354,6 +1370,31 @@ def dashboard_home() -> str:
       `).join("");
     }
 
+    function renderSellExecutions(items) {
+      const body = document.getElementById("sellExecutionBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="10" class="small">暂无卖出执行审计记录。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((item) => {
+        const pnl = item.applied_to_ledger ? item.realized_pnl_delta : item.estimated_realized_pnl_delta;
+        return `
+          <tr>
+            <td class="small">${fmtTime(item.submitted_at)}</td>
+            <td>${esc(item.execution_mode || 'paper')}${item.dry_run ? '<div class="small">dry-run</div>' : ''}</td>
+            <td>${esc(item.ticker)}</td>
+            <td>${fmtNum(item.qty, 2)}</td>
+            <td>${fmtNum(item.sell_price, 2)}</td>
+            <td>${esc(item.status)}</td>
+            <td>${item.applied_to_ledger ? '<span class="badge b-ok">yes</span>' : '<span class="badge b-warn">no</span>'}</td>
+            <td>${fmtNullableNum(pnl, 2)}</td>
+            <td class="small">${esc(item.reason || '')}</td>
+            <td class="small" title="${esc(item.broker_order_id || '')}">${esc(item.adapter_message || '-')}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
     function fmtPct(v) {
       const n = Number(v);
       if (!Number.isFinite(n)) return '-';
@@ -1470,6 +1511,7 @@ def dashboard_home() -> str:
       document.getElementById('holdingCount').textContent = String(data.summary?.open_holding_count ?? 0);
       document.getElementById('alertCount').textContent = String(data.summary?.sell_alert_count ?? 0);
       document.getElementById('paperOrderCount').textContent = String(data.summary?.paper_order_count ?? 0);
+      document.getElementById('sellExecutionCount').textContent = String(data.summary?.sell_execution_count ?? 0);
       document.getElementById('realizedPnl').textContent = fmtNum(data.portfolio_summary?.total_realized_pnl, 2);
       document.getElementById('openRisk').textContent = fmtNum(data.portfolio_summary?.open_risk_to_stop, 2);
       document.getElementById('tradeCount').textContent = String(data.portfolio_summary?.trade_count ?? 0);
@@ -1500,6 +1542,7 @@ def dashboard_home() -> str:
       renderHoldings(data.holdings || []);
       renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);
+      renderSellExecutions(data.recent_sell_executions || []);
       renderPerformance(data.portfolio_performance || {});
       renderAttribution(data.recommendation_attribution || {});
       renderAlerts(data.alerts || []);

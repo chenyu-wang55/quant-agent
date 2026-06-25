@@ -358,6 +358,17 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     trades_after_dry_run = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
     assert trades_after_dry_run.status_code == 200
     assert len(trades_after_dry_run.json()) == dry_run_baseline_sell_count
+    dry_run_audits = client.get(
+        f"/portfolio/sell-executions?ticker={ticker}&dry_run=true",
+        headers=AUTH_HEADERS,
+    )
+    assert dry_run_audits.status_code == 200
+    dry_run_audit_rows = dry_run_audits.json()
+    assert dry_run_audit_rows
+    assert dry_run_audit_rows[0]["id"] == dry_run_execution["sell_execution_id"]
+    assert dry_run_audit_rows[0]["execution_mode"] == "live"
+    assert dry_run_audit_rows[0]["dry_run"] is True
+    assert dry_run_audit_rows[0]["applied_to_ledger"] is False
 
     dry_run_events = client.post("/events/consume?limit=100", headers=AUTH_HEADERS)
     assert dry_run_events.status_code == 200
@@ -383,6 +394,16 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     assert execution["dry_run"] is False
     assert execution["applied_to_ledger"] is True
     assert execution["broker_order_id"].startswith("paper_sell_")
+    paper_audits = client.get(
+        f"/portfolio/sell-executions?ticker={ticker}&applied_to_ledger=true",
+        headers=AUTH_HEADERS,
+    )
+    assert paper_audits.status_code == 200
+    paper_audit_rows = paper_audits.json()
+    assert paper_audit_rows
+    assert paper_audit_rows[0]["id"] == execution["sell_execution_id"]
+    assert paper_audit_rows[0]["status"] == "filled"
+    assert paper_audit_rows[0]["holding_status_after"] == "closed"
 
     sell_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
     assert sell_trades.status_code == 200

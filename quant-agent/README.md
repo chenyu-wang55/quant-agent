@@ -223,6 +223,7 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
 - Portfolio performance review: `GET /portfolio/performance`
 - Recommendation attribution: `GET /portfolio/recommendation-attribution`
 - Trade ledger: `GET /portfolio/trades`
+- Sell execution audit: `GET /portfolio/sell-executions`
 - Sell part or all of a holding: `POST /portfolio/holdings/{ticker}/sell`
 - Execute an active sell alert: `POST /portfolio/alerts/{ticker}/execute`
 - Close a holding: `POST /portfolio/holdings/{ticker}/close`
@@ -234,6 +235,9 @@ first target and risk-off reduce half unless `qty`, `sell_price`, or `sell_all` 
 Sell controls record sell price, quantity, reason, realized P&L, and whether the holding remains open.
 Every manual buy and sell also writes an immutable trade-ledger entry so repeated ticker cycles remain auditable
 even when the current holding watch row is reopened or overwritten.
+Every sell route also writes a sell-execution audit row. Paper sells are marked
+`applied_to_ledger=true`; live dry-runs are marked `applied_to_ledger=false` and remain
+queryable after restart even though they do not create a sell trade.
 Performance review is derived from the ledger and reports win rate, profit factor, expectancy per sell,
 best/worst realized trade, and per-ticker attribution.
 Recommendation attribution connects sell results back to the original `recommendation_id` and

@@ -16,6 +16,7 @@ from domain.entities.models import (
     PortfolioSummary,
     RecommendationAttributionReport,
     SellAlert,
+    SellExecutionAudit,
     SellExecutionResult,
     TradeLedgerEntry,
     TradeSide,
@@ -93,6 +94,22 @@ def list_trade_ledger(
     state: AppState = Depends(get_app_state),
 ) -> list[TradeLedgerEntry]:
     return state.list_trade_ledger(limit=limit, ticker=ticker, side=_parse_trade_side(side))
+
+
+@router.get("/portfolio/sell-executions", response_model=list[SellExecutionAudit])
+def list_sell_execution_audits(
+    limit: int = Query(default=100, ge=1, le=500),
+    ticker: str | None = Query(default=None),
+    dry_run: bool | None = Query(default=None),
+    applied_to_ledger: bool | None = Query(default=None),
+    state: AppState = Depends(get_app_state),
+) -> list[SellExecutionAudit]:
+    return state.list_sell_execution_audits(
+        limit=limit,
+        ticker=ticker,
+        dry_run=dry_run,
+        applied_to_ledger=applied_to_ledger,
+    )
 
 
 @router.post("/portfolio/holdings/{ticker}/close", response_model=HoldingWatch)

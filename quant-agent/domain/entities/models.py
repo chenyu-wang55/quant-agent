@@ -556,6 +556,7 @@ class HoldingWatch(BaseModel):
 
 
 class SellExecutionResult(BaseModel):
+    sell_execution_id: str | None = None
     holding: HoldingWatch
     sold_qty: float
     sell_price: float
@@ -569,6 +570,26 @@ class SellExecutionResult(BaseModel):
     adapter_message: str | None = None
     applied_to_ledger: bool = True
     message_cn: str
+
+
+class SellExecutionAudit(BaseModel):
+    id: str
+    ticker: str
+    qty: float
+    sell_price: float
+    submitted_at: datetime
+    execution_mode: OrderExecutionMode = OrderExecutionMode.PAPER
+    dry_run: bool = False
+    broker_order_id: str | None = None
+    adapter_message: str | None = None
+    applied_to_ledger: bool = True
+    status: str = "recorded"
+    reason: str | None = None
+    source_recommendation_id: str | None = None
+    realized_pnl_delta: float = 0.0
+    estimated_realized_pnl_delta: float | None = None
+    remaining_qty: float
+    holding_status_after: HoldingStatus | None = None
 
 
 class AlertSellRequest(BaseModel):

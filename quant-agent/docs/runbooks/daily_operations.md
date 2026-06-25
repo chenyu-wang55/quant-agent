@@ -51,6 +51,7 @@ curl http://localhost:8000/portfolio/summary
 curl http://localhost:8000/portfolio/performance
 curl http://localhost:8000/portfolio/recommendation-attribution
 curl http://localhost:8000/portfolio/trades
+curl http://localhost:8000/portfolio/sell-executions
 curl http://localhost:8000/portfolio/alerts
 ```
 
@@ -113,6 +114,7 @@ curl http://localhost:8000/portfolio/performance
 curl http://localhost:8000/portfolio/recommendation-attribution
 curl "http://localhost:8000/portfolio/trades?limit=20"
 curl "http://localhost:8000/portfolio/trades?ticker=MSFT&side=sell"
+curl "http://localhost:8000/portfolio/sell-executions?ticker=MSFT"
 ```
 
 `/portfolio/recommendation-attribution` shows realized P&L grouped by both
@@ -191,6 +193,8 @@ curl -X POST http://localhost:8000/portfolio/alerts/<ticker>/execute \
 Live sell dry-runs emit `sell_routed` with `applied_to_ledger=false`; they do not close
 holdings or create sell trades. Real live sells intentionally return `501` until a broker
 adapter is configured and reviewed.
+Use `GET /portfolio/sell-executions?dry_run=true` to audit rehearsed sell routes that
+were validated but not sent to a broker or ledger.
 
 Kill switch can pause all execution:
 

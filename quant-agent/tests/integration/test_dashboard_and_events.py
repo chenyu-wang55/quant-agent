@@ -67,11 +67,13 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "策略版本" in dashboard_home.text
     assert "调参建议" in dashboard_home.text
     assert "交易流水" in dashboard_home.text
+    assert "卖出执行审计" in dashboard_home.text
     assert "纸单记录" in dashboard_home.text
     assert "交易复盘" in dashboard_home.text
     assert "推荐归因" in dashboard_home.text
     assert "renderPaperOrders" in dashboard_home.text
     assert "renderTrades" in dashboard_home.text
+    assert "renderSellExecutions" in dashboard_home.text
     assert "renderPerformance" in dashboard_home.text
     assert "renderAttribution" in dashboard_home.text
     assert "renderSourceSnapshots" in dashboard_home.text
@@ -95,6 +97,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "/paper-orders" in dashboard_home.text
     assert "/paper-orders/risk-plan" in dashboard_home.text
     assert "adapter_message" in dashboard_home.text
+    assert "sellExecutionCount" in dashboard_home.text
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200
@@ -105,6 +108,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "strategy_configs" in payload
     assert "strategy_tuning" in payload
     assert "recent_paper_orders" in payload
+    assert "recent_sell_executions" in payload
     assert "recommendation_attribution" in payload
     assert payload["summary"]["recommendation_count"] >= 1
     assert payload["summary"]["source_snapshot_count"] >= 1

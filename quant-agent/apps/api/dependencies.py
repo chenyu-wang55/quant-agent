@@ -34,6 +34,7 @@ from domain.entities.models import (
     ResearchRunRequest,
     ResearchRunResult,
     SellAlert,
+    SellExecutionAudit,
     SellExecutionResult,
     SignalSnapshot,
     SnapshotMode,
@@ -60,6 +61,7 @@ from infra.db.repositories import (
     PaperOrderRepository,
     PositionRepository,
     RecommendationRepository,
+    SellExecutionAuditRepository,
     SignalRepository,
     SourceSnapshotRepository,
     StrategyConfigRepository,
@@ -94,6 +96,7 @@ class AppState:
     position_repo: PositionRepository = field(default_factory=PositionRepository)
     holding_watch_repo: HoldingWatchRepository = field(default_factory=HoldingWatchRepository)
     trade_ledger_repo: TradeLedgerRepository = field(default_factory=TradeLedgerRepository)
+    sell_execution_audit_repo: SellExecutionAuditRepository = field(default_factory=SellExecutionAuditRepository)
     approval_repo: ApprovalRepository = field(default_factory=ApprovalRepository)
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
@@ -124,6 +127,10 @@ class AppState:
     def _record_trade(self, entry: TradeLedgerEntry) -> None:
         self.trade_ledger_repo.add(entry)
         self.metrics_store.inc(f"trade_ledger_{entry.side.value}")
+
+    def _record_sell_execution_audit(self, item: SellExecutionAudit) -> None:
+        self.sell_execution_audit_repo.add(item)
+        self.metrics_store.inc("sell_execution_audits")
 
     def __post_init__(self) -> None:
         init_db()
@@ -526,9 +533,31 @@ class AppState:
             projected_remaining_qty = round(max(0.0, holding.qty - sell_qty), 6)
             broker_order_id = f"live_sell_dryrun_{uuid4().hex[:12]}"
             adapter_message = "live_sell_dry_run_only: order was validated but not sent to a broker"
+            submitted_at = datetime.now(timezone.utc)
+            audit = SellExecutionAudit(
+                id=uuid4().hex[:16],
+                ticker=ticker_upper,
+                qty=round(sell_qty, 6),
+                sell_price=request.sell_price,
+                submitted_at=submitted_at,
+                execution_mode=OrderExecutionMode.LIVE,
+                dry_run=True,
+                broker_order_id=broker_order_id,
+                adapter_message=adapter_message,
+                applied_to_ledger=False,
+                status="dry_run",
+                reason=request.reason,
+                source_recommendation_id=holding.source_recommendation_id,
+                realized_pnl_delta=0.0,
+                estimated_realized_pnl_delta=round(estimated_delta, 6),
+                remaining_qty=holding.qty,
+                holding_status_after=holding.status,
+            )
+            self._record_sell_execution_audit(audit)
             self.publish_event(
                 EventType.SELL_ROUTED,
                 {
+                    "sell_execution_id": audit.id,
                     "ticker": ticker_upper,
                     "side": TradeSide.SELL.value,
                     "qty": round(sell_qty, 6),
@@ -542,6 +571,7 @@ class AppState:
                 },
             )
             return SellExecutionResult(
+                sell_execution_id=audit.id,
                 holding=holding,
                 sold_qty=round(sell_qty, 6),
                 sell_price=request.sell_price,
@@ -603,11 +633,32 @@ class AppState:
                 holding_status_after=updated.status,
             )
         )
+        audit = SellExecutionAudit(
+            id=uuid4().hex[:16],
+            ticker=ticker_upper,
+            qty=round(sell_qty, 6),
+            sell_price=request.sell_price,
+            submitted_at=sold_at,
+            execution_mode=OrderExecutionMode.PAPER,
+            dry_run=False,
+            broker_order_id=broker_order_id,
+            adapter_message=adapter_message,
+            applied_to_ledger=True,
+            status="filled",
+            reason=request.reason,
+            source_recommendation_id=holding.source_recommendation_id,
+            realized_pnl_delta=round(realized_delta, 6),
+            estimated_realized_pnl_delta=round(realized_delta, 6),
+            remaining_qty=updated.qty,
+            holding_status_after=updated.status,
+        )
+        self._record_sell_execution_audit(audit)
         self.metrics_store.inc("manual_sells")
         self.metrics_store.set_gauge("open_holdings", len(self.list_open_holdings()))
         self.publish_event(
             EventType.PORTFOLIO_SELL,
             {
+                "sell_execution_id": audit.id,
                 "ticker": ticker_upper,
                 "sold_qty": round(sell_qty, 6),
                 "sell_price": request.sell_price,
@@ -625,6 +676,7 @@ class AppState:
 
         action = "全部卖出并关闭持仓" if is_closed else f"卖出 {sell_qty:g} 股，剩余 {remaining_qty:g} 股"
         return SellExecutionResult(
+            sell_execution_id=audit.id,
             holding=updated,
             sold_qty=round(sell_qty, 6),
             sell_price=request.sell_price,
@@ -662,6 +714,20 @@ class AppState:
         side: TradeSide | None = None,
     ) -> list[TradeLedgerEntry]:
         return self.trade_ledger_repo.list_recent(limit=limit, ticker=ticker, side=side)
+
+    def list_sell_execution_audits(
+        self,
+        limit: int = 100,
+        ticker: str | None = None,
+        dry_run: bool | None = None,
+        applied_to_ledger: bool | None = None,
+    ) -> list[SellExecutionAudit]:
+        return self.sell_execution_audit_repo.list_recent(
+            limit=limit,
+            ticker=ticker,
+            dry_run=dry_run,
+            applied_to_ledger=applied_to_ledger,
+        )
 
     def get_portfolio_summary(self, as_of: datetime | None = None) -> PortfolioSummary:
         now = as_of or datetime.now(timezone.utc)
