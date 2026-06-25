@@ -35,9 +35,9 @@ def get_metrics(state: AppState = Depends(get_app_state)) -> dict:
             "recent_sell_alerts": [alert.model_dump() for alert in state.recent_sell_alerts[:5]],
         },
         "event_metrics": {
-            "pending_queue_size": state.event_queue.size(),
-            "pending_preview": [event.model_dump() for event in state.event_queue.pending(limit=5)],
-            "recent_consumed": [event.model_dump() for event in state.event_queue.consumed(limit=5)],
+            "pending_queue_size": state.pending_event_count(),
+            "pending_preview": [event.model_dump() for event in state.list_pending_events(limit=5)],
+            "recent_consumed": [event.model_dump() for event in state.list_consumed_events(limit=5)],
         },
         "operational_metrics": state.metrics_store.dump(),
     }

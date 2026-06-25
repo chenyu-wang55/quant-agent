@@ -15,6 +15,7 @@ REQUIRED_TABLES = {
     "signal_snapshots",
     "feature_snapshots",
     "event_records",
+    "system_event_records",
     "paper_orders",
     "positions",
     "approval_decisions",

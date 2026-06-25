@@ -57,9 +57,11 @@ from infra.db.models import (
     SourceSnapshotRecord,
     StrategyConfigRecord,
     SystemCycleRunRecord,
+    SystemEventRecord,
     TradeLedgerRecord,
 )
 from infra.db.session import SessionLocal
+from infra.queue.events import EventStatus, EventType, SystemEvent
 
 
 def _ensure_utc(value: datetime) -> datetime:
@@ -798,6 +800,81 @@ class SystemCycleRunRepository:
             consumed_event_type_counts=dict(record.consumed_event_type_counts_json or {}),
             metrics=dict(record.metrics_json or {}),
             error_message=record.error_message,
+        )
+
+
+class SystemEventRepository:
+    def add(self, event: SystemEvent) -> None:
+        with SessionLocal() as session:
+            session.merge(
+                SystemEventRecord(
+                    id=event.id,
+                    event_type=event.event_type.value,
+                    payload_json=event.payload,
+                    created_at=event.created_at,
+                    status=event.status.value,
+                )
+            )
+            session.commit()
+
+    def list_by_status(self, status: EventStatus, limit: int = 100) -> list[SystemEvent]:
+        with SessionLocal() as session:
+            order_column = (
+                SystemEventRecord.created_at.desc()
+                if status == EventStatus.CONSUMED
+                else SystemEventRecord.created_at.asc()
+            )
+            stmt = (
+                select(SystemEventRecord)
+                .where(SystemEventRecord.status == status.value)
+                .order_by(order_column)
+                .limit(limit)
+            )
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    def consume(self, limit: int = 100) -> list[SystemEvent]:
+        with SessionLocal() as session:
+            stmt = (
+                select(SystemEventRecord)
+                .where(SystemEventRecord.status == EventStatus.PENDING.value)
+                .order_by(SystemEventRecord.created_at.asc())
+                .limit(limit)
+            )
+            records = list(session.execute(stmt).scalars())
+            events = [self._to_domain(record) for record in records]
+            for record in records:
+                record.status = EventStatus.CONSUMED.value
+                session.merge(record)
+            session.commit()
+        for event in events:
+            event.status = EventStatus.CONSUMED
+        return events
+
+    def count_by_status(self, status: EventStatus) -> int:
+        with SessionLocal() as session:
+            return int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(SystemEventRecord)
+                    .where(SystemEventRecord.status == status.value)
+                )
+                or 0
+            )
+
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(SystemEventRecord))
+            session.commit()
+
+    @staticmethod
+    def _to_domain(record: SystemEventRecord) -> SystemEvent:
+        return SystemEvent(
+            id=record.id,
+            event_type=EventType(record.event_type),
+            payload=dict(record.payload_json or {}),
+            created_at=_ensure_utc(record.created_at),
+            status=EventStatus(record.status),
         )
 
 

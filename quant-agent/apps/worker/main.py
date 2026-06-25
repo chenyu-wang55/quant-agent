@@ -123,7 +123,7 @@ def system_cycle(
     alerts = state.monitor_sell_alerts(as_of=started_at)
     state.record_sell_alert_audits(alerts, monitor_run_id=run_id)
     consumed_events = state.consume_events(limit=1000) if consume_events else []
-    pending_event_count = state.event_queue.size()
+    pending_event_count = state.pending_event_count()
     finished_at = datetime.now(timezone.utc)
     top_recommendations = [
         {

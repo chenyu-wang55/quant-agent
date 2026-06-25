@@ -104,6 +104,16 @@ class EventRecord(Base):
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class SystemEventRecord(Base):
+    __tablename__ = "system_event_records"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+
+
 class PaperOrderRecord(Base):
     __tablename__ = "paper_orders"
 

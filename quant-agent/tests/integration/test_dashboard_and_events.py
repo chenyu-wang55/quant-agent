@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from apps.api.dependencies import get_app_state
+from apps.api.dependencies import AppState, get_app_state
 from apps.api.main import app
 from apps.dashboard.main import _select_recommendations_for_dashboard
+from infra.queue.events import EventType
 
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
@@ -137,3 +138,31 @@ def test_dashboard_and_event_endpoints() -> None:
     dashboard_detail = client.get(f"/dashboard/recommendations/{rec_id}", headers=AUTH_HEADERS)
     assert dashboard_detail.status_code == 200
     assert rec_id in dashboard_detail.text
+
+
+def test_system_events_are_durable_across_app_state_instances() -> None:
+    state = get_app_state()
+    state.reset()
+
+    state.publish_event(EventType.MODEL_EVALUATION, {"run_id": "durable-event-test"})
+
+    restarted_state = AppState()
+    pending = restarted_state.list_pending_events(limit=10)
+    assert any(
+        event.event_type == EventType.MODEL_EVALUATION
+        and event.payload["run_id"] == "durable-event-test"
+        for event in pending
+    )
+    assert restarted_state.pending_event_count() >= 1
+
+    consumed = restarted_state.consume_events(limit=10)
+    assert any(event.payload.get("run_id") == "durable-event-test" for event in consumed)
+    assert all(event.status == "consumed" for event in consumed)
+
+    second_restart = AppState()
+    consumed_after_restart = second_restart.list_consumed_events(limit=10)
+    assert any(event.payload.get("run_id") == "durable-event-test" for event in consumed_after_restart)
+    assert not any(
+        event.payload.get("run_id") == "durable-event-test"
+        for event in second_restart.list_pending_events(limit=10)
+    )

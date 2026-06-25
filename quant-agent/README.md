@@ -182,12 +182,15 @@ Default real-data universe:
 - Recommendation detail page: `GET /dashboard/recommendations/{id}`
 - Operations control center: `GET /operations/control-center`
 - Pending events: `GET /events/pending`
+- Consumed events: `GET /events/consumed`
 - Consume events: `POST /events/consume?limit=100`
 
 `/operations/control-center` is the machine-readable daily cockpit: it combines the
 kill switch, pending approvals, approved recommendations ready for buy routing, active
 sell alerts, pending events, and recent execution audit counts into prioritized next
 actions. It is read-only and is safe to poll from scripts.
+System events are persisted in the database, so pending and consumed event audit trails
+survive API or worker restarts.
 
 ## Worker Automation
 

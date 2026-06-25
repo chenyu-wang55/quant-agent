@@ -80,10 +80,11 @@ from infra.db.repositories import (
     SourceSnapshotRepository,
     StrategyConfigRepository,
     SystemCycleRunRepository,
+    SystemEventRepository,
     TradeLedgerRepository,
 )
 from infra.observability.metrics import MetricsStore
-from infra.queue.events import EventType, SystemEvent
+from infra.queue.events import EventStatus, EventType, SystemEvent
 from infra.queue.in_memory import InMemoryEventQueue
 from services.execution.router import ExecutionRouter
 from services.ingestion.interfaces import DataProvider
@@ -119,6 +120,7 @@ class AppState:
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
     strategy_config_repo: StrategyConfigRepository = field(default_factory=StrategyConfigRepository)
     system_cycle_run_repo: SystemCycleRunRepository = field(default_factory=SystemCycleRunRepository)
+    system_event_repo: SystemEventRepository = field(default_factory=SystemEventRepository)
 
     latest_run: ResearchRunResult | None = None
     last_research_request: ResearchRunRequest | None = None
@@ -247,7 +249,7 @@ class AppState:
                     )
                 )
 
-        pending_event_count = self.event_queue.size()
+        pending_event_count = self.pending_event_count()
         if pending_event_count > 0:
             actions.append(
                 OperationAction(
@@ -867,9 +869,11 @@ class AppState:
         return self.kill_switch
 
     def publish_event(self, event_type: EventType, payload: dict) -> None:
-        self.event_queue.publish(SystemEvent(event_type=event_type, payload=payload))
+        event = SystemEvent(event_type=event_type, payload=payload)
+        self.event_queue.publish(event)
+        self.system_event_repo.add(event)
         self.metrics_store.inc(f"event_published_{event_type.value}")
-        self.metrics_store.set_gauge("event_queue_pending", self.event_queue.size())
+        self.metrics_store.set_gauge("event_queue_pending", self.pending_event_count())
 
     def record_manual_buy(self, request: ManualBuyRequest) -> HoldingWatch:
         ticker = request.ticker.upper()
@@ -1880,10 +1884,20 @@ class AppState:
         return AlertExecutionResult(alert=alert, execution=execution, default_action_cn=default_action_cn)
 
     def consume_events(self, limit: int = 100) -> list[SystemEvent]:
-        events = self.event_queue.consume(limit=limit)
-        self.metrics_store.set_gauge("event_queue_pending", self.event_queue.size())
+        events = self.system_event_repo.consume(limit=limit)
+        self.event_queue.consume(limit=limit)
+        self.metrics_store.set_gauge("event_queue_pending", self.pending_event_count())
         self.metrics_store.inc("events_consumed", len(events))
         return events
+
+    def list_pending_events(self, limit: int = 100) -> list[SystemEvent]:
+        return self.system_event_repo.list_by_status(EventStatus.PENDING, limit=limit)
+
+    def list_consumed_events(self, limit: int = 100) -> list[SystemEvent]:
+        return self.system_event_repo.list_by_status(EventStatus.CONSUMED, limit=limit)
+
+    def pending_event_count(self) -> int:
+        return self.system_event_repo.count_by_status(EventStatus.PENDING)
 
     def get_latest_approval(self, recommendation_id: str) -> RecommendationApproval | None:
         cached = self.approvals_by_recommendation_id.get(recommendation_id)
@@ -1906,6 +1920,8 @@ class AppState:
         self.backtest_runs.clear()
         self.approvals_by_recommendation_id.clear()
         self.recent_sell_alerts.clear()
+        self.event_queue = InMemoryEventQueue()
+        self.system_event_repo.clear_all()
         self.kill_switch = self.execution_control_repo.set_kill_switch(
             enabled=False,
             reason="state_reset",

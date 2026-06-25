@@ -14,7 +14,7 @@ def list_pending_events(
     limit: int = Query(default=100, ge=1, le=1000),
     state: AppState = Depends(get_app_state),
 ) -> list[SystemEvent]:
-    return state.event_queue.pending(limit=limit)
+    return state.list_pending_events(limit=limit)
 
 
 @router.get("/events/consumed", response_model=list[SystemEvent])
@@ -22,7 +22,7 @@ def list_consumed_events(
     limit: int = Query(default=100, ge=1, le=1000),
     state: AppState = Depends(get_app_state),
 ) -> list[SystemEvent]:
-    return state.event_queue.consumed(limit=limit)
+    return state.list_consumed_events(limit=limit)
 
 
 @router.post("/events/consume", response_model=list[SystemEvent])

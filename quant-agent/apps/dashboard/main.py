@@ -155,7 +155,7 @@ def dashboard_realtime_data(
             "strategy_config_count": strategy_config_count,
             "strategy_tuning_count": strategy_tuning.recommendation_count,
             "system_run_count": system_run_count,
-            "pending_event_count": state.event_queue.size(),
+            "pending_event_count": state.pending_event_count(),
         },
         "portfolio_summary": portfolio_summary.model_dump(mode="json"),
         "portfolio_performance": portfolio_performance.model_dump(mode="json"),
@@ -203,7 +203,7 @@ def dashboard_realtime_data(
             }
             for alert in alerts
         ],
-        "recent_events": [event.model_dump() for event in state.event_queue.pending(limit=5)],
+        "recent_events": [event.model_dump() for event in state.list_pending_events(limit=5)],
     }
 
 
