@@ -41,6 +41,9 @@ from domain.entities.models import (
     SignalSnapshot,
     SnapshotMode,
     SnapshotAttribution,
+    SourceSnapshotReplayCompareRequest,
+    SourceSnapshotReplayComparison,
+    SourceSnapshotReplayDiff,
     SourceSnapshotDetail,
     SourceSnapshotReplayRequest,
     SourceSnapshotSummary,
@@ -325,6 +328,162 @@ class AppState:
         output = self.pipeline.run(request)
         self.ingest_run_output(request, output)
         return output.result
+
+    def compare_source_snapshot_replay(
+        self,
+        source_snapshot_id: str,
+        compare_request: SourceSnapshotReplayCompareRequest,
+    ) -> SourceSnapshotReplayComparison:
+        summary = self.source_snapshot_repo.get_summary(source_snapshot_id)
+        if summary is None:
+            raise KeyError("source snapshot not found")
+
+        baseline = self.recommendation_repo.list_by_source_snapshot(
+            source_snapshot_id=source_snapshot_id,
+            strategy_config_id=compare_request.baseline_strategy_config_id,
+        )
+        request = ResearchRunRequest(
+            run_type=compare_request.run_type,
+            objective=compare_request.objective,
+            as_of=summary.as_of,
+            snapshot_mode=SnapshotMode.POINT_IN_TIME,
+            source_snapshot_id=source_snapshot_id,
+            universe=summary.universe,
+            universe_rules=compare_request.universe_rules,
+            signal_config=compare_request.signal_config,
+            price_plan_config=compare_request.price_plan_config,
+            risk_policy=compare_request.risk_policy,
+            publication=compare_request.publication,
+            execution_mode=compare_request.execution_mode,
+        )
+        output = self.pipeline.run(request)
+        return self._build_replay_comparison(
+            source_snapshot_id=source_snapshot_id,
+            baseline=baseline,
+            replay=output.result,
+            baseline_strategy_config_id=compare_request.baseline_strategy_config_id,
+            include_unchanged=compare_request.include_unchanged,
+        )
+
+    def _build_replay_comparison(
+        self,
+        source_snapshot_id: str,
+        baseline: list[Recommendation],
+        replay: ResearchRunResult,
+        baseline_strategy_config_id: str | None,
+        include_unchanged: bool,
+    ) -> SourceSnapshotReplayComparison:
+        baseline_by_ticker = self._recommendations_by_ticker_for_compare(baseline)
+        replay_by_ticker = self._recommendations_by_ticker_for_compare(replay.recommendations)
+        all_tickers = sorted(set(baseline_by_ticker) | set(replay_by_ticker))
+        diffs: list[SourceSnapshotReplayDiff] = []
+        matched_count = 0
+        changed_count = 0
+        missing_count = 0
+        new_count = 0
+
+        for ticker in all_tickers:
+            baseline_rec = baseline_by_ticker.get(ticker)
+            replay_rec = replay_by_ticker.get(ticker)
+            baseline_values = (
+                self._recommendation_compare_values(baseline_rec) if baseline_rec is not None else {}
+            )
+            replay_values = (
+                self._recommendation_compare_values(replay_rec) if replay_rec is not None else {}
+            )
+
+            if baseline_rec is None:
+                status = "new_in_replay"
+                changed_fields = sorted(replay_values)
+                new_count += 1
+            elif replay_rec is None:
+                status = "missing_in_replay"
+                changed_fields = sorted(baseline_values)
+                missing_count += 1
+            else:
+                changed_fields = [
+                    field
+                    for field in sorted(set(baseline_values) | set(replay_values))
+                    if baseline_values.get(field) != replay_values.get(field)
+                ]
+                if changed_fields:
+                    status = "changed"
+                    changed_count += 1
+                else:
+                    status = "matched"
+                    matched_count += 1
+
+            if include_unchanged or status != "matched":
+                diffs.append(
+                    SourceSnapshotReplayDiff(
+                        ticker=ticker,
+                        status=status,
+                        baseline_recommendation_id=baseline_rec.id if baseline_rec else None,
+                        replay_recommendation_id=replay_rec.id if replay_rec else None,
+                        changed_fields=changed_fields,
+                        baseline_values=baseline_values,
+                        replay_values=replay_values,
+                    )
+                )
+
+        deterministic = (
+            changed_count == 0
+            and missing_count == 0
+            and new_count == 0
+            and matched_count == len(baseline_by_ticker)
+            and matched_count == len(replay_by_ticker)
+        )
+        snapshot_info = replay.universe_summary.get("snapshot", {})
+        replay_operation = str(snapshot_info.get("operation") or "unknown")
+        return SourceSnapshotReplayComparison(
+            source_snapshot_id=source_snapshot_id,
+            compared_at=datetime.now(timezone.utc),
+            baseline_strategy_config_id=baseline_strategy_config_id,
+            replay_strategy_config_id=replay.strategy_config_id,
+            replay_operation=replay_operation,
+            baseline_count=len(baseline_by_ticker),
+            replay_count=len(replay_by_ticker),
+            matched_count=matched_count,
+            changed_count=changed_count,
+            missing_in_replay_count=missing_count,
+            new_in_replay_count=new_count,
+            deterministic=deterministic,
+            diffs=diffs,
+        )
+
+    @staticmethod
+    def _recommendations_by_ticker_for_compare(
+        recommendations: list[Recommendation],
+    ) -> dict[str, Recommendation]:
+        ranked = sorted(
+            recommendations,
+            key=lambda rec: (
+                float(rec.score_vector.get("composite", 0.0)),
+                rec.generated_at,
+                rec.id,
+            ),
+            reverse=True,
+        )
+        result: dict[str, Recommendation] = {}
+        for recommendation in ranked:
+            result.setdefault(recommendation.ticker.upper(), recommendation)
+        return result
+
+    @staticmethod
+    def _recommendation_compare_values(recommendation: Recommendation) -> dict[str, Any]:
+        return {
+            "recommendation_id": recommendation.id,
+            "direction": recommendation.direction.value,
+            "entry_zone_low": round(recommendation.entry_zone_low, 6),
+            "entry_zone_high": round(recommendation.entry_zone_high, 6),
+            "stop_loss": round(recommendation.stop_loss, 6),
+            "tp1": round(recommendation.tp1, 6),
+            "tp2": round(recommendation.tp2, 6),
+            "confidence": round(recommendation.confidence, 6),
+            "risk_grade": recommendation.risk_grade.value,
+            "pattern_template": recommendation.pattern_template.value,
+            "composite_score": round(float(recommendation.score_vector.get("composite", 0.0)), 6),
+        }
 
     def list_strategy_configs(self, limit: int = 50) -> list[StrategyConfigSnapshot]:
         return self.strategy_config_repo.list_recent(limit=limit)

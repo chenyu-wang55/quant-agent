@@ -94,6 +94,47 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     assert snapshot_bars_response.status_code == 200
     assert len(snapshot_bars_response.json()) == 3
 
+    compare_response = client.post(
+        f"/source-snapshots/{snapshot_id}/replay/compare",
+        json={
+            "objective": "api snapshot replay compare",
+            "universe_rules": payload["universe_rules"],
+            "risk_policy": payload["risk_policy"],
+            "publication": payload["publication"],
+            "include_unchanged": False,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert compare_response.status_code == 200
+    compare_data = compare_response.json()
+    assert compare_data["source_snapshot_id"] == snapshot_id
+    assert compare_data["replay_operation"] == "replayed"
+    assert compare_data["deterministic"] is True
+    assert compare_data["matched_count"] == len(run_data["recommendations"])
+    assert compare_data["changed_count"] == 0
+    assert compare_data["missing_in_replay_count"] == 0
+    assert compare_data["new_in_replay_count"] == 0
+    assert compare_data["diffs"] == []
+
+    non_mutating_compare_response = client.post(
+        f"/source-snapshots/{snapshot_id}/replay/compare",
+        json={
+            "objective": "api snapshot replay compare with smaller publication",
+            "universe_rules": payload["universe_rules"],
+            "risk_policy": payload["risk_policy"],
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "include_unchanged": False,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert non_mutating_compare_response.status_code == 200
+    non_mutating_compare = non_mutating_compare_response.json()
+    assert non_mutating_compare["deterministic"] is False
+    assert non_mutating_compare["missing_in_replay_count"] >= 1
+    stored_recommendation = state.recommendation_repo.get(run_data["recommendations"][0]["id"])
+    assert stored_recommendation is not None
+    assert stored_recommendation.strategy_config_id == strategy_config_id
+
     replay_response = client.post(
         f"/source-snapshots/{snapshot_id}/replay",
         json={

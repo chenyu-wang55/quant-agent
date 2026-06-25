@@ -106,6 +106,28 @@ class RecommendationRepository:
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
+    def list_by_source_snapshot(
+        self,
+        source_snapshot_id: str,
+        limit: int = 500,
+        strategy_config_id: str | None = None,
+    ) -> list[Recommendation]:
+        with SessionLocal() as session:
+            stmt = select(RecommendationRecord).where(
+                RecommendationRecord.source_snapshot_id == source_snapshot_id
+            )
+            if strategy_config_id is not None:
+                stmt = stmt.where(RecommendationRecord.strategy_config_id == strategy_config_id)
+            stmt = (
+                stmt.order_by(
+                    RecommendationRecord.generated_at.desc(),
+                    RecommendationRecord.ticker.asc(),
+                )
+                .limit(limit)
+            )
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
     def get(self, recommendation_id: str) -> Recommendation | None:
         with SessionLocal() as session:
             stmt = select(RecommendationRecord).where(RecommendationRecord.id == recommendation_id).limit(1)

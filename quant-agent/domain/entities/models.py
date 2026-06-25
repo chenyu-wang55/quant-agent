@@ -218,6 +218,37 @@ class SourceSnapshotReplayRequest(BaseModel):
     execution_mode: ExecutionMode = ExecutionMode.RESEARCH_ONLY
 
 
+class SourceSnapshotReplayCompareRequest(SourceSnapshotReplayRequest):
+    baseline_strategy_config_id: str | None = None
+    include_unchanged: bool = True
+
+
+class SourceSnapshotReplayDiff(BaseModel):
+    ticker: str
+    status: str
+    baseline_recommendation_id: str | None = None
+    replay_recommendation_id: str | None = None
+    changed_fields: list[str] = Field(default_factory=list)
+    baseline_values: dict[str, Any] = Field(default_factory=dict)
+    replay_values: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceSnapshotReplayComparison(BaseModel):
+    source_snapshot_id: str
+    compared_at: datetime
+    baseline_strategy_config_id: str | None = None
+    replay_strategy_config_id: str | None = None
+    replay_operation: str
+    baseline_count: int
+    replay_count: int
+    matched_count: int
+    changed_count: int
+    missing_in_replay_count: int
+    new_in_replay_count: int
+    deterministic: bool
+    diffs: list[SourceSnapshotReplayDiff] = Field(default_factory=list)
+
+
 class SecurityMetadata(BaseModel):
     ticker: str
     sector: str

@@ -40,6 +40,7 @@ curl http://localhost:8000/recommendations/<id>/evidence
 curl http://localhost:8000/source-snapshots
 curl http://localhost:8000/source-snapshots/<source_snapshot_id>
 curl "http://localhost:8000/source-snapshots/<source_snapshot_id>/bars/MSFT?limit=5"
+curl -X POST http://localhost:8000/source-snapshots/<source_snapshot_id>/replay/compare
 curl http://localhost:8000/strategy-configs
 curl http://localhost:8000/strategy-configs/tuning-report
 curl http://localhost:8000/strategy-configs/<strategy_config_id>
@@ -82,6 +83,21 @@ curl -X POST http://localhost:8000/source-snapshots/<source_snapshot_id>/replay 
       "reject_on_material_evidence_conflict": false,
       "event_trading_enabled": true
     }
+  }'
+```
+
+To verify reproducibility without mutating the latest recommendation store, use the
+comparison endpoint. A clean replay returns `deterministic=true`; otherwise the
+response lists changed, missing, or newly replayed tickers.
+
+```bash
+curl -X POST http://localhost:8000/source-snapshots/<source_snapshot_id>/replay/compare \
+  -H "Content-Type: application/json" \
+  -d '{
+    "objective": "ops snapshot replay compare",
+    "baseline_strategy_config_id": "<strategy_config_id>",
+    "include_unchanged": false,
+    "publication": {"top_n": 5, "output_channels": ["api"]}
   }'
 ```
 

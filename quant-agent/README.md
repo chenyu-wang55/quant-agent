@@ -62,10 +62,16 @@ Snapshot audit and replay endpoints:
 - `GET /source-snapshots/{source_snapshot_id}`
 - `GET /source-snapshots/{source_snapshot_id}/bars/{ticker}`
 - `POST /source-snapshots/{source_snapshot_id}/replay`
+- `POST /source-snapshots/{source_snapshot_id}/replay/compare`
 
 The replay endpoint rebuilds recommendations from the stored market/news inputs and
 returns `operation=replayed`, making a live recommendation set reproducible by its
 `source_snapshot_id`.
+The compare endpoint performs the same replay without writing the replayed run into
+the latest recommendation store, then returns a deterministic diff against stored
+recommendations for that snapshot. Use `baseline_strategy_config_id` to compare
+against a specific strategy version when the same snapshot has been replayed with
+multiple parameter sets.
 
 Snapshot performance is reported through `GET /portfolio/recommendation-attribution`.
 Each `by_snapshot` row includes `performance_score`, `quality_grade`,
@@ -124,6 +130,7 @@ Endpoints:
 - `GET /recommendations/{id}/evidence`
 - `GET /source-snapshots`
 - `POST /source-snapshots/{source_snapshot_id}/replay`
+- `POST /source-snapshots/{source_snapshot_id}/replay/compare`
 - `GET /strategy-configs`
 - `GET /strategy-configs/tuning-report`
 - `GET /paper-orders`

@@ -7,6 +7,8 @@ from domain.entities.models import (
     MarketBar,
     ResearchRunResult,
     SourceSnapshotDetail,
+    SourceSnapshotReplayCompareRequest,
+    SourceSnapshotReplayComparison,
     SourceSnapshotReplayRequest,
     SourceSnapshotSummary,
 )
@@ -57,6 +59,24 @@ def replay_source_snapshot(
         return state.replay_source_snapshot(
             source_snapshot_id,
             replay_request or SourceSnapshotReplayRequest(),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Source snapshot not found") from None
+
+
+@router.post(
+    "/source-snapshots/{source_snapshot_id}/replay/compare",
+    response_model=SourceSnapshotReplayComparison,
+)
+def compare_source_snapshot_replay(
+    source_snapshot_id: str,
+    compare_request: SourceSnapshotReplayCompareRequest | None = None,
+    state: AppState = Depends(get_app_state),
+) -> SourceSnapshotReplayComparison:
+    try:
+        return state.compare_source_snapshot_replay(
+            source_snapshot_id,
+            compare_request or SourceSnapshotReplayCompareRequest(),
         )
     except KeyError:
         raise HTTPException(status_code=404, detail="Source snapshot not found") from None
