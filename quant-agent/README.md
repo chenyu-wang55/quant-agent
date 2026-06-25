@@ -175,6 +175,21 @@ Default real-data universe:
 - Pending events: `GET /events/pending`
 - Consume events: `POST /events/consume?limit=100`
 
+## Worker Automation
+
+The conservative full-system loop is:
+
+```bash
+python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0
+```
+
+It captures or replays the latest source snapshot, generates recommendations, refreshes
+portfolio sell alerts, and prints a JSON operational summary with recommendation,
+alert, event, and metric counts. It does not auto-buy or auto-sell; execution still
+requires approval plus the paper/live-dry-run execution gates. Use `--consume-events`
+only when the printed summary is your audit sink and you want pending in-memory events
+drained after the cycle.
+
 ## Backtest (Real Historical Data)
 
 - Backtest engine now uses walk-forward historical bars (not synthetic TP-proxy math).

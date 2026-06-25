@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime, timezone
+from typing import Any
 
 from apps.api.dependencies import get_app_state
-from domain.entities.models import BacktestRunRequest, ResearchRunRequest, RunType
+from domain.entities.models import (
+    BacktestRunRequest,
+    PublicationConfig,
+    ResearchRunRequest,
+    RiskPolicy,
+    RunType,
+    SnapshotMode,
+)
 from infra.queue.events import EventType
 
 
@@ -83,6 +92,74 @@ def monitor_positions_alerts() -> None:
         print(f"{alert.ticker} | {alert.level.value} | {alert.reason_code} | {alert.message_cn}")
 
 
+def _event_type_counts(events: list[Any]) -> dict[str, int]:
+    type_counts: dict[str, int] = {}
+    for event in events:
+        key = event.event_type.value
+        type_counts[key] = type_counts.get(key, 0) + 1
+    return type_counts
+
+
+def system_cycle(
+    top_n: int = 8,
+    min_confidence: float | None = None,
+    consume_events: bool = False,
+) -> dict[str, Any]:
+    state = get_app_state()
+    now = datetime.now(timezone.utc)
+    request = ResearchRunRequest(
+        run_type=RunType.RESEARCH_BATCH,
+        objective="Scheduled full system cycle",
+        as_of=now,
+        snapshot_mode=SnapshotMode.LATEST,
+        publication=PublicationConfig(top_n=top_n, output_channels=["api", "worker"]),
+        risk_policy=RiskPolicy(min_confidence=min_confidence) if min_confidence is not None else RiskPolicy(),
+    )
+    output = state.pipeline.run(request)
+    state.ingest_run_output(request, output)
+    alerts = state.monitor_sell_alerts(as_of=now)
+    consumed_events = state.consume_events(limit=1000) if consume_events else []
+    pending_event_count = state.event_queue.size()
+    summary = {
+        "job": "system_cycle",
+        "generated_at": now.isoformat(),
+        "source_snapshot_id": output.result.source_snapshot_id,
+        "strategy_config_id": output.result.strategy_config_id,
+        "recommendation_count": len(output.result.recommendations),
+        "top_recommendations": [
+            {
+                "id": rec.id,
+                "ticker": rec.ticker,
+                "confidence": rec.confidence,
+                "entry_zone": rec.entry_zone,
+                "stop_loss": rec.stop_loss,
+                "tp1": rec.tp1,
+                "tp2": rec.tp2,
+            }
+            for rec in output.result.recommendations[:top_n]
+        ],
+        "sell_alert_count": len(alerts),
+        "sell_alerts": [
+            {
+                "ticker": alert.ticker,
+                "level": alert.level.value,
+                "reason_code": alert.reason_code,
+                "current_price": alert.current_price,
+                "message_cn": alert.message_cn,
+                "suggested_action_cn": alert.suggested_action_cn,
+            }
+            for alert in alerts
+        ],
+        "auto_execution_enabled": False,
+        "consumed_event_count": len(consumed_events),
+        "consumed_event_type_counts": _event_type_counts(consumed_events),
+        "pending_event_count": pending_event_count,
+        "metrics": state.metrics_store.dump(),
+    }
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Quant agent worker jobs")
     parser.add_argument(
@@ -95,7 +172,20 @@ def main() -> None:
             "daily_metrics_aggregation",
             "process_event_queue",
             "monitor_positions_alerts",
+            "system_cycle",
         ],
+    )
+    parser.add_argument("--top-n", type=int, default=8, help="system_cycle recommendation publication size")
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=None,
+        help="optional system_cycle risk-policy min confidence override",
+    )
+    parser.add_argument(
+        "--consume-events",
+        action="store_true",
+        help="system_cycle should consume pending events after publishing its summary inputs",
     )
     args = parser.parse_args()
 
@@ -107,6 +197,11 @@ def main() -> None:
         "daily_metrics_aggregation": daily_metrics_aggregation,
         "process_event_queue": process_event_queue,
         "monitor_positions_alerts": monitor_positions_alerts,
+        "system_cycle": lambda: system_cycle(
+            top_n=args.top_n,
+            min_confidence=args.min_confidence,
+            consume_events=args.consume_events,
+        ),
     }
     dispatch[args.job]()
 

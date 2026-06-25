@@ -18,7 +18,14 @@ python -m apps.worker.main nightly_backtest_batch
 python -m apps.worker.main daily_metrics_aggregation
 python -m apps.worker.main process_event_queue
 python -m apps.worker.main monitor_positions_alerts
+python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0
 ```
+
+`system_cycle` is the preferred schedulable loop for local operation. It records/replays
+the latest market snapshot, generates recommendations, refreshes sell alerts, prints a
+JSON health summary, and leaves order execution to the approval/dashboard flow. Add
+`--consume-events` only when a downstream event sink has already captured the printed
+summary and you want the in-memory queue drained.
 
 ## API Checks
 
