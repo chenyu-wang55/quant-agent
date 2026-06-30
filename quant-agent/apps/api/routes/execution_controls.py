@@ -1,15 +1,34 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from fastapi import APIRouter, Depends
 
 from apps.api.dependencies import AppState, get_app_state
-from domain.entities.models import KillSwitchState
+from domain.entities.models import AutoExecutionMode, AutopilotPolicy, KillSwitchState
 
 
 class KillSwitchUpdateBody(BaseModel):
     enabled: bool
+    reason: str | None = None
+    updated_by: str = "operator"
+
+
+class AutopilotPolicyUpdateBody(BaseModel):
+    enabled: bool | None = None
+    auto_approve_recommendations: bool | None = None
+    auto_execute_approved: bool | None = None
+    auto_execution_mode: AutoExecutionMode | None = None
+    auto_approve_min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    auto_approve_min_composite: float | None = Field(default=None, ge=0.0)
+    max_auto_approvals: int | None = Field(default=None, ge=0)
+    max_auto_buys: int | None = Field(default=None, ge=0)
+    max_auto_sells: int | None = Field(default=None, ge=0)
+    account_equity: float | None = Field(default=None, gt=0)
+    risk_per_trade_pct: float | None = Field(default=None, gt=0, le=1.0)
+    max_position_pct: float | None = Field(default=None, gt=0, le=1.0)
+    max_gross_exposure_pct: float | None = Field(default=None, gt=0, le=5.0)
+    max_sector_exposure_pct: float | None = Field(default=None, gt=0, le=5.0)
     reason: str | None = None
     updated_by: str = "operator"
 
@@ -28,3 +47,18 @@ def set_kill_switch(
     state: AppState = Depends(get_app_state),
 ) -> KillSwitchState:
     return state.set_kill_switch(enabled=body.enabled, reason=body.reason, updated_by=body.updated_by)
+
+
+@router.get("/execution/autopilot-policy", response_model=AutopilotPolicy)
+def get_autopilot_policy(state: AppState = Depends(get_app_state)) -> AutopilotPolicy:
+    return state.get_autopilot_policy()
+
+
+@router.post("/execution/autopilot-policy", response_model=AutopilotPolicy)
+def set_autopilot_policy(
+    body: AutopilotPolicyUpdateBody,
+    state: AppState = Depends(get_app_state),
+) -> AutopilotPolicy:
+    updates = body.model_dump(exclude_unset=True)
+    updates.setdefault("updated_by", body.updated_by)
+    return state.update_autopilot_policy(updates)

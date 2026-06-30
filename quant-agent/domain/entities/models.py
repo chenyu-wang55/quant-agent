@@ -66,6 +66,11 @@ class OrderExecutionMode(str, Enum):
     LIVE = "live"
 
 
+class AutoExecutionMode(str, Enum):
+    PAPER = "paper"
+    LIVE_DRY_RUN = "live_dry_run"
+
+
 class ApprovalDecision(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -549,6 +554,27 @@ class KillSwitchState(BaseModel):
     updated_by: str = "system"
 
 
+class AutopilotPolicy(BaseModel):
+    policy_id: int | None = None
+    enabled: bool = False
+    auto_approve_recommendations: bool = False
+    auto_execute_approved: bool = False
+    auto_execution_mode: AutoExecutionMode = AutoExecutionMode.PAPER
+    auto_approve_min_confidence: float = Field(default=0.72, ge=0.0, le=1.0)
+    auto_approve_min_composite: float = Field(default=0.0, ge=0.0)
+    max_auto_approvals: int = Field(default=1, ge=0)
+    max_auto_buys: int = Field(default=1, ge=0)
+    max_auto_sells: int = Field(default=10, ge=0)
+    account_equity: float = Field(default=100_000.0, gt=0)
+    risk_per_trade_pct: float = Field(default=0.01, gt=0, le=1.0)
+    max_position_pct: float = Field(default=0.10, gt=0, le=1.0)
+    max_gross_exposure_pct: float = Field(default=1.0, gt=0, le=5.0)
+    max_sector_exposure_pct: float = Field(default=0.30, gt=0, le=5.0)
+    reason: str | None = None
+    updated_at: datetime = Field(default_factory=utc_now)
+    updated_by: str = "system"
+
+
 class HoldingStatus(str, Enum):
     OPEN = "open"
     CLOSED = "closed"
@@ -912,6 +938,7 @@ class OperationRecommendationCandidate(BaseModel):
 class OperationControlCenter(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
     kill_switch: KillSwitchState
+    autopilot_policy: AutopilotPolicy = Field(default_factory=AutopilotPolicy)
     latest_source_snapshot_id: str | None = None
     latest_strategy_config_id: str | None = None
     latest_recommendation_count: int = 0

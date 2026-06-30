@@ -7,6 +7,8 @@ from sqlalchemy import delete, func, select
 
 from domain.entities.models import (
     ApprovalDecision,
+    AutoExecutionMode,
+    AutopilotPolicy,
     Direction,
     FeatureSnapshot,
     HoldingControlAudit,
@@ -40,6 +42,7 @@ from domain.entities.models import (
 )
 from infra.db.models import (
     ApprovalDecisionRecord,
+    AutopilotPolicyRecord,
     ExecutionControlRecord,
     FeatureSnapshotRecord,
     HoldingWatchRecord,
@@ -956,6 +959,70 @@ class ExecutionControlRepository:
             )
             session.commit()
         return state
+
+
+class AutopilotPolicyRepository:
+    def get_latest(self) -> AutopilotPolicy:
+        with SessionLocal() as session:
+            stmt = select(AutopilotPolicyRecord).order_by(AutopilotPolicyRecord.id.desc()).limit(1)
+            record = session.execute(stmt).scalars().first()
+        if record is None:
+            return AutopilotPolicy(enabled=False, reason=None, updated_by="system")
+        return self._to_domain(record)
+
+    def set_policy(self, policy: AutopilotPolicy) -> AutopilotPolicy:
+        with SessionLocal() as session:
+            record = AutopilotPolicyRecord(
+                enabled=1 if policy.enabled else 0,
+                auto_approve_recommendations=1 if policy.auto_approve_recommendations else 0,
+                auto_execute_approved=1 if policy.auto_execute_approved else 0,
+                auto_execution_mode=policy.auto_execution_mode.value,
+                auto_approve_min_confidence=policy.auto_approve_min_confidence,
+                auto_approve_min_composite=policy.auto_approve_min_composite,
+                max_auto_approvals=policy.max_auto_approvals,
+                max_auto_buys=policy.max_auto_buys,
+                max_auto_sells=policy.max_auto_sells,
+                account_equity=policy.account_equity,
+                risk_per_trade_pct=policy.risk_per_trade_pct,
+                max_position_pct=policy.max_position_pct,
+                max_gross_exposure_pct=policy.max_gross_exposure_pct,
+                max_sector_exposure_pct=policy.max_sector_exposure_pct,
+                reason=policy.reason,
+                updated_at=policy.updated_at,
+                updated_by=policy.updated_by,
+            )
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+            return self._to_domain(record)
+
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(AutopilotPolicyRecord))
+            session.commit()
+
+    @staticmethod
+    def _to_domain(record: AutopilotPolicyRecord) -> AutopilotPolicy:
+        return AutopilotPolicy(
+            policy_id=record.id,
+            enabled=bool(record.enabled),
+            auto_approve_recommendations=bool(record.auto_approve_recommendations),
+            auto_execute_approved=bool(record.auto_execute_approved),
+            auto_execution_mode=AutoExecutionMode(record.auto_execution_mode),
+            auto_approve_min_confidence=record.auto_approve_min_confidence,
+            auto_approve_min_composite=record.auto_approve_min_composite,
+            max_auto_approvals=record.max_auto_approvals,
+            max_auto_buys=record.max_auto_buys,
+            max_auto_sells=record.max_auto_sells,
+            account_equity=record.account_equity,
+            risk_per_trade_pct=record.risk_per_trade_pct,
+            max_position_pct=record.max_position_pct,
+            max_gross_exposure_pct=record.max_gross_exposure_pct,
+            max_sector_exposure_pct=record.max_sector_exposure_pct,
+            reason=record.reason,
+            updated_at=_ensure_utc(record.updated_at),
+            updated_by=record.updated_by,
+        )
 
 
 class SourceSnapshotRepository:

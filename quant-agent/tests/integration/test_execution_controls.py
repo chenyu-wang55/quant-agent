@@ -9,6 +9,65 @@ from apps.api.main import app
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 
+def test_autopilot_policy_api_persists_latest_policy() -> None:
+    state = get_app_state()
+    state.reset()
+    client = TestClient(app)
+
+    default_response = client.get("/execution/autopilot-policy", headers=AUTH_HEADERS)
+    assert default_response.status_code == 200
+    default_policy = default_response.json()
+    assert default_policy["enabled"] is False
+    assert default_policy["auto_approve_recommendations"] is False
+    assert default_policy["auto_execute_approved"] is False
+    assert default_policy["auto_execution_mode"] == "paper"
+
+    update_response = client.post(
+        "/execution/autopilot-policy",
+        json={
+            "enabled": True,
+            "auto_approve_recommendations": True,
+            "auto_execute_approved": True,
+            "auto_execution_mode": "live_dry_run",
+            "auto_approve_min_confidence": 0.81,
+            "auto_approve_min_composite": 0.35,
+            "max_auto_approvals": 2,
+            "max_auto_buys": 1,
+            "max_auto_sells": 3,
+            "account_equity": 250000,
+            "risk_per_trade_pct": 0.005,
+            "max_position_pct": 0.08,
+            "max_gross_exposure_pct": 0.75,
+            "max_sector_exposure_pct": 0.22,
+            "reason": "integration-test",
+            "updated_by": "qa",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert update_response.status_code == 200
+    updated_policy = update_response.json()
+    assert updated_policy["policy_id"] > default_policy["policy_id"]
+    assert updated_policy["enabled"] is True
+    assert updated_policy["auto_approve_recommendations"] is True
+    assert updated_policy["auto_execute_approved"] is True
+    assert updated_policy["auto_execution_mode"] == "live_dry_run"
+    assert updated_policy["auto_approve_min_confidence"] == 0.81
+    assert updated_policy["max_auto_approvals"] == 2
+    assert updated_policy["updated_by"] == "qa"
+
+    latest_response = client.get("/execution/autopilot-policy", headers=AUTH_HEADERS)
+    assert latest_response.status_code == 200
+    assert latest_response.json()["policy_id"] == updated_policy["policy_id"]
+
+    control_center = client.get("/operations/control-center?refresh_alerts=false", headers=AUTH_HEADERS)
+    assert control_center.status_code == 200
+    assert control_center.json()["autopilot_policy"]["policy_id"] == updated_policy["policy_id"]
+
+    realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
+    assert realtime.status_code == 200
+    assert realtime.json()["autopilot_policy"]["policy_id"] == updated_policy["policy_id"]
+
+
 def test_kill_switch_blocks_paper_orders() -> None:
     state = get_app_state()
     state.reset()

@@ -20,6 +20,7 @@ REQUIRED_TABLES = {
     "positions",
     "approval_decisions",
     "execution_controls",
+    "autopilot_policies",
     "market_bars",
     "holding_watches",
     "holding_control_audits",

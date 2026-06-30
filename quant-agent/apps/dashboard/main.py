@@ -147,6 +147,7 @@ def dashboard_realtime_data(
     source_snapshot_count = len(state.list_source_snapshots(limit=10_000))
     recent_strategy_configs = state.list_strategy_configs(limit=10)
     strategy_config_count = len(state.list_strategy_configs(limit=10_000))
+    autopilot_policy = state.get_autopilot_policy()
     price_lookup = _build_price_lookup(state=state, recommendations=raw_recommendations, as_of=now)
     recommendations = _select_recommendations_for_dashboard(raw_recommendations, price_lookup)
     return {
@@ -158,6 +159,7 @@ def dashboard_realtime_data(
             "reason": state.kill_switch.reason,
             "updated_at": state.kill_switch.updated_at.isoformat(),
         },
+        "autopilot_policy": autopilot_policy.model_dump(mode="json"),
         "summary": {
             "recommendation_count": len(recommendations),
             "open_holding_count": len(holdings),

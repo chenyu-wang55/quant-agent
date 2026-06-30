@@ -285,6 +285,29 @@ class ExecutionControlRecord(Base):
     updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
+class AutopilotPolicyRecord(Base):
+    __tablename__ = "autopilot_policies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_approve_recommendations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_execute_approved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    auto_execution_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="paper")
+    auto_approve_min_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.72)
+    auto_approve_min_composite: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    max_auto_approvals: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    max_auto_buys: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    max_auto_sells: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
+    account_equity: Mapped[float] = mapped_column(Float, nullable=False, default=100_000.0)
+    risk_per_trade_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.01)
+    max_position_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.10)
+    max_gross_exposure_pct: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    max_sector_exposure_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.30)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+
+
 class MarketBarRecord(Base):
     __tablename__ = "market_bars"
 

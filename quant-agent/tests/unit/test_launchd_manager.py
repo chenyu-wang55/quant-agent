@@ -23,6 +23,7 @@ def _args(*extra: str):
 
 def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     args = _args(
+        "--use-autopilot-policy",
         "--auto-approve-recommendations",
         "--auto-approve-min-confidence",
         "0.8",
@@ -49,6 +50,7 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "apps.worker.main",
         "system_cycle_loop",
     ]
+    assert "--use-autopilot-policy" in round_trip["ProgramArguments"]
     assert "--auto-execute-approved" in round_trip["ProgramArguments"]
     assert "--auto-approve-recommendations" in round_trip["ProgramArguments"]
     assert "--auto-approve-min-confidence" in round_trip["ProgramArguments"]

@@ -11,6 +11,7 @@ from domain.entities.models import (
     AlertExecutionResult,
     AlertSellRequest,
     ApprovalDecision,
+    AutopilotPolicy,
     BacktestRunResult,
     Direction,
     FeatureSnapshot,
@@ -67,6 +68,7 @@ from domain.policies.approval import ApprovalDecisionRequest, ApprovalPolicy
 from infra.db.init_db import init_db
 from infra.db.repositories import (
     ApprovalRepository,
+    AutopilotPolicyRepository,
     ExecutionControlRepository,
     FeatureRepository,
     HoldingControlAuditRepository,
@@ -117,6 +119,7 @@ class AppState:
     sell_alert_audit_repo: SellAlertAuditRepository = field(default_factory=SellAlertAuditRepository)
     approval_repo: ApprovalRepository = field(default_factory=ApprovalRepository)
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
+    autopilot_policy_repo: AutopilotPolicyRepository = field(default_factory=AutopilotPolicyRepository)
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
     strategy_config_repo: StrategyConfigRepository = field(default_factory=StrategyConfigRepository)
     system_cycle_run_repo: SystemCycleRunRepository = field(default_factory=SystemCycleRunRepository)
@@ -133,6 +136,7 @@ class AppState:
     backtest_runs: list[BacktestRunResult] = field(default_factory=list)
     approvals_by_recommendation_id: dict[str, RecommendationApproval] = field(default_factory=dict)
     kill_switch: KillSwitchState = field(default_factory=lambda: KillSwitchState(enabled=False))
+    autopilot_policy: AutopilotPolicy = field(default_factory=AutopilotPolicy)
     recent_sell_alerts: list[SellAlert] = field(default_factory=list)
 
     _alert_priority: dict[str, int] = field(
@@ -268,6 +272,7 @@ class AppState:
         latest_strategy_config_id = self.latest_run.strategy_config_id if self.latest_run else None
         return OperationControlCenter(
             kill_switch=self.kill_switch,
+            autopilot_policy=self.get_autopilot_policy(),
             latest_source_snapshot_id=latest_source_snapshot_id,
             latest_strategy_config_id=latest_strategy_config_id,
             latest_recommendation_count=len(recommendations),
@@ -349,6 +354,7 @@ class AppState:
         init_db()
         self.pipeline = ResearchPipeline(provider=self.provider, snapshot_repository=self.source_snapshot_repo)
         self.kill_switch = self.execution_control_repo.get_kill_switch()
+        self.autopilot_policy = self.autopilot_policy_repo.get_latest()
 
     def ingest_run_output(self, request: ResearchRunRequest, output: PipelineOutput) -> None:
         self.last_research_request = request
@@ -867,6 +873,30 @@ class AppState:
         self.kill_switch = self.execution_control_repo.set_kill_switch(enabled, reason, updated_by)
         self.metrics_store.set_gauge("kill_switch_enabled", 1.0 if enabled else 0.0)
         return self.kill_switch
+
+    def get_autopilot_policy(self) -> AutopilotPolicy:
+        self.autopilot_policy = self.autopilot_policy_repo.get_latest()
+        return self.autopilot_policy
+
+    def update_autopilot_policy(self, updates: dict[str, Any]) -> AutopilotPolicy:
+        current = self.get_autopilot_policy()
+        payload = current.model_dump(mode="python")
+        payload.pop("policy_id", None)
+        payload.update(updates)
+        payload["updated_at"] = datetime.now(timezone.utc)
+        payload["updated_by"] = str(payload.get("updated_by") or "operator")
+        policy = AutopilotPolicy(**payload)
+        self.autopilot_policy = self.autopilot_policy_repo.set_policy(policy)
+        self.metrics_store.set_gauge("autopilot_policy_enabled", 1.0 if policy.enabled else 0.0)
+        self.metrics_store.set_gauge(
+            "autopilot_auto_approval_enabled",
+            1.0 if policy.enabled and policy.auto_approve_recommendations else 0.0,
+        )
+        self.metrics_store.set_gauge(
+            "autopilot_auto_execution_enabled",
+            1.0 if policy.enabled and policy.auto_execute_approved else 0.0,
+        )
+        return self.autopilot_policy
 
     def publish_event(self, event_type: EventType, payload: dict) -> None:
         event = SystemEvent(event_type=event_type, payload=payload)
@@ -1922,12 +1952,20 @@ class AppState:
         self.recent_sell_alerts.clear()
         self.event_queue = InMemoryEventQueue()
         self.approval_repo.clear_all()
+        self.autopilot_policy_repo.clear_all()
         self.system_cycle_run_repo.clear_all()
         self.system_event_repo.clear_all()
         self.kill_switch = self.execution_control_repo.set_kill_switch(
             enabled=False,
             reason="state_reset",
             updated_by="test-reset",
+        )
+        self.autopilot_policy = self.autopilot_policy_repo.set_policy(
+            AutopilotPolicy(
+                enabled=False,
+                reason="state_reset",
+                updated_by="test-reset",
+            )
         )
 
 

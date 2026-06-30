@@ -182,6 +182,48 @@ def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
     assert state.list_paper_orders(limit=1, recommendation_id=buy_action["recommendation_id"])
 
 
+def test_system_cycle_uses_persisted_autopilot_policy() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
+        state.close_holding(holding.ticker)
+    policy = state.update_autopilot_policy(
+        {
+            "enabled": True,
+            "auto_approve_recommendations": True,
+            "auto_execute_approved": True,
+            "auto_execution_mode": "paper",
+            "auto_approve_min_confidence": 0.5,
+            "auto_approve_min_composite": 0.0,
+            "max_auto_approvals": 1,
+            "max_auto_buys": 1,
+            "max_auto_sells": 0,
+            "updated_by": "worker-test",
+            "reason": "policy-driven-cycle",
+        }
+    )
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        use_autopilot_policy=True,
+    )
+
+    assert result["use_autopilot_policy"] is True
+    assert result["autopilot_policy"]["policy_id"] == policy.policy_id
+    assert result["auto_approval"]["enabled"] is True
+    assert result["auto_approval"]["approved_count"] == 1
+    assert result["auto_execution"]["enabled"] is True
+    assert result["auto_execution"]["buy_order_count"] == 1
+    latest_run = state.list_system_cycle_runs(limit=1)[0]
+    assert latest_run.metrics["autopilot_policy"]["policy_id"] == policy.policy_id
+    assert latest_run.metrics["auto_approval"]["approved_count"] == 1
+    assert latest_run.metrics["auto_execution"]["buy_order_count"] == 1
+
+
 def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> None:
     state = get_app_state()
     state.reset()

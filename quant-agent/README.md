@@ -139,6 +139,8 @@ Endpoints:
 - `POST /paper-orders`
 - `GET /execution/kill-switch`
 - `POST /execution/kill-switch`
+- `GET /execution/autopilot-policy`
+- `POST /execution/autopilot-policy`
 
 Filled BUY paper orders are automatically synchronized into portfolio monitoring and
 the trade ledger, so approved dashboard buys flow into stop/take-profit alerts and
@@ -186,9 +188,9 @@ Default real-data universe:
 - Consume events: `POST /events/consume?limit=100`
 
 `/operations/control-center` is the machine-readable daily cockpit: it combines the
-kill switch, pending approvals, approved recommendations ready for buy routing, active
-sell alerts, pending events, and recent execution audit counts into prioritized next
-actions. It is read-only and is safe to poll from scripts.
+kill switch, autopilot policy, pending approvals, approved recommendations ready for
+buy routing, active sell alerts, pending events, and recent execution audit counts
+into prioritized next actions. It is read-only and is safe to poll from scripts.
 System events are persisted in the database, so pending and consumed event audit trails
 survive API or worker restarts.
 
@@ -233,6 +235,32 @@ record as the API, caps approvals with `--max-auto-approvals`, skips open holdin
 and requires both `--auto-approve-min-confidence` and
 `--auto-approve-min-composite`.
 
+For unattended operation, persist those controls as an auditable autopilot policy and
+let the worker read it each cycle:
+
+```bash
+curl -X POST http://localhost:8000/execution/autopilot-policy \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enabled": true,
+    "auto_approve_recommendations": true,
+    "auto_execute_approved": true,
+    "auto_execution_mode": "paper",
+    "auto_approve_min_confidence": 0.72,
+    "max_auto_approvals": 1,
+    "max_auto_buys": 1,
+    "max_auto_sells": 10,
+    "updated_by": "ops",
+    "reason": "paper autopilot"
+  }'
+
+python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
+  --use-autopilot-policy
+```
+
+The policy has a global `enabled` switch. When it is false, `--use-autopilot-policy`
+forces automatic approval and execution off even if older CLI flags are present.
+
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.
 Every successful cycle is persisted as a durable heartbeat and can be reviewed with
@@ -243,7 +271,7 @@ For unattended local operation, run the bounded or continuous loop wrapper:
 
 ```bash
 python -m apps.worker.main system_cycle_loop --interval-seconds 300 \
-  --auto-execute-approved --auto-execution-mode paper
+  --use-autopilot-policy
 ```
 
 `system_cycle_loop` repeatedly calls the same audited `system_cycle` path. Add
@@ -254,8 +282,8 @@ last `system_cycle_run_id`.
 On macOS, render or install a user LaunchAgent for the same loop:
 
 ```bash
-python scripts/manage_launchd.py render --auto-execute-approved --data-provider yfinance
-python scripts/manage_launchd.py install --auto-execute-approved --data-provider yfinance --load
+python scripts/manage_launchd.py render --use-autopilot-policy --data-provider yfinance
+python scripts/manage_launchd.py install --use-autopilot-policy --data-provider yfinance --load
 python scripts/manage_launchd.py install --auto-approve-recommendations \
   --auto-execute-approved --data-provider yfinance --load
 python scripts/manage_launchd.py status

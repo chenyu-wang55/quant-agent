@@ -11,6 +11,7 @@ from uuid import uuid4
 from apps.api.dependencies import get_app_state
 from domain.entities.models import (
     ApprovalDecision,
+    AutopilotPolicy,
     BacktestRunRequest,
     Direction,
     ManualSellRequest,
@@ -516,11 +517,45 @@ def _auto_execution_report(*, enabled: bool, mode: str, actions: list[dict[str, 
     }
 
 
+def _apply_autopilot_policy(
+    *,
+    policy: AutopilotPolicy,
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    updates = dict(current)
+    updates["autopilot_policy"] = policy.model_dump(mode="json")
+    if not policy.enabled:
+        updates["auto_approve_recommendations"] = False
+        updates["auto_execute_approved"] = False
+        updates["auto_execution_mode"] = policy.auto_execution_mode.value
+        return updates
+
+    updates.update(
+        {
+            "auto_approve_recommendations": policy.auto_approve_recommendations,
+            "auto_execute_approved": policy.auto_execute_approved,
+            "auto_approve_min_confidence": policy.auto_approve_min_confidence,
+            "auto_approve_min_composite": policy.auto_approve_min_composite,
+            "max_auto_approvals": policy.max_auto_approvals,
+            "auto_execution_mode": policy.auto_execution_mode.value,
+            "max_auto_buys": policy.max_auto_buys,
+            "max_auto_sells": policy.max_auto_sells,
+            "account_equity": policy.account_equity,
+            "risk_per_trade_pct": policy.risk_per_trade_pct,
+            "max_position_pct": policy.max_position_pct,
+            "max_gross_exposure_pct": policy.max_gross_exposure_pct,
+            "max_sector_exposure_pct": policy.max_sector_exposure_pct,
+        }
+    )
+    return updates
+
+
 def system_cycle(
     top_n: int = 8,
     min_confidence: float | None = None,
     consume_events: bool = False,
     as_of: datetime | None = None,
+    use_autopilot_policy: bool = False,
     auto_execute_approved: bool = False,
     auto_approve_recommendations: bool = False,
     auto_approve_min_confidence: float = 0.72,
@@ -536,6 +571,41 @@ def system_cycle(
     max_sector_exposure_pct: float = 0.30,
 ) -> dict[str, Any]:
     state = get_app_state()
+    autopilot_policy: dict[str, Any] | None = None
+    if use_autopilot_policy:
+        policy_values = _apply_autopilot_policy(
+            policy=state.get_autopilot_policy(),
+            current={
+                "auto_execute_approved": auto_execute_approved,
+                "auto_approve_recommendations": auto_approve_recommendations,
+                "auto_approve_min_confidence": auto_approve_min_confidence,
+                "auto_approve_min_composite": auto_approve_min_composite,
+                "max_auto_approvals": max_auto_approvals,
+                "auto_execution_mode": auto_execution_mode,
+                "max_auto_buys": max_auto_buys,
+                "max_auto_sells": max_auto_sells,
+                "account_equity": account_equity,
+                "risk_per_trade_pct": risk_per_trade_pct,
+                "max_position_pct": max_position_pct,
+                "max_gross_exposure_pct": max_gross_exposure_pct,
+                "max_sector_exposure_pct": max_sector_exposure_pct,
+            },
+        )
+        autopilot_policy = policy_values.pop("autopilot_policy")
+        auto_execute_approved = policy_values["auto_execute_approved"]
+        auto_approve_recommendations = policy_values["auto_approve_recommendations"]
+        auto_approve_min_confidence = policy_values["auto_approve_min_confidence"]
+        auto_approve_min_composite = policy_values["auto_approve_min_composite"]
+        max_auto_approvals = policy_values["max_auto_approvals"]
+        auto_execution_mode = policy_values["auto_execution_mode"]
+        max_auto_buys = policy_values["max_auto_buys"]
+        max_auto_sells = policy_values["max_auto_sells"]
+        account_equity = policy_values["account_equity"]
+        risk_per_trade_pct = policy_values["risk_per_trade_pct"]
+        max_position_pct = policy_values["max_position_pct"]
+        max_gross_exposure_pct = policy_values["max_gross_exposure_pct"]
+        max_sector_exposure_pct = policy_values["max_sector_exposure_pct"]
+
     started_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
     run_id = uuid4().hex[:16]
     request = ResearchRunRequest(
@@ -607,6 +677,7 @@ def system_cycle(
     metrics = state.metrics_store.dump()
     metrics["auto_approval"] = auto_approval
     metrics["auto_execution"] = auto_execution
+    metrics["autopilot_policy"] = autopilot_policy
     run = SystemCycleRun(
         id=run_id,
         started_at=started_at,
@@ -638,6 +709,8 @@ def system_cycle(
         "sell_alert_count": len(alerts),
         "sell_alerts": sell_alerts,
         "auto_execution_enabled": auto_execute_approved,
+        "use_autopilot_policy": use_autopilot_policy,
+        "autopilot_policy": autopilot_policy,
         "auto_approval": auto_approval,
         "auto_execution": auto_execution,
         "consumed_event_count": len(consumed_events),
@@ -753,6 +826,11 @@ def main() -> None:
         help="optional ISO timestamp for deterministic system_cycle replay, defaults to now",
     )
     parser.add_argument(
+        "--use-autopilot-policy",
+        action="store_true",
+        help="load the latest persisted autopilot policy and use it for auto approval/execution controls",
+    )
+    parser.add_argument(
         "--auto-execute-approved",
         action="store_true",
         help="system_cycle should auto-route approved buys and active sell alerts through existing execution gates",
@@ -843,6 +921,7 @@ def main() -> None:
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,
             as_of=as_of,
+            use_autopilot_policy=args.use_autopilot_policy,
             auto_execute_approved=args.auto_execute_approved,
             auto_approve_recommendations=args.auto_approve_recommendations,
             auto_approve_min_confidence=args.auto_approve_min_confidence,
@@ -865,6 +944,7 @@ def main() -> None:
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,
             as_of=as_of,
+            use_autopilot_policy=args.use_autopilot_policy,
             auto_execute_approved=args.auto_execute_approved,
             auto_approve_recommendations=args.auto_approve_recommendations,
             auto_approve_min_confidence=args.auto_approve_min_confidence,
