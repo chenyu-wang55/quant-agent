@@ -62,6 +62,8 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "Account Equity" in dashboard_home.text
     assert "Risk %" in dashboard_home.text
     assert "Max Position %" in dashboard_home.text
+    assert "Max Gross %" in dashboard_home.text
+    assert "Max Sector %" in dashboard_home.text
     assert "Exec Mode" in dashboard_home.text
     assert "Live Dry Run" in dashboard_home.text
     assert "行情快照" in dashboard_home.text
@@ -69,6 +71,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "调参建议" in dashboard_home.text
     assert "自动循环历史" in dashboard_home.text
     assert "交易流水" in dashboard_home.text
+    assert "持仓风控审计" in dashboard_home.text
     assert "卖出执行审计" in dashboard_home.text
     assert "卖出提醒历史" in dashboard_home.text
     assert "纸单记录" in dashboard_home.text
@@ -76,6 +79,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "推荐归因" in dashboard_home.text
     assert "renderPaperOrders" in dashboard_home.text
     assert "renderTrades" in dashboard_home.text
+    assert "renderHoldingControlAudits" in dashboard_home.text
     assert "renderSellExecutions" in dashboard_home.text
     assert "renderAlertHistory" in dashboard_home.text
     assert "renderPerformance" in dashboard_home.text
@@ -95,6 +99,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "reject_on_material_evidence_conflict: false" in dashboard_home.text
     assert "event_trading_enabled: true" in dashboard_home.text
     assert "buyRecommendation" in dashboard_home.text
+    assert "updateHoldingControls" in dashboard_home.text
     assert "sellHolding" in dashboard_home.text
     assert "executionModePayload" in dashboard_home.text
     assert "...executionModePayload()" in dashboard_home.text
@@ -102,6 +107,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "/paper-orders" in dashboard_home.text
     assert "/paper-orders/risk-plan" in dashboard_home.text
     assert "adapter_message" in dashboard_home.text
+    assert "holdingControlAuditCount" in dashboard_home.text
     assert "sellExecutionCount" in dashboard_home.text
     assert "alertHistoryCount" in dashboard_home.text
     assert "systemRunCount" in dashboard_home.text
@@ -115,6 +121,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "strategy_configs" in payload
     assert "strategy_tuning" in payload
     assert "recent_paper_orders" in payload
+    assert "recent_holding_control_audits" in payload
     assert "recent_sell_executions" in payload
     assert "recent_system_runs" in payload
     assert "recent_alert_history" in payload
@@ -123,6 +130,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert payload["summary"]["source_snapshot_count"] >= 1
     assert payload["summary"]["strategy_config_count"] >= 1
     assert payload["summary"]["strategy_tuning_count"] >= 1
+    assert "holding_control_audit_count" in payload["summary"]
     assert payload["strategy_configs"][0]["strategy_config_id"]
     assert payload["strategy_tuning"]["items"][0]["strategy_config_id"]
 

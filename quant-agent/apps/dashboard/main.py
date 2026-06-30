@@ -121,6 +121,8 @@ def dashboard_realtime_data(
     recommendation_attribution = state.get_recommendation_attribution()
     strategy_tuning = state.get_strategy_tuning_report(attribution=recommendation_attribution)
     recent_trades = state.list_trade_ledger(limit=10)
+    recent_holding_control_audits = state.list_holding_control_audits(limit=10)
+    holding_control_audit_count = len(state.list_holding_control_audits(limit=10_000))
     recent_sell_executions = state.list_sell_execution_audits(limit=10)
     sell_execution_count = len(state.list_sell_execution_audits(limit=10_000))
     recent_system_runs = state.list_system_cycle_runs(limit=10)
@@ -150,6 +152,7 @@ def dashboard_realtime_data(
             "sell_alert_count": len(alerts),
             "alert_history_count": alert_history_count,
             "paper_order_count": paper_order_count,
+            "holding_control_audit_count": holding_control_audit_count,
             "sell_execution_count": sell_execution_count,
             "source_snapshot_count": source_snapshot_count,
             "strategy_config_count": strategy_config_count,
@@ -185,6 +188,9 @@ def dashboard_realtime_data(
         "strategy_configs": [config.model_dump(mode="json") for config in recent_strategy_configs],
         "strategy_tuning": strategy_tuning.model_dump(mode="json"),
         "recent_trades": [trade.model_dump(mode="json") for trade in recent_trades],
+        "recent_holding_control_audits": [
+            audit.model_dump(mode="json") for audit in recent_holding_control_audits
+        ],
         "recent_sell_executions": [execution.model_dump(mode="json") for execution in recent_sell_executions],
         "recent_system_runs": [run.model_dump(mode="json") for run in recent_system_runs],
         "recent_alert_history": [item.model_dump(mode="json") for item in recent_alert_history],
@@ -597,6 +603,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">卖出提醒</div><div class="v" id="alertCount">0</div></div>
       <div class="stat"><div class="k">提醒历史</div><div class="v" id="alertHistoryCount">0</div></div>
       <div class="stat"><div class="k">纸单</div><div class="v" id="paperOrderCount">0</div></div>
+      <div class="stat"><div class="k">风控审计</div><div class="v" id="holdingControlAuditCount">0</div></div>
       <div class="stat"><div class="k">卖出审计</div><div class="v" id="sellExecutionCount">0</div></div>
       <div class="stat"><div class="k">已实现盈亏</div><div class="v" id="realizedPnl">0.00</div></div>
       <div class="stat"><div class="k">开放风险</div><div class="v" id="openRisk">0.00</div></div>
@@ -622,9 +629,14 @@ def dashboard_home() -> str:
         <div class="field"><label for="accountEquity">Account Equity</label><input id="accountEquity" type="number" min="1" step="1000" value="100000" /></div>
         <div class="field"><label for="riskPct">Risk %</label><input id="riskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
         <div class="field"><label for="maxPositionPct">Max Position %</label><input id="maxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
+        <div class="field"><label for="maxGrossPct">Max Gross %</label><input id="maxGrossPct" type="number" min="0.01" max="500" step="1" value="100" /></div>
+        <div class="field"><label for="maxSectorPct">Max Sector %</label><input id="maxSectorPct" type="number" min="0.01" max="500" step="1" value="30" /></div>
         <div class="field"><label for="executionMode">Exec Mode</label><select id="executionMode"><option value="paper">Paper</option><option value="live_dry_run">Live Dry Run</option></select></div>
         <div class="field"><label for="sellQty">Sell Qty</label><input id="sellQty" type="number" min="0.0001" step="1" placeholder="all" /></div>
         <div class="field"><label for="sellPrice">Sell Price</label><input id="sellPrice" type="number" min="0.0001" step="0.01" /></div>
+        <div class="field"><label for="controlStopLoss">Stop</label><input id="controlStopLoss" type="number" min="0.0001" step="0.01" /></div>
+        <div class="field"><label for="controlTp1">TP1</label><input id="controlTp1" type="number" min="0.0001" step="0.01" /></div>
+        <div class="field"><label for="controlTp2">TP2</label><input id="controlTp2" type="number" min="0.0001" step="0.01" /></div>
         <div class="field"><label for="sourceSnapshotId">Snapshot ID</label><input id="sourceSnapshotId" type="text" placeholder="source_snapshot_id" /></div>
       </div>
       <div style="margin-top:9px; display:flex; gap:8px; flex-wrap:wrap;">
@@ -699,6 +711,17 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>股票</th><th>数量</th><th>成本</th><th>止损</th><th>止盈1</th><th>止盈2</th><th>已实现盈亏</th><th>最近卖出</th><th>操作</th></tr></thead>
         <tbody id="holdingBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>持仓风控审计</h3>
+        <span class="small">止损、目标位和持仓备注的调整轨迹</span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>股票</th><th>止损</th><th>止盈1</th><th>止盈2</th><th>操作人</th><th>理由</th></tr></thead>
+        <tbody id="holdingControlAuditBody"></tbody>
       </table>
     </div>
 
@@ -861,9 +884,9 @@ def dashboard_home() -> str:
       return u.toString();
     }
 
-    async function postJson(path, payload) {
+    async function postJson(path, payload, method = 'POST') {
       const res = await fetch(apiUrl(path), {
-        method: 'POST',
+        method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
@@ -1187,6 +1210,8 @@ def dashboard_home() -> str:
           <td>${fmtNum(h.realized_pnl, 2)}</td>
           <td>${fmtNum(h.last_sell_price, 2)}<div class="small">${esc(h.last_sell_reason || "")}</div></td>
           <td>
+            <button class="btn-mini" onclick="loadHoldingControls(${idx})">载入</button>
+            <button class="btn-mini" onclick="updateHoldingControls(${idx})">风控</button>
             <button class="btn-mini danger" onclick="sellHolding(${idx}, false)">卖出</button>
             <button class="btn-mini danger" onclick="sellHolding(${idx}, true)">清仓</button>
             <div class="small">${esc(h.note || "")}</div>
@@ -1271,6 +1296,8 @@ def dashboard_home() -> str:
         account_equity: numberValue('accountEquity') || 100000,
         risk_per_trade_pct: (numberValue('riskPct') || 1) / 100,
         max_position_pct: (numberValue('maxPositionPct') || 10) / 100,
+        max_gross_exposure_pct: (numberValue('maxGrossPct') || 100) / 100,
+        max_sector_exposure_pct: (numberValue('maxSectorPct') || 30) / 100,
       };
     }
 
@@ -1314,6 +1341,42 @@ def dashboard_home() -> str:
           ? `已完成 ${rec.ticker} ${order.execution_mode} dry-run ${qty} 股`
           : `已提交纸单买入 ${rec.ticker} x ${qty} @ ${fmtNum(order.simulated_fill_price || payload.limit_price, 2)}`;
         setActionStatus(`${executionText}；${order.adapter_message || plan.message_cn}`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
+    function loadHoldingControls(index) {
+      const holding = currentHoldings[index];
+      if (!holding) return;
+      document.getElementById('controlStopLoss').value = String(holding.stop_loss ?? '');
+      document.getElementById('controlTp1').value = String(holding.take_profit1 ?? '');
+      document.getElementById('controlTp2').value = String(holding.take_profit2 ?? '');
+      setActionStatus(`${holding.ticker} 风控参数已载入`);
+    }
+
+    async function updateHoldingControls(index) {
+      const holding = currentHoldings[index];
+      if (!holding) return;
+      const stopLoss = numberValue('controlStopLoss');
+      const tp1 = numberValue('controlTp1');
+      const tp2 = numberValue('controlTp2');
+      const payload = {
+        stop_loss: stopLoss || Number(holding.stop_loss),
+        take_profit1: tp1 || Number(holding.take_profit1),
+        take_profit2: tp2 || Number(holding.take_profit2),
+        note: reasonValue(holding.note || 'dashboard_control_update'),
+        reason: reasonValue('dashboard_control_update'),
+        updated_by: 'dashboard',
+      };
+      try {
+        const result = await postJson(
+          `/portfolio/holdings/${encodeURIComponent(holding.ticker)}/controls`,
+          payload,
+          'PATCH'
+        );
+        setActionStatus(result.message_cn || `${holding.ticker} 风控参数已更新`);
         await refreshNow(false);
       } catch (err) {
         setActionStatus(String(err), true);
@@ -1444,6 +1507,25 @@ def dashboard_home() -> str:
           <td>${fmtNum(t.price, 2)}</td>
           <td>${fmtNum(t.realized_pnl_delta, 2)}</td>
           <td>${esc(t.reason || '')}</td>
+        </tr>
+      `).join("");
+    }
+
+    function renderHoldingControlAudits(items) {
+      const body = document.getElementById("holdingControlAuditBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="small">暂无风控调整记录。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((item) => `
+        <tr>
+          <td class="small">${fmtTime(item.updated_at)}</td>
+          <td>${esc(item.ticker)}</td>
+          <td>${fmtNum(item.old_stop_loss, 2)} -> ${fmtNum(item.new_stop_loss, 2)}</td>
+          <td>${fmtNum(item.old_take_profit1, 2)} -> ${fmtNum(item.new_take_profit1, 2)}</td>
+          <td>${fmtNum(item.old_take_profit2, 2)} -> ${fmtNum(item.new_take_profit2, 2)}</td>
+          <td>${esc(item.updated_by || '-')}</td>
+          <td class="small">${esc(item.reason || item.new_note || '')}</td>
         </tr>
       `).join("");
     }
@@ -1590,6 +1672,7 @@ def dashboard_home() -> str:
       document.getElementById('alertCount').textContent = String(data.summary?.sell_alert_count ?? 0);
       document.getElementById('alertHistoryCount').textContent = String(data.summary?.alert_history_count ?? 0);
       document.getElementById('paperOrderCount').textContent = String(data.summary?.paper_order_count ?? 0);
+      document.getElementById('holdingControlAuditCount').textContent = String(data.summary?.holding_control_audit_count ?? 0);
       document.getElementById('sellExecutionCount').textContent = String(data.summary?.sell_execution_count ?? 0);
       document.getElementById('realizedPnl').textContent = fmtNum(data.portfolio_summary?.total_realized_pnl, 2);
       document.getElementById('openRisk').textContent = fmtNum(data.portfolio_summary?.open_risk_to_stop, 2);
@@ -1623,6 +1706,7 @@ def dashboard_home() -> str:
       renderHoldings(data.holdings || []);
       renderPaperOrders(data.recent_paper_orders || []);
       renderTrades(data.recent_trades || []);
+      renderHoldingControlAudits(data.recent_holding_control_audits || []);
       renderSellExecutions(data.recent_sell_executions || []);
       renderPerformance(data.portfolio_performance || {});
       renderAttribution(data.recommendation_attribution || {});

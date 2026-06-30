@@ -1921,6 +1921,7 @@ class AppState:
         self.approvals_by_recommendation_id.clear()
         self.recent_sell_alerts.clear()
         self.event_queue = InMemoryEventQueue()
+        self.system_cycle_run_repo.clear_all()
         self.system_event_repo.clear_all()
         self.kill_switch = self.execution_control_repo.set_kill_switch(
             enabled=False,

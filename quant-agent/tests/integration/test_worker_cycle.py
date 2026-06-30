@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
@@ -26,7 +28,12 @@ def test_system_cycle_generates_recommendations_and_monitors_without_auto_execut
         )
     )
 
-    result = system_cycle(top_n=2, min_confidence=0.0, consume_events=False)
+    result = system_cycle(
+        top_n=2,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+    )
 
     assert result["job"] == "system_cycle"
     assert result["system_cycle_run_id"]
@@ -67,7 +74,12 @@ def test_system_cycle_generates_recommendations_and_monitors_without_auto_execut
     assert holding.qty == 5
     assert state.trade_ledger_repo.list_recent(limit=10, ticker="AAPL")[0].side.value == "buy"
 
-    consumed_result = system_cycle(top_n=1, min_confidence=0.0, consume_events=True)
+    consumed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=True,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+    )
     assert consumed_result["consumed_event_count"] >= 1
     assert consumed_result["consumed_event_type_counts"]["recommendation_ready"] >= 1
     assert consumed_result["pending_event_count"] == 0

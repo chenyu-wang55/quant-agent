@@ -780,6 +780,11 @@ class SystemCycleRunRepository:
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(SystemCycleRunRecord))
+            session.commit()
+
     @staticmethod
     def _to_domain(record: SystemCycleRunRecord) -> SystemCycleRun:
         return SystemCycleRun(

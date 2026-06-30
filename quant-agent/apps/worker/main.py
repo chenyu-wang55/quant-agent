@@ -106,9 +106,10 @@ def system_cycle(
     top_n: int = 8,
     min_confidence: float | None = None,
     consume_events: bool = False,
+    as_of: datetime | None = None,
 ) -> dict[str, Any]:
     state = get_app_state()
-    started_at = datetime.now(timezone.utc)
+    started_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
     run_id = uuid4().hex[:16]
     request = ResearchRunRequest(
         run_type=RunType.RESEARCH_BATCH,
@@ -216,7 +217,15 @@ def main() -> None:
         action="store_true",
         help="system_cycle should consume pending events after publishing its summary inputs",
     )
+    parser.add_argument(
+        "--as-of",
+        default=None,
+        help="optional ISO timestamp for deterministic system_cycle replay, defaults to now",
+    )
     args = parser.parse_args()
+    as_of = datetime.fromisoformat(args.as_of) if args.as_of else None
+    if as_of is not None and as_of.tzinfo is None:
+        as_of = as_of.replace(tzinfo=timezone.utc)
 
     dispatch = {
         "pre_market_ingestion": pre_market_ingestion,
@@ -230,6 +239,7 @@ def main() -> None:
             top_n=args.top_n,
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,
+            as_of=as_of,
         ),
     }
     dispatch[args.job]()
