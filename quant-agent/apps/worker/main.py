@@ -8,10 +8,17 @@ from uuid import uuid4
 
 from apps.api.dependencies import get_app_state
 from domain.entities.models import (
+    ApprovalDecision,
     BacktestRunRequest,
+    Direction,
+    ManualSellRequest,
+    OrderExecutionMode,
+    PaperOrderRequest,
     PublicationConfig,
+    Recommendation,
     ResearchRunRequest,
     RiskPolicy,
+    SellAlert,
     RunType,
     SnapshotMode,
     SystemCycleRun,
@@ -102,11 +109,289 @@ def _event_type_counts(events: list[Any]) -> dict[str, int]:
     return type_counts
 
 
+def _auto_execution_mode(mode: str) -> tuple[OrderExecutionMode, bool]:
+    normalized = mode.lower()
+    if normalized == "paper":
+        return OrderExecutionMode.PAPER, False
+    if normalized == "live_dry_run":
+        return OrderExecutionMode.LIVE, True
+    raise ValueError("auto execution mode must be paper or live_dry_run")
+
+
+def _auto_execute_cycle(
+    *,
+    recommendations: list[Recommendation],
+    alerts: list[SellAlert],
+    run_id: str,
+    execution_mode: str,
+    max_auto_buys: int,
+    max_auto_sells: int,
+    account_equity: float,
+    risk_per_trade_pct: float,
+    max_position_pct: float,
+    max_gross_exposure_pct: float,
+    max_sector_exposure_pct: float,
+) -> dict[str, Any]:
+    state = get_app_state()
+    order_mode, dry_run = _auto_execution_mode(execution_mode)
+    actions: list[dict[str, Any]] = []
+    sell_blocked_tickers: set[str] = set()
+
+    if state.kill_switch.enabled:
+        actions.append(
+            {
+                "action": "auto_execution",
+                "status": "skipped",
+                "reason": "kill_switch_enabled",
+                "message_cn": f"Kill switch 已开启：{state.kill_switch.reason or '未提供原因'}。",
+            }
+        )
+        return _auto_execution_report(enabled=True, mode=execution_mode, actions=actions)
+
+    for alert in alerts:
+        if len([item for item in actions if item.get("action") == "sell_alert"]) >= max_auto_sells:
+            actions.append(
+                {
+                    "action": "sell_alert",
+                    "status": "skipped",
+                    "ticker": alert.ticker,
+                    "reason": "max_auto_sells_reached",
+                }
+            )
+            continue
+        try:
+            holding = state.holding_watch_repo.get(alert.ticker)
+            if holding is None:
+                actions.append(
+                    {
+                        "action": "sell_alert",
+                        "status": "skipped",
+                        "ticker": alert.ticker,
+                        "reason": "open_holding_not_found",
+                    }
+                )
+                continue
+            default_qty, default_action_cn = state._alert_default_sell_qty(alert, holding)
+            execution = state.sell_holding(
+                ticker=alert.ticker,
+                request=ManualSellRequest(
+                    qty=default_qty,
+                    sell_price=alert.current_price,
+                    reason=f"system_cycle:{run_id}:alert:{alert.reason_code}",
+                    execution_mode=order_mode,
+                    dry_run=dry_run,
+                    confirm_live=False,
+                ),
+            )
+            sell_blocked_tickers.add(alert.ticker.upper())
+            actions.append(
+                {
+                    "action": "sell_alert",
+                    "status": "executed",
+                    "ticker": alert.ticker,
+                    "reason_code": alert.reason_code,
+                    "execution_mode": execution.execution_mode.value,
+                    "dry_run": execution.dry_run,
+                    "sell_execution_id": execution.sell_execution_id,
+                    "sold_qty": execution.sold_qty,
+                    "sell_price": execution.sell_price,
+                    "remaining_qty": execution.remaining_qty,
+                    "message_cn": execution.message_cn,
+                    "default_action_cn": default_action_cn,
+                }
+            )
+        except Exception as exc:
+            actions.append(
+                {
+                    "action": "sell_alert",
+                    "status": "error",
+                    "ticker": alert.ticker,
+                    "reason_code": alert.reason_code,
+                    "error": str(exc),
+                }
+            )
+
+    open_tickers = {holding.ticker.upper() for holding in state.list_open_holdings()}
+    buy_count = 0
+    for recommendation in recommendations:
+        ticker = recommendation.ticker.upper()
+        if buy_count >= max_auto_buys:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "max_auto_buys_reached",
+                }
+            )
+            continue
+        if ticker in sell_blocked_tickers:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "sell_alert_same_cycle",
+                }
+            )
+            continue
+        if ticker in open_tickers:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "already_open_holding",
+                }
+            )
+            continue
+        if recommendation.direction != Direction.BUY:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "unsupported_direction",
+                }
+            )
+            continue
+        approval = state.get_latest_approval(recommendation.id)
+        if approval is None or approval.decision != ApprovalDecision.APPROVED:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "approval_required",
+                }
+            )
+            continue
+
+        try:
+            probe_request = PaperOrderRequest(
+                recommendation_id=recommendation.id,
+                side=Direction.BUY,
+                qty=1,
+                limit_price=recommendation.entry_zone_high,
+                execution_mode=order_mode,
+                dry_run=dry_run,
+                confirm_live=False,
+                account_equity=account_equity,
+                risk_per_trade_pct=risk_per_trade_pct,
+                max_position_pct=max_position_pct,
+                max_gross_exposure_pct=max_gross_exposure_pct,
+                max_sector_exposure_pct=max_sector_exposure_pct,
+            )
+            probe_plan = state.build_paper_order_risk_plan(
+                recommendation=recommendation,
+                request=probe_request,
+            )
+            qty = int(probe_plan.recommended_qty)
+            if qty <= 0:
+                actions.append(
+                    {
+                        "action": "buy_recommendation",
+                        "status": "skipped",
+                        "ticker": recommendation.ticker,
+                        "recommendation_id": recommendation.id,
+                        "reason": "risk_plan_zero_qty",
+                        "message_cn": probe_plan.message_cn,
+                    }
+                )
+                continue
+            request = probe_request.model_copy(update={"qty": float(qty)})
+            risk_plan = state.build_paper_order_risk_plan(recommendation=recommendation, request=request)
+            if not risk_plan.is_within_limits:
+                actions.append(
+                    {
+                        "action": "buy_recommendation",
+                        "status": "skipped",
+                        "ticker": recommendation.ticker,
+                        "recommendation_id": recommendation.id,
+                        "reason": "risk_plan_violation",
+                        "violations": risk_plan.violations,
+                        "message_cn": risk_plan.message_cn,
+                    }
+                )
+                continue
+            order, updated_positions = state.execution_router.submit(
+                recommendation=recommendation,
+                request=request,
+                positions=state.positions,
+            )
+            state.positions = updated_positions
+            state.record_paper_order(order, recommendation=recommendation)
+            open_tickers.add(ticker)
+            buy_count += 1
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "executed",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "execution_mode": order.execution_mode.value,
+                    "dry_run": order.dry_run,
+                    "order_id": order.id,
+                    "qty": order.qty,
+                    "limit_price": order.limit_price,
+                    "simulated_fill_price": order.simulated_fill_price,
+                    "message_cn": risk_plan.message_cn,
+                }
+            )
+        except Exception as exc:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "error",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "error": str(exc),
+                }
+            )
+
+    return _auto_execution_report(enabled=True, mode=execution_mode, actions=actions)
+
+
+def _auto_execution_report(*, enabled: bool, mode: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "action_count": len(actions),
+        "buy_order_count": sum(
+            1
+            for item in actions
+            if item.get("action") == "buy_recommendation" and item.get("status") == "executed"
+        ),
+        "sell_order_count": sum(
+            1
+            for item in actions
+            if item.get("action") == "sell_alert" and item.get("status") == "executed"
+        ),
+        "skipped_count": sum(1 for item in actions if item.get("status") == "skipped"),
+        "error_count": sum(1 for item in actions if item.get("status") == "error"),
+        "actions": actions,
+    }
+
+
 def system_cycle(
     top_n: int = 8,
     min_confidence: float | None = None,
     consume_events: bool = False,
     as_of: datetime | None = None,
+    auto_execute_approved: bool = False,
+    auto_execution_mode: str = "paper",
+    max_auto_buys: int = 1,
+    max_auto_sells: int = 10,
+    account_equity: float = 100_000.0,
+    risk_per_trade_pct: float = 0.01,
+    max_position_pct: float = 0.10,
+    max_gross_exposure_pct: float = 1.0,
+    max_sector_exposure_pct: float = 0.30,
 ) -> dict[str, Any]:
     state = get_app_state()
     started_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -123,6 +408,23 @@ def system_cycle(
     state.ingest_run_output(request, output)
     alerts = state.monitor_sell_alerts(as_of=started_at)
     state.record_sell_alert_audits(alerts, monitor_run_id=run_id)
+    auto_execution = (
+        _auto_execute_cycle(
+            recommendations=output.result.recommendations[:top_n],
+            alerts=alerts,
+            run_id=run_id,
+            execution_mode=auto_execution_mode,
+            max_auto_buys=max_auto_buys,
+            max_auto_sells=max_auto_sells,
+            account_equity=account_equity,
+            risk_per_trade_pct=risk_per_trade_pct,
+            max_position_pct=max_position_pct,
+            max_gross_exposure_pct=max_gross_exposure_pct,
+            max_sector_exposure_pct=max_sector_exposure_pct,
+        )
+        if auto_execute_approved
+        else _auto_execution_report(enabled=False, mode=auto_execution_mode, actions=[])
+    )
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()
     finished_at = datetime.now(timezone.utc)
@@ -150,6 +452,8 @@ def system_cycle(
         for alert in alerts
     ]
     consumed_type_counts = _event_type_counts(consumed_events)
+    metrics = state.metrics_store.dump()
+    metrics["auto_execution"] = auto_execution
     run = SystemCycleRun(
         id=run_id,
         started_at=started_at,
@@ -160,11 +464,11 @@ def system_cycle(
         sell_alert_count=len(alerts),
         consumed_event_count=len(consumed_events),
         pending_event_count=pending_event_count,
-        auto_execution_enabled=False,
+        auto_execution_enabled=auto_execute_approved,
         top_recommendations=top_recommendations,
         sell_alerts=sell_alerts,
         consumed_event_type_counts=consumed_type_counts,
-        metrics=state.metrics_store.dump(),
+        metrics=metrics,
     )
     state.record_system_cycle_run(run)
     summary = {
@@ -180,7 +484,8 @@ def system_cycle(
         "top_recommendations": top_recommendations,
         "sell_alert_count": len(alerts),
         "sell_alerts": sell_alerts,
-        "auto_execution_enabled": False,
+        "auto_execution_enabled": auto_execute_approved,
+        "auto_execution": auto_execution,
         "consumed_event_count": len(consumed_events),
         "consumed_event_type_counts": consumed_type_counts,
         "pending_event_count": pending_event_count,
@@ -222,6 +527,44 @@ def main() -> None:
         default=None,
         help="optional ISO timestamp for deterministic system_cycle replay, defaults to now",
     )
+    parser.add_argument(
+        "--auto-execute-approved",
+        action="store_true",
+        help="system_cycle should auto-route approved buys and active sell alerts through existing execution gates",
+    )
+    parser.add_argument(
+        "--auto-execution-mode",
+        choices=["paper", "live_dry_run"],
+        default="paper",
+        help="execution mode for automatic actions",
+    )
+    parser.add_argument("--max-auto-buys", type=int, default=1, help="maximum approved buys per cycle")
+    parser.add_argument("--max-auto-sells", type=int, default=10, help="maximum sell alerts to execute per cycle")
+    parser.add_argument("--account-equity", type=float, default=100_000.0, help="account equity for auto buy risk sizing")
+    parser.add_argument(
+        "--risk-per-trade-pct",
+        type=float,
+        default=0.01,
+        help="fractional per-trade risk budget for auto buy sizing",
+    )
+    parser.add_argument(
+        "--max-position-pct",
+        type=float,
+        default=0.10,
+        help="fractional per-ticker position cap for auto buy sizing",
+    )
+    parser.add_argument(
+        "--max-gross-exposure-pct",
+        type=float,
+        default=1.0,
+        help="fractional gross exposure cap for auto buy sizing",
+    )
+    parser.add_argument(
+        "--max-sector-exposure-pct",
+        type=float,
+        default=0.30,
+        help="fractional sector exposure cap for auto buy sizing",
+    )
     args = parser.parse_args()
     as_of = datetime.fromisoformat(args.as_of) if args.as_of else None
     if as_of is not None and as_of.tzinfo is None:
@@ -240,6 +583,15 @@ def main() -> None:
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,
             as_of=as_of,
+            auto_execute_approved=args.auto_execute_approved,
+            auto_execution_mode=args.auto_execution_mode,
+            max_auto_buys=args.max_auto_buys,
+            max_auto_sells=args.max_auto_sells,
+            account_equity=args.account_equity,
+            risk_per_trade_pct=args.risk_per_trade_pct,
+            max_position_pct=args.max_position_pct,
+            max_gross_exposure_pct=args.max_gross_exposure_pct,
+            max_sector_exposure_pct=args.max_sector_exposure_pct,
         ),
     }
     dispatch[args.job]()

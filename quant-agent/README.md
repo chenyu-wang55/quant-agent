@@ -202,12 +202,29 @@ python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0
 
 It captures or replays the latest source snapshot, generates recommendations, refreshes
 portfolio sell alerts, and prints a JSON operational summary with recommendation,
-alert, event, and metric counts. It does not auto-buy or auto-sell; execution still
-requires approval plus the paper/live-dry-run execution gates. Use `--consume-events`
-only when the printed summary is your audit sink and you want pending in-memory events
-drained after the cycle.
+alert, event, and metric counts. By default it does not auto-buy or auto-sell.
+
+Explicit automatic execution mode:
+
+```bash
+python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
+  --auto-execute-approved --auto-execution-mode paper
+```
+
+Automatic execution is conservative: sell alerts are handled first, buys only route
+recommendations that already have an `approved` decision, and all actions still pass
+through the existing kill switch, risk sizing, paper-order, live-dry-run, sell audit,
+trade-ledger, and event gates. Use `--auto-execution-mode live_dry_run` to validate
+broker-shaped orders without mutating holdings. Use `--max-auto-buys`,
+`--max-auto-sells`, `--account-equity`, `--risk-per-trade-pct`,
+`--max-position-pct`, `--max-gross-exposure-pct`, and
+`--max-sector-exposure-pct` to tune the automatic sizing envelope.
+
+Use `--consume-events` only when the printed summary is your audit sink and you want
+pending in-memory events drained after the cycle.
 Every successful cycle is persisted as a durable heartbeat and can be reviewed with
-`GET /operations/system-runs`; the JSON output includes `system_cycle_run_id`.
+`GET /operations/system-runs`; the JSON output includes `system_cycle_run_id` and
+an `auto_execution` action report.
 
 ## Backtest (Real Historical Data)
 
