@@ -132,6 +132,12 @@ def dashboard_realtime_data(
         if recent_system_runs
         else {}
     )
+    latest_auto_approval = (
+        recent_system_runs[0].metrics.get("auto_approval", {})
+        if recent_system_runs
+        else {}
+    )
+    latest_auto_approval_count = int(latest_auto_approval.get("action_count") or 0)
     latest_auto_action_count = int(latest_auto_execution.get("action_count") or 0)
     recent_alert_history = state.list_sell_alert_audits(limit=10)
     alert_history_count = len(state.list_sell_alert_audits(limit=10_000))
@@ -164,6 +170,7 @@ def dashboard_realtime_data(
             "strategy_config_count": strategy_config_count,
             "strategy_tuning_count": strategy_tuning.recommendation_count,
             "system_run_count": system_run_count,
+            "latest_auto_approval_count": latest_auto_approval_count,
             "latest_auto_action_count": latest_auto_action_count,
             "pending_event_count": state.pending_event_count(),
         },
@@ -620,6 +627,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">归因推荐</div><div class="v" id="attributionCount">0</div></div>
       <div class="stat"><div class="k">调参建议</div><div class="v" id="strategyTuningCount">0</div></div>
       <div class="stat"><div class="k">自动循环</div><div class="v" id="systemRunCount">0</div></div>
+      <div class="stat"><div class="k">自动审批</div><div class="v" id="autoApprovalCount">0</div></div>
       <div class="stat"><div class="k">自动执行</div><div class="v" id="autoActionCount">0</div></div>
       <div class="stat"><div class="k">Kill Switch</div><div class="v" id="killSwitch">-</div></div>
     </div>
@@ -695,7 +703,7 @@ def dashboard_home() -> str:
         <span class="small">system_cycle 的持久心跳、推荐数量、提醒数量和事件处理情况</span>
       </div>
       <table>
-        <thead><tr><th>时间</th><th>状态</th><th>推荐</th><th>提醒</th><th>自动执行</th><th>事件</th><th>Snapshot</th><th>Strategy</th><th>Top</th></tr></thead>
+        <thead><tr><th>时间</th><th>状态</th><th>推荐</th><th>提醒</th><th>自动审批</th><th>自动执行</th><th>事件</th><th>Snapshot</th><th>Strategy</th><th>Top</th></tr></thead>
         <tbody id="systemRunBody"></tbody>
       </table>
     </div>
@@ -1126,10 +1134,24 @@ def dashboard_home() -> str:
       `;
     }
 
+    function autoApprovalCell(run) {
+      const auto = run.metrics?.auto_approval || {};
+      if (!auto.enabled) return '<span class="badge b-neutral">off</span>';
+      const errors = Number(auto.error_count || 0);
+      const approved = Number(auto.approved_count || 0);
+      const skipped = Number(auto.skipped_count || 0);
+      const cls = errors > 0 ? 'b-danger' : (approved > 0 ? 'b-ok' : 'b-warn');
+      return `
+        <span class="badge ${cls}">approval</span>
+        <div class="small">approved ${approved}</div>
+        <div class="small">skip ${skipped} / err ${errors}</div>
+      `;
+    }
+
     function renderSystemRuns(items) {
       const body = document.getElementById("systemRunBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="9" class="small">暂无自动循环历史。</td></tr>';
+        body.innerHTML = '<tr><td colspan="10" class="small">暂无自动循环历史。</td></tr>';
         return;
       }
       body.innerHTML = items.map((run) => {
@@ -1143,6 +1165,7 @@ def dashboard_home() -> str:
             <td>${statusCell}</td>
             <td>${esc(run.recommendation_count ?? 0)}</td>
             <td>${esc(run.sell_alert_count ?? 0)}</td>
+            <td>${autoApprovalCell(run)}</td>
             <td>${autoExecutionCell(run)}</td>
             <td class="small">consumed ${esc(run.consumed_event_count ?? 0)}<br/>pending ${esc(run.pending_event_count ?? 0)}</td>
             <td class="mono" title="${esc(run.source_snapshot_id || '')}">${esc(shortId(run.source_snapshot_id, 16))}</td>
@@ -1711,6 +1734,7 @@ def dashboard_home() -> str:
         data.strategy_tuning?.recommendation_count ?? 0
       );
       document.getElementById('systemRunCount').textContent = String(data.summary?.system_run_count ?? 0);
+      document.getElementById('autoApprovalCount').textContent = String(data.summary?.latest_auto_approval_count ?? 0);
       document.getElementById('autoActionCount').textContent = String(data.summary?.latest_auto_action_count ?? 0);
       document.getElementById('killSwitch').innerHTML = data.kill_switch?.enabled
         ? '<span class="badge b-danger">ON</span>'
