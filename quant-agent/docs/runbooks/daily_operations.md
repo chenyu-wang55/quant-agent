@@ -46,6 +46,19 @@ alert, order, and sell remains visible in the normal run history and audit table
 Add `--max-cycles 1` or `--max-cycles 2` for smoke tests before installing it in
 launchd or another supervisor.
 
+macOS launchd management:
+
+```bash
+python scripts/manage_launchd.py render --auto-execute-approved --data-provider yfinance
+python scripts/manage_launchd.py install --auto-execute-approved --data-provider yfinance --load
+python scripts/manage_launchd.py status
+python scripts/manage_launchd.py uninstall --unload
+```
+
+The default service label is `com.quant-agent.system-cycle-loop`. The plist lives in
+`~/Library/LaunchAgents`, logs go to `~/Library/Logs`, and the worker command uses
+the current Python executable plus the repository as `WorkingDirectory`.
+
 ## API Checks
 
 ```bash

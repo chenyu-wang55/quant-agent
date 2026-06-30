@@ -238,6 +238,18 @@ python -m apps.worker.main system_cycle_loop --interval-seconds 300 \
 operation. The loop prints a final JSON report with cycle counts, errors, and the
 last `system_cycle_run_id`.
 
+On macOS, render or install a user LaunchAgent for the same loop:
+
+```bash
+python scripts/manage_launchd.py render --auto-execute-approved --data-provider yfinance
+python scripts/manage_launchd.py install --auto-execute-approved --data-provider yfinance --load
+python scripts/manage_launchd.py status
+python scripts/manage_launchd.py uninstall --unload
+```
+
+The LaunchAgent writes logs to `~/Library/Logs/com.quant-agent.system-cycle-loop.*.log`
+and keeps the worker alive through `launchd`.
+
 ## Backtest (Real Historical Data)
 
 - Backtest engine now uses walk-forward historical bars (not synthetic TP-proxy math).
