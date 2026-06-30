@@ -23,6 +23,9 @@ def _args(*extra: str):
 
 def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     args = _args(
+        "--auto-approve-recommendations",
+        "--auto-approve-min-confidence",
+        "0.8",
         "--auto-execute-approved",
         "--auto-execution-mode",
         "paper",
@@ -47,6 +50,9 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "system_cycle_loop",
     ]
     assert "--auto-execute-approved" in round_trip["ProgramArguments"]
+    assert "--auto-approve-recommendations" in round_trip["ProgramArguments"]
+    assert "--auto-approve-min-confidence" in round_trip["ProgramArguments"]
+    assert "0.8" in round_trip["ProgramArguments"]
     assert "--interval-seconds" in round_trip["ProgramArguments"]
     assert "60.0" in round_trip["ProgramArguments"]
     assert str(tmp_path / "Library" / "Logs") in round_trip["StandardOutPath"]

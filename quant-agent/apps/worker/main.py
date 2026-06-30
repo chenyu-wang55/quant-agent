@@ -25,6 +25,7 @@ from domain.entities.models import (
     SnapshotMode,
     SystemCycleRun,
 )
+from domain.policies.approval import ApprovalDecisionRequest
 from infra.queue.events import EventType
 
 
@@ -118,6 +119,141 @@ def _auto_execution_mode(mode: str) -> tuple[OrderExecutionMode, bool]:
     if normalized == "live_dry_run":
         return OrderExecutionMode.LIVE, True
     raise ValueError("auto execution mode must be paper or live_dry_run")
+
+
+def _auto_approve_cycle(
+    *,
+    recommendations: list[Recommendation],
+    max_auto_approvals: int,
+    min_confidence: float,
+    min_composite: float,
+) -> dict[str, Any]:
+    state = get_app_state()
+    actions: list[dict[str, Any]] = []
+    approval_count = 0
+    open_tickers = {holding.ticker.upper() for holding in state.list_open_holdings()}
+
+    if state.kill_switch.enabled:
+        actions.append(
+            {
+                "action": "approve_recommendation",
+                "status": "skipped",
+                "reason": "kill_switch_enabled",
+                "message_cn": f"Kill switch 已开启：{state.kill_switch.reason or '未提供原因'}。",
+            }
+        )
+        return _auto_approval_report(enabled=True, actions=actions)
+
+    for recommendation in recommendations:
+        ticker = recommendation.ticker.upper()
+        composite = float(recommendation.score_vector.get("composite", 0.0))
+        if approval_count >= max_auto_approvals:
+            actions.append(
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "max_auto_approvals_reached",
+                }
+            )
+            continue
+        if state.get_latest_approval(recommendation.id) is not None:
+            actions.append(
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "already_decided",
+                }
+            )
+            continue
+        if ticker in open_tickers:
+            actions.append(
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "already_open_holding",
+                }
+            )
+            continue
+        if recommendation.direction != Direction.BUY:
+            actions.append(
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "unsupported_direction",
+                }
+            )
+            continue
+        if recommendation.confidence < min_confidence:
+            actions.append(
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "below_min_confidence",
+                    "confidence": recommendation.confidence,
+                    "min_confidence": min_confidence,
+                }
+            )
+            continue
+        if composite < min_composite:
+            actions.append(
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "below_min_composite",
+                    "composite": composite,
+                    "min_composite": min_composite,
+                }
+            )
+            continue
+
+        approval = state.decide_recommendation(
+            ApprovalDecisionRequest(
+                recommendation_id=recommendation.id,
+                decision=ApprovalDecision.APPROVED.value,
+                approver="system_cycle:auto_approval",
+                notes=(
+                    f"auto-approved confidence={recommendation.confidence:.4f}, "
+                    f"composite={composite:.4f}"
+                ),
+            )
+        )
+        approval_count += 1
+        actions.append(
+            {
+                "action": "approve_recommendation",
+                "status": "approved",
+                "ticker": recommendation.ticker,
+                "recommendation_id": recommendation.id,
+                "decision_id": approval.decision_id,
+                "confidence": recommendation.confidence,
+                "composite": composite,
+            }
+        )
+
+    return _auto_approval_report(enabled=True, actions=actions)
+
+
+def _auto_approval_report(*, enabled: bool, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "enabled": enabled,
+        "action_count": len(actions),
+        "approved_count": sum(1 for item in actions if item.get("status") == "approved"),
+        "skipped_count": sum(1 for item in actions if item.get("status") == "skipped"),
+        "error_count": sum(1 for item in actions if item.get("status") == "error"),
+        "actions": actions,
+    }
 
 
 def _auto_execute_cycle(
@@ -386,6 +522,10 @@ def system_cycle(
     consume_events: bool = False,
     as_of: datetime | None = None,
     auto_execute_approved: bool = False,
+    auto_approve_recommendations: bool = False,
+    auto_approve_min_confidence: float = 0.72,
+    auto_approve_min_composite: float = 0.0,
+    max_auto_approvals: int = 1,
     auto_execution_mode: str = "paper",
     max_auto_buys: int = 1,
     max_auto_sells: int = 10,
@@ -408,6 +548,16 @@ def system_cycle(
     )
     output = state.pipeline.run(request)
     state.ingest_run_output(request, output)
+    auto_approval = (
+        _auto_approve_cycle(
+            recommendations=output.result.recommendations[:top_n],
+            max_auto_approvals=max_auto_approvals,
+            min_confidence=auto_approve_min_confidence,
+            min_composite=auto_approve_min_composite,
+        )
+        if auto_approve_recommendations
+        else _auto_approval_report(enabled=False, actions=[])
+    )
     alerts = state.monitor_sell_alerts(as_of=started_at)
     state.record_sell_alert_audits(alerts, monitor_run_id=run_id)
     auto_execution = (
@@ -455,6 +605,7 @@ def system_cycle(
     ]
     consumed_type_counts = _event_type_counts(consumed_events)
     metrics = state.metrics_store.dump()
+    metrics["auto_approval"] = auto_approval
     metrics["auto_execution"] = auto_execution
     run = SystemCycleRun(
         id=run_id,
@@ -487,6 +638,7 @@ def system_cycle(
         "sell_alert_count": len(alerts),
         "sell_alerts": sell_alerts,
         "auto_execution_enabled": auto_execute_approved,
+        "auto_approval": auto_approval,
         "auto_execution": auto_execution,
         "consumed_event_count": len(consumed_events),
         "consumed_event_type_counts": consumed_type_counts,
@@ -521,6 +673,7 @@ def system_cycle_loop(
                     "system_cycle_run_id": summary.get("system_cycle_run_id"),
                     "recommendation_count": summary.get("recommendation_count", 0),
                     "sell_alert_count": summary.get("sell_alert_count", 0),
+                    "auto_approval": summary.get("auto_approval", {}),
                     "auto_execution": summary.get("auto_execution", {}),
                     "pending_event_count": summary.get("pending_event_count", 0),
                 }
@@ -605,6 +758,24 @@ def main() -> None:
         help="system_cycle should auto-route approved buys and active sell alerts through existing execution gates",
     )
     parser.add_argument(
+        "--auto-approve-recommendations",
+        action="store_true",
+        help="system_cycle should auto-approve recommendations that pass the configured thresholds",
+    )
+    parser.add_argument(
+        "--auto-approve-min-confidence",
+        type=float,
+        default=0.72,
+        help="minimum recommendation confidence for automatic approval",
+    )
+    parser.add_argument(
+        "--auto-approve-min-composite",
+        type=float,
+        default=0.0,
+        help="minimum composite score for automatic approval",
+    )
+    parser.add_argument("--max-auto-approvals", type=int, default=1, help="maximum auto approvals per cycle")
+    parser.add_argument(
         "--auto-execution-mode",
         choices=["paper", "live_dry_run"],
         default="paper",
@@ -673,6 +844,10 @@ def main() -> None:
             consume_events=args.consume_events,
             as_of=as_of,
             auto_execute_approved=args.auto_execute_approved,
+            auto_approve_recommendations=args.auto_approve_recommendations,
+            auto_approve_min_confidence=args.auto_approve_min_confidence,
+            auto_approve_min_composite=args.auto_approve_min_composite,
+            max_auto_approvals=args.max_auto_approvals,
             auto_execution_mode=args.auto_execution_mode,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
@@ -691,6 +866,10 @@ def main() -> None:
             consume_events=args.consume_events,
             as_of=as_of,
             auto_execute_approved=args.auto_execute_approved,
+            auto_approve_recommendations=args.auto_approve_recommendations,
+            auto_approve_min_confidence=args.auto_approve_min_confidence,
+            auto_approve_min_composite=args.auto_approve_min_composite,
+            max_auto_approvals=args.max_auto_approvals,
             auto_execution_mode=args.auto_execution_mode,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,

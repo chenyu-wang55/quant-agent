@@ -220,6 +220,19 @@ broker-shaped orders without mutating holdings. Use `--max-auto-buys`,
 `--max-position-pct`, `--max-gross-exposure-pct`, and
 `--max-sector-exposure-pct` to tune the automatic sizing envelope.
 
+Full autopilot mode also auto-approves qualifying recommendations before execution:
+
+```bash
+python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
+  --auto-approve-recommendations --auto-approve-min-confidence 0.72 \
+  --auto-execute-approved --auto-execution-mode paper
+```
+
+Auto-approval is disabled by default. When enabled it writes the same approval audit
+record as the API, caps approvals with `--max-auto-approvals`, skips open holdings,
+and requires both `--auto-approve-min-confidence` and
+`--auto-approve-min-composite`.
+
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.
 Every successful cycle is persisted as a durable heartbeat and can be reviewed with
@@ -243,6 +256,8 @@ On macOS, render or install a user LaunchAgent for the same loop:
 ```bash
 python scripts/manage_launchd.py render --auto-execute-approved --data-provider yfinance
 python scripts/manage_launchd.py install --auto-execute-approved --data-provider yfinance --load
+python scripts/manage_launchd.py install --auto-approve-recommendations \
+  --auto-execute-approved --data-provider yfinance --load
 python scripts/manage_launchd.py status
 python scripts/manage_launchd.py uninstall --unload
 ```

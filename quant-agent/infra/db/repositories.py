@@ -918,6 +918,11 @@ class ApprovalRepository:
                 decided_at=record.decided_at,
             )
 
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(ApprovalDecisionRecord))
+            session.commit()
+
 
 class ExecutionControlRepository:
     def get_kill_switch(self) -> KillSwitchState:

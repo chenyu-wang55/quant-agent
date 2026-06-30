@@ -43,6 +43,7 @@ def test_system_cycle_generates_recommendations_and_monitors_without_auto_execut
     assert result["source_snapshot_id"]
     assert result["strategy_config_id"]
     assert result["auto_execution_enabled"] is False
+    assert result["auto_approval"]["enabled"] is False
     assert result["auto_execution"]["enabled"] is False
     assert result["auto_execution"]["action_count"] == 0
     assert result["sell_alert_count"] >= 1
@@ -141,6 +142,44 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
     run_history = state.list_system_cycle_runs(limit=1)
     assert run_history[0].auto_execution_enabled is True
     assert run_history[0].metrics["auto_execution"]["buy_order_count"] == 1
+
+
+def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
+        state.close_holding(holding.ticker)
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        auto_approve_recommendations=True,
+        auto_approve_min_confidence=0.5,
+        auto_approve_min_composite=0.0,
+        max_auto_approvals=1,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+    )
+
+    assert result["auto_approval"]["enabled"] is True
+    assert result["auto_approval"]["approved_count"] == 1
+    assert result["auto_execution"]["buy_order_count"] == 1
+    approved_action = next(
+        item for item in result["auto_approval"]["actions"] if item["status"] == "approved"
+    )
+    buy_action = next(
+        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert approved_action["recommendation_id"] == buy_action["recommendation_id"]
+    approval = state.get_latest_approval(approved_action["recommendation_id"])
+    assert approval is not None
+    assert approval.approver == "system_cycle:auto_approval"
+    assert state.list_paper_orders(limit=1, recommendation_id=buy_action["recommendation_id"])
 
 
 def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> None:

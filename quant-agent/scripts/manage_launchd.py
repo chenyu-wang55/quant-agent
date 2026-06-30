@@ -40,6 +40,12 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.interval_seconds),
         "--auto-execution-mode",
         args.auto_execution_mode,
+        "--auto-approve-min-confidence",
+        str(args.auto_approve_min_confidence),
+        "--auto-approve-min-composite",
+        str(args.auto_approve_min_composite),
+        "--max-auto-approvals",
+        str(args.max_auto_approvals),
         "--max-auto-buys",
         str(args.max_auto_buys),
         "--max-auto-sells",
@@ -59,6 +65,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         program_args.extend(["--min-confidence", str(args.min_confidence)])
     if args.auto_execute_approved:
         program_args.append("--auto-execute-approved")
+    if args.auto_approve_recommendations:
+        program_args.append("--auto-approve-recommendations")
     if args.consume_events:
         program_args.append("--consume-events")
     if args.stop_on_error:
@@ -137,6 +145,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-n", type=int, default=8)
     parser.add_argument("--min-confidence", type=float, default=0.0)
     parser.add_argument("--interval-seconds", type=float, default=300.0)
+    parser.add_argument("--auto-approve-recommendations", action="store_true")
+    parser.add_argument("--auto-approve-min-confidence", type=float, default=0.72)
+    parser.add_argument("--auto-approve-min-composite", type=float, default=0.0)
+    parser.add_argument("--max-auto-approvals", type=int, default=1)
     parser.add_argument("--auto-execute-approved", action="store_true")
     parser.add_argument("--auto-execution-mode", choices=["paper", "live_dry_run"], default="paper")
     parser.add_argument("--max-auto-buys", type=int, default=1)
