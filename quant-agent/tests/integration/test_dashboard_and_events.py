@@ -70,6 +70,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "策略版本" in dashboard_home.text
     assert "调参建议" in dashboard_home.text
     assert "自动循环历史" in dashboard_home.text
+    assert "自动执行" in dashboard_home.text
     assert "交易流水" in dashboard_home.text
     assert "持仓风控审计" in dashboard_home.text
     assert "卖出执行审计" in dashboard_home.text
@@ -88,6 +89,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "renderStrategyConfigs" in dashboard_home.text
     assert "renderStrategyTuning" in dashboard_home.text
     assert "renderSystemRuns" in dashboard_home.text
+    assert "autoExecutionCell" in dashboard_home.text
     assert "snapshotScoreCell" in dashboard_home.text
     assert "performance_score" in dashboard_home.text
     assert "replaySnapshot" in dashboard_home.text
@@ -111,6 +113,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "sellExecutionCount" in dashboard_home.text
     assert "alertHistoryCount" in dashboard_home.text
     assert "systemRunCount" in dashboard_home.text
+    assert "autoActionCount" in dashboard_home.text
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200
@@ -131,6 +134,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert payload["summary"]["strategy_config_count"] >= 1
     assert payload["summary"]["strategy_tuning_count"] >= 1
     assert "holding_control_audit_count" in payload["summary"]
+    assert "latest_auto_action_count" in payload["summary"]
     assert payload["strategy_configs"][0]["strategy_config_id"]
     assert payload["strategy_tuning"]["items"][0]["strategy_config_id"]
 
