@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
-from apps.worker.main import system_cycle
+from apps.worker.main import system_cycle, system_cycle_loop
 from domain.entities.models import HoldingStatus, ManualBuyRequest
 from domain.policies.approval import ApprovalDecisionRequest
 
@@ -181,3 +181,29 @@ def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> N
     assert holding is not None
     assert holding.status == HoldingStatus.CLOSED
     assert state.list_sell_execution_audits(limit=1, ticker="AAPL")[0].id == sell_action["sell_execution_id"]
+
+
+def test_system_cycle_loop_runs_bounded_cycles_without_sleeping() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
+        state.close_holding(holding.ticker)
+
+    report = system_cycle_loop(
+        interval_seconds=0,
+        max_cycles=2,
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        sleep_fn=lambda _seconds: None,
+    )
+
+    assert report["job"] == "system_cycle_loop"
+    assert report["cycle_count"] == 2
+    assert report["success_count"] == 2
+    assert report["error_count"] == 0
+    assert report["last_system_cycle_run_id"]
+    assert all(item["system_cycle_run_id"] for item in report["cycles"])
+    assert len(state.list_system_cycle_runs(limit=5)) >= 2

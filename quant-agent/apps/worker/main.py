@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
@@ -495,6 +497,75 @@ def system_cycle(
     return summary
 
 
+def system_cycle_loop(
+    *,
+    interval_seconds: float = 300.0,
+    max_cycles: int | None = None,
+    stop_on_error: bool = False,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    **cycle_kwargs: Any,
+) -> dict[str, Any]:
+    started_at = datetime.now(timezone.utc)
+    cycles: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+    cycle_index = 0
+
+    while max_cycles is None or cycle_index < max_cycles:
+        cycle_index += 1
+        try:
+            summary = system_cycle(**cycle_kwargs)
+            cycles.append(
+                {
+                    "cycle": cycle_index,
+                    "status": summary.get("status", "success"),
+                    "system_cycle_run_id": summary.get("system_cycle_run_id"),
+                    "recommendation_count": summary.get("recommendation_count", 0),
+                    "sell_alert_count": summary.get("sell_alert_count", 0),
+                    "auto_execution": summary.get("auto_execution", {}),
+                    "pending_event_count": summary.get("pending_event_count", 0),
+                }
+            )
+        except Exception as exc:
+            error = {
+                "cycle": cycle_index,
+                "status": "error",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+            errors.append(error)
+            cycles.append(error)
+            if stop_on_error:
+                break
+
+        if max_cycles is not None and cycle_index >= max_cycles:
+            break
+        sleep_fn(max(0.0, interval_seconds))
+
+    finished_at = datetime.now(timezone.utc)
+    report = {
+        "job": "system_cycle_loop",
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "interval_seconds": interval_seconds,
+        "max_cycles": max_cycles,
+        "cycle_count": len(cycles),
+        "success_count": sum(1 for item in cycles if item.get("status") == "success"),
+        "error_count": len(errors),
+        "last_system_cycle_run_id": next(
+            (
+                item.get("system_cycle_run_id")
+                for item in reversed(cycles)
+                if item.get("system_cycle_run_id")
+            ),
+            None,
+        ),
+        "cycles": cycles,
+        "errors": errors,
+    }
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Quant agent worker jobs")
     parser.add_argument(
@@ -508,6 +579,7 @@ def main() -> None:
             "process_event_queue",
             "monitor_positions_alerts",
             "system_cycle",
+            "system_cycle_loop",
         ],
     )
     parser.add_argument("--top-n", type=int, default=8, help="system_cycle recommendation publication size")
@@ -565,6 +637,23 @@ def main() -> None:
         default=0.30,
         help="fractional sector exposure cap for auto buy sizing",
     )
+    parser.add_argument(
+        "--interval-seconds",
+        type=float,
+        default=300.0,
+        help="system_cycle_loop sleep interval between cycles",
+    )
+    parser.add_argument(
+        "--max-cycles",
+        type=int,
+        default=None,
+        help="optional system_cycle_loop cycle cap; omit for continuous operation",
+    )
+    parser.add_argument(
+        "--stop-on-error",
+        action="store_true",
+        help="system_cycle_loop should stop after the first cycle error",
+    )
     args = parser.parse_args()
     as_of = datetime.fromisoformat(args.as_of) if args.as_of else None
     if as_of is not None and as_of.tzinfo is None:
@@ -579,6 +668,24 @@ def main() -> None:
         "process_event_queue": process_event_queue,
         "monitor_positions_alerts": monitor_positions_alerts,
         "system_cycle": lambda: system_cycle(
+            top_n=args.top_n,
+            min_confidence=args.min_confidence,
+            consume_events=args.consume_events,
+            as_of=as_of,
+            auto_execute_approved=args.auto_execute_approved,
+            auto_execution_mode=args.auto_execution_mode,
+            max_auto_buys=args.max_auto_buys,
+            max_auto_sells=args.max_auto_sells,
+            account_equity=args.account_equity,
+            risk_per_trade_pct=args.risk_per_trade_pct,
+            max_position_pct=args.max_position_pct,
+            max_gross_exposure_pct=args.max_gross_exposure_pct,
+            max_sector_exposure_pct=args.max_sector_exposure_pct,
+        ),
+        "system_cycle_loop": lambda: system_cycle_loop(
+            interval_seconds=args.interval_seconds,
+            max_cycles=args.max_cycles,
+            stop_on_error=args.stop_on_error,
             top_n=args.top_n,
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,

@@ -226,6 +226,18 @@ Every successful cycle is persisted as a durable heartbeat and can be reviewed w
 `GET /operations/system-runs`; the JSON output includes `system_cycle_run_id` and
 an `auto_execution` action report.
 
+For unattended local operation, run the bounded or continuous loop wrapper:
+
+```bash
+python -m apps.worker.main system_cycle_loop --interval-seconds 300 \
+  --auto-execute-approved --auto-execution-mode paper
+```
+
+`system_cycle_loop` repeatedly calls the same audited `system_cycle` path. Add
+`--max-cycles 2` for smoke tests or launchd/cron probes; omit it for continuous
+operation. The loop prints a final JSON report with cycle counts, errors, and the
+last `system_cycle_run_id`.
+
 ## Backtest (Real Historical Data)
 
 - Backtest engine now uses walk-forward historical bars (not synthetic TP-proxy math).
