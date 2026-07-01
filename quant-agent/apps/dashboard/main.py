@@ -727,6 +727,9 @@ def dashboard_home() -> str:
         <div class="field"><label for="autopilotMaxApprovals">Max Approvals</label><input id="autopilotMaxApprovals" type="number" min="0" step="1" value="1" /></div>
         <div class="field"><label for="autopilotMaxBuys">Max Buys</label><input id="autopilotMaxBuys" type="number" min="0" step="1" value="1" /></div>
         <div class="field"><label for="autopilotMaxSells">Max Sells</label><input id="autopilotMaxSells" type="number" min="0" step="1" value="10" /></div>
+        <div class="field"><label for="autopilotDailyApprovals">Daily Approvals</label><input id="autopilotDailyApprovals" type="number" min="0" step="1" value="3" /></div>
+        <div class="field"><label for="autopilotDailyBuys">Daily Buys</label><input id="autopilotDailyBuys" type="number" min="0" step="1" value="3" /></div>
+        <div class="field"><label for="autopilotDailySells">Daily Sells</label><input id="autopilotDailySells" type="number" min="0" step="1" value="10" /></div>
         <div class="field"><label for="autopilotAccountEquity">Policy Equity</label><input id="autopilotAccountEquity" type="number" min="1" step="1000" value="100000" /></div>
         <div class="field"><label for="autopilotRiskPct">Policy Risk %</label><input id="autopilotRiskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
         <div class="field"><label for="autopilotMaxPositionPct">Policy Position %</label><input id="autopilotMaxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
@@ -1031,8 +1034,12 @@ def dashboard_home() -> str:
         ? `Autopilot ${status.toUpperCase()}`
         : 'Autopilot OFF';
       const reasons = (currentAutopilotPreflight.reasons || []).join(', ');
+      const daily = currentAutopilotPreflight.daily_usage || {};
+      const budgetText = daily.trading_day
+        ? ` | left A/B/S ${daily.remaining_approvals ?? '-'} / ${daily.remaining_buys ?? '-'} / ${daily.remaining_sells ?? '-'}`
+        : '';
       document.getElementById('autopilotPolicyMeta').textContent =
-        ` #${currentAutopilotPolicy.policy_id || '-'} | ${currentAutopilotPolicy.updated_by || 'system'} | ${fmtTime(currentAutopilotPolicy.updated_at)}${reasons ? ` | ${reasons}` : ''}`;
+        ` #${currentAutopilotPolicy.policy_id || '-'} | ${currentAutopilotPolicy.updated_by || 'system'} | ${fmtTime(currentAutopilotPolicy.updated_at)}${budgetText}${reasons ? ` | ${reasons}` : ''}`;
 
       setChecked('autopilotEnabled', enabled);
       setChecked('autopilotAutoApprove', currentAutopilotPolicy.auto_approve_recommendations);
@@ -1044,6 +1051,9 @@ def dashboard_home() -> str:
       setFieldValue('autopilotMaxApprovals', currentAutopilotPolicy.max_auto_approvals ?? 1);
       setFieldValue('autopilotMaxBuys', currentAutopilotPolicy.max_auto_buys ?? 1);
       setFieldValue('autopilotMaxSells', currentAutopilotPolicy.max_auto_sells ?? 10);
+      setFieldValue('autopilotDailyApprovals', currentAutopilotPolicy.max_daily_auto_approvals ?? 3);
+      setFieldValue('autopilotDailyBuys', currentAutopilotPolicy.max_daily_auto_buys ?? 3);
+      setFieldValue('autopilotDailySells', currentAutopilotPolicy.max_daily_auto_sells ?? 10);
       setFieldValue('autopilotAccountEquity', currentAutopilotPolicy.account_equity ?? 100000);
       setFieldValue('autopilotRiskPct', pctInputValue(currentAutopilotPolicy.risk_per_trade_pct, 0.01));
       setFieldValue('autopilotMaxPositionPct', pctInputValue(currentAutopilotPolicy.max_position_pct, 0.10));
@@ -1065,6 +1075,9 @@ def dashboard_home() -> str:
         max_auto_approvals: Math.max(0, Math.floor(numberValue('autopilotMaxApprovals') ?? 1)),
         max_auto_buys: Math.max(0, Math.floor(numberValue('autopilotMaxBuys') ?? 1)),
         max_auto_sells: Math.max(0, Math.floor(numberValue('autopilotMaxSells') ?? 10)),
+        max_daily_auto_approvals: Math.max(0, Math.floor(numberValue('autopilotDailyApprovals') ?? 3)),
+        max_daily_auto_buys: Math.max(0, Math.floor(numberValue('autopilotDailyBuys') ?? 3)),
+        max_daily_auto_sells: Math.max(0, Math.floor(numberValue('autopilotDailySells') ?? 10)),
         account_equity: numberValue('autopilotAccountEquity') ?? 100000,
         risk_per_trade_pct: (numberValue('autopilotRiskPct') ?? 1) / 100,
         max_position_pct: (numberValue('autopilotMaxPositionPct') ?? 10) / 100,

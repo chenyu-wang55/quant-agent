@@ -310,6 +310,9 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "max_auto_approvals": 1,
     "max_auto_buys": 1,
     "max_auto_sells": 10,
+    "max_daily_auto_approvals": 3,
+    "max_daily_auto_buys": 3,
+    "max_daily_auto_sells": 10,
     "updated_by": "ops",
     "reason": "paper autopilot"
   }'

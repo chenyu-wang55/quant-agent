@@ -566,6 +566,9 @@ class AutopilotPolicy(BaseModel):
     max_auto_approvals: int = Field(default=1, ge=0)
     max_auto_buys: int = Field(default=1, ge=0)
     max_auto_sells: int = Field(default=10, ge=0)
+    max_daily_auto_approvals: int = Field(default=3, ge=0)
+    max_daily_auto_buys: int = Field(default=3, ge=0)
+    max_daily_auto_sells: int = Field(default=10, ge=0)
     account_equity: float = Field(default=100_000.0, gt=0)
     risk_per_trade_pct: float = Field(default=0.01, gt=0, le=1.0)
     max_position_pct: float = Field(default=0.10, gt=0, le=1.0)
@@ -600,6 +603,7 @@ class AutopilotPreflight(BaseModel):
     can_auto_approve: bool = False
     can_auto_execute: bool = False
     reasons: list[str] = Field(default_factory=list)
+    daily_usage: dict[str, Any] = Field(default_factory=dict)
     checks: list[AutopilotPreflightCheck] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=utc_now)
 

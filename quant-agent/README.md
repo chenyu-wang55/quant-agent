@@ -274,7 +274,10 @@ skip unsafe automatic actions while still recording the research run and monitor
 results. Set `restrict_auto_execution_to_regular_hours=true` when automatic buys and
 sells should be blocked outside the approximate US equity regular session
 (`09:30-16:00 America/New_York`). `GET /execution/market-session` exposes the same
-session status used by preflight.
+session status used by preflight. Daily automatic action budgets
+(`max_daily_auto_approvals`, `max_daily_auto_buys`, `max_daily_auto_sells`) are also
+checked from persisted `system_cycle` history so a fast loop cannot keep spending the
+same per-cycle budget all day.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

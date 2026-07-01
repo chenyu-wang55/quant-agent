@@ -893,6 +893,7 @@ class AppState:
         checks: list[AutopilotPreflightCheck] = []
         reasons: list[str] = []
         market_session = self.get_market_session_status(as_of=as_of)
+        daily_usage = self.get_autopilot_daily_usage(policy=policy, as_of=as_of)
 
         if not policy.enabled:
             checks.append(
@@ -902,7 +903,12 @@ class AppState:
                     message_cn="Autopilot policy 未开启，自动审批和自动执行保持关闭。",
                 )
             )
-            return AutopilotPreflight(status="off", reasons=["policy_disabled"], checks=checks)
+            return AutopilotPreflight(
+                status="off",
+                reasons=["policy_disabled"],
+                daily_usage=daily_usage,
+                checks=checks,
+            )
 
         checks.append(
             AutopilotPreflightCheck(
@@ -934,6 +940,7 @@ class AppState:
         can_auto_approve = (
             policy.auto_approve_recommendations
             and policy.max_auto_approvals > 0
+            and daily_usage["remaining_approvals"] > 0
             and not self.kill_switch.enabled
         )
         if not policy.auto_approve_recommendations:
@@ -953,20 +960,38 @@ class AppState:
                     message_cn="自动审批已启用，但 max_auto_approvals 为 0。",
                 )
             )
+        elif daily_usage["remaining_approvals"] <= 0:
+            reasons.append("daily_auto_approval_budget_exhausted")
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="daily_auto_approval_budget",
+                    status="fail",
+                    message_cn="今日自动审批预算已用完。",
+                    details=daily_usage,
+                )
+            )
         else:
             checks.append(
                 AutopilotPreflightCheck(
                     name="auto_approval",
                     status="pass",
-                    message_cn=f"自动审批可用，本轮最多 {policy.max_auto_approvals} 条。",
+                    message_cn=(
+                        f"自动审批可用，本轮最多 "
+                        f"{min(policy.max_auto_approvals, daily_usage['remaining_approvals'])} 条。"
+                    ),
                     details={
                         "min_confidence": policy.auto_approve_min_confidence,
                         "min_composite": policy.auto_approve_min_composite,
+                        **daily_usage,
                     },
                 )
             )
 
         execution_capacity = policy.max_auto_buys > 0 or policy.max_auto_sells > 0
+        execution_daily_budget = (
+            (policy.max_auto_buys > 0 and daily_usage["remaining_buys"] > 0)
+            or (policy.max_auto_sells > 0 and daily_usage["remaining_sells"] > 0)
+        )
         market_hours_allowed = (
             not policy.restrict_auto_execution_to_regular_hours
             or market_session.is_regular_session
@@ -974,6 +999,7 @@ class AppState:
         can_auto_execute = (
             policy.auto_execute_approved
             and execution_capacity
+            and execution_daily_budget
             and market_hours_allowed
             and not self.kill_switch.enabled
         )
@@ -994,6 +1020,16 @@ class AppState:
                     message_cn="自动执行已启用，但 max_auto_buys 和 max_auto_sells 都为 0。",
                 )
             )
+        elif not execution_daily_budget:
+            reasons.append("daily_auto_execution_budget_exhausted")
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="daily_auto_execution_budget",
+                    status="fail",
+                    message_cn="今日自动买入/卖出预算已用完。",
+                    details=daily_usage,
+                )
+            )
         elif not market_hours_allowed:
             reasons.append("market_session_closed")
             checks.append(
@@ -1010,10 +1046,11 @@ class AppState:
                     name="auto_execution",
                     status="pass",
                     message_cn=(
-                        f"自动执行可用，本轮最多买入 {policy.max_auto_buys} 条、"
-                        f"卖出 {policy.max_auto_sells} 条。"
+                        f"自动执行可用，本轮最多买入 "
+                        f"{min(policy.max_auto_buys, daily_usage['remaining_buys'])} 条、"
+                        f"卖出 {min(policy.max_auto_sells, daily_usage['remaining_sells'])} 条。"
                     ),
-                    details={"execution_mode": policy.auto_execution_mode.value},
+                    details={"execution_mode": policy.auto_execution_mode.value, **daily_usage},
                 )
             )
             checks.append(
@@ -1041,8 +1078,47 @@ class AppState:
             can_auto_approve=can_auto_approve,
             can_auto_execute=can_auto_execute,
             reasons=reasons,
+            daily_usage=daily_usage,
             checks=checks,
         )
+
+    def get_autopilot_daily_usage(
+        self,
+        policy: AutopilotPolicy | None = None,
+        as_of: datetime | None = None,
+    ) -> dict[str, int | str]:
+        timestamp = as_of or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        eastern = timestamp.astimezone(ZoneInfo("America/New_York"))
+        trading_day = eastern.date().isoformat()
+        runs = self.list_system_cycle_runs(limit=1000, status="success")
+        used_approvals = 0
+        used_buys = 0
+        used_sells = 0
+        for run in runs:
+            run_day = run.started_at.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+            if run_day != trading_day:
+                continue
+            auto_approval = run.metrics.get("auto_approval", {})
+            auto_execution = run.metrics.get("auto_execution", {})
+            used_approvals += int(auto_approval.get("approved_count") or 0)
+            used_buys += int(auto_execution.get("buy_order_count") or 0)
+            used_sells += int(auto_execution.get("sell_order_count") or 0)
+
+        policy = policy or self.get_autopilot_policy()
+        return {
+            "trading_day": trading_day,
+            "used_approvals": used_approvals,
+            "used_buys": used_buys,
+            "used_sells": used_sells,
+            "max_daily_auto_approvals": policy.max_daily_auto_approvals,
+            "max_daily_auto_buys": policy.max_daily_auto_buys,
+            "max_daily_auto_sells": policy.max_daily_auto_sells,
+            "remaining_approvals": max(0, policy.max_daily_auto_approvals - used_approvals),
+            "remaining_buys": max(0, policy.max_daily_auto_buys - used_buys),
+            "remaining_sells": max(0, policy.max_daily_auto_sells - used_sells),
+        }
 
     def get_market_session_status(self, as_of: datetime | None = None) -> MarketSessionStatus:
         timestamp = as_of or datetime.now(timezone.utc)

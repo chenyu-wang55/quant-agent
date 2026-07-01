@@ -22,6 +22,9 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["auto_execute_approved"] is False
     assert default_policy["restrict_auto_execution_to_regular_hours"] is False
     assert default_policy["auto_execution_mode"] == "paper"
+    assert default_policy["max_daily_auto_approvals"] == 3
+    assert default_policy["max_daily_auto_buys"] == 3
+    assert default_policy["max_daily_auto_sells"] == 10
 
     update_response = client.post(
         "/execution/autopilot-policy",
@@ -35,6 +38,9 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
             "max_auto_approvals": 2,
             "max_auto_buys": 1,
             "max_auto_sells": 3,
+            "max_daily_auto_approvals": 4,
+            "max_daily_auto_buys": 5,
+            "max_daily_auto_sells": 6,
             "account_equity": 250000,
             "risk_per_trade_pct": 0.005,
             "max_position_pct": 0.08,
@@ -54,6 +60,9 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert updated_policy["auto_execution_mode"] == "live_dry_run"
     assert updated_policy["auto_approve_min_confidence"] == 0.81
     assert updated_policy["max_auto_approvals"] == 2
+    assert updated_policy["max_daily_auto_approvals"] == 4
+    assert updated_policy["max_daily_auto_buys"] == 5
+    assert updated_policy["max_daily_auto_sells"] == 6
     assert updated_policy["updated_by"] == "qa"
 
     latest_response = client.get("/execution/autopilot-policy", headers=AUTH_HEADERS)
@@ -66,6 +75,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert control_center.json()["autopilot_preflight"]["status"] == "ready"
     assert control_center.json()["autopilot_preflight"]["can_auto_approve"] is True
     assert control_center.json()["autopilot_preflight"]["can_auto_execute"] is True
+    assert control_center.json()["autopilot_preflight"]["daily_usage"]["remaining_buys"] == 5
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200

@@ -533,16 +533,26 @@ def _apply_autopilot_policy(
         updates["auto_execution_mode"] = policy.auto_execution_mode.value
         return updates
 
+    daily_usage = preflight.daily_usage or {}
     updates.update(
         {
             "auto_approve_recommendations": preflight.can_auto_approve,
             "auto_execute_approved": preflight.can_auto_execute,
             "auto_approve_min_confidence": policy.auto_approve_min_confidence,
             "auto_approve_min_composite": policy.auto_approve_min_composite,
-            "max_auto_approvals": policy.max_auto_approvals,
+            "max_auto_approvals": min(
+                policy.max_auto_approvals,
+                int(daily_usage.get("remaining_approvals", policy.max_auto_approvals)),
+            ),
             "auto_execution_mode": policy.auto_execution_mode.value,
-            "max_auto_buys": policy.max_auto_buys,
-            "max_auto_sells": policy.max_auto_sells,
+            "max_auto_buys": min(
+                policy.max_auto_buys,
+                int(daily_usage.get("remaining_buys", policy.max_auto_buys)),
+            ),
+            "max_auto_sells": min(
+                policy.max_auto_sells,
+                int(daily_usage.get("remaining_sells", policy.max_auto_sells)),
+            ),
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,

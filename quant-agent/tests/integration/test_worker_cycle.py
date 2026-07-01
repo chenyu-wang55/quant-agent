@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from apps.worker.main import system_cycle, system_cycle_loop
-from domain.entities.models import HoldingStatus, ManualBuyRequest
+from domain.entities.models import HoldingStatus, ManualBuyRequest, SystemCycleRun
 from domain.policies.approval import ApprovalDecisionRequest
 
 
@@ -306,6 +306,61 @@ def test_system_cycle_autopilot_market_hours_gate_blocks_auto_execution() -> Non
     assert result["auto_execution_enabled"] is False
     latest_run = state.list_system_cycle_runs(limit=1)[0]
     assert latest_run.metrics["autopilot_preflight"]["reasons"] == ["market_session_closed"]
+
+
+def test_system_cycle_autopilot_daily_budget_blocks_after_usage() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    budget_day = datetime(2026, 4, 10, 14, 0, tzinfo=timezone.utc)
+    state.record_system_cycle_run(
+        SystemCycleRun(
+            id="daily-budget-used",
+            started_at=budget_day,
+            finished_at=budget_day,
+            status="success",
+            recommendation_count=1,
+            sell_alert_count=0,
+            auto_execution_enabled=True,
+            metrics={
+                "auto_approval": {"approved_count": 1},
+                "auto_execution": {"buy_order_count": 1, "sell_order_count": 0},
+            },
+        )
+    )
+    state.update_autopilot_policy(
+        {
+            "enabled": True,
+            "auto_approve_recommendations": True,
+            "auto_execute_approved": True,
+            "auto_execution_mode": "paper",
+            "auto_approve_min_confidence": 0.5,
+            "max_auto_approvals": 1,
+            "max_auto_buys": 1,
+            "max_auto_sells": 0,
+            "max_daily_auto_approvals": 1,
+            "max_daily_auto_buys": 1,
+            "max_daily_auto_sells": 0,
+            "updated_by": "worker-test",
+            "reason": "daily budget gate",
+        }
+    )
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 15, 0, tzinfo=timezone.utc),
+        use_autopilot_policy=True,
+    )
+
+    assert result["autopilot_preflight"]["status"] == "blocked"
+    assert "daily_auto_approval_budget_exhausted" in result["autopilot_preflight"]["reasons"]
+    assert "daily_auto_execution_budget_exhausted" in result["autopilot_preflight"]["reasons"]
+    assert result["autopilot_preflight"]["daily_usage"]["used_buys"] == 1
+    assert result["autopilot_preflight"]["daily_usage"]["remaining_buys"] == 0
+    assert result["auto_approval"]["enabled"] is False
+    assert result["auto_execution"]["enabled"] is False
 
 
 def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> None:
