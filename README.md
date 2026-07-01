@@ -104,6 +104,7 @@ execution_mode: "research_only"
 - `/recommendations/{id}`
 - `/recommendations/{id}/evidence`
 - `/paper-orders`
+- `/paper-orders/broker-sync`
 - `/paper-orders/{order_id}/fill`
 - `/paper-orders/{order_id}/cancel`
 - `/metrics`

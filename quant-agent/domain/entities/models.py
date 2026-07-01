@@ -61,6 +61,13 @@ class PaperOrderStatus(str, Enum):
     CANCELED = "canceled"
 
 
+class BrokerOrderSyncStatus(str, Enum):
+    SUBMITTED = "submitted"
+    FILLED = "filled"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+
+
 class OrderExecutionMode(str, Enum):
     PAPER = "paper"
     LIVE = "live"
@@ -467,6 +474,56 @@ class PaperOrderFillRequest(BaseModel):
     filled_by: str = "operator"
     apply_to_ledger: bool | None = None
     note: str | None = None
+
+
+class BrokerOrderStatusSnapshot(BaseModel):
+    order_id: str | None = None
+    broker_order_id: str | None = None
+    status: BrokerOrderSyncStatus
+    fill_price: float | None = Field(default=None, gt=0)
+    filled_at: datetime | None = None
+    reason: str | None = None
+    broker_message: str | None = None
+    apply_to_ledger: bool | None = None
+
+    @model_validator(mode="after")
+    def validate_sync_payload(self) -> "BrokerOrderStatusSnapshot":
+        if not self.order_id and not self.broker_order_id:
+            raise ValueError("order_id or broker_order_id is required")
+        if self.status == BrokerOrderSyncStatus.FILLED and self.fill_price is None:
+            raise ValueError("fill_price is required for filled broker statuses")
+        return self
+
+
+class BrokerOrderSyncRequest(BaseModel):
+    broker: str = "manual"
+    checked_at: datetime | None = None
+    updated_by: str = "broker_sync"
+    apply_fills_to_ledger: bool | None = None
+    statuses: list[BrokerOrderStatusSnapshot] = Field(min_length=1)
+
+
+class BrokerOrderSyncItemResult(BaseModel):
+    order_id: str | None = None
+    broker_order_id: str | None = None
+    broker_status: BrokerOrderSyncStatus
+    action: str
+    before_status: PaperOrderStatus | None = None
+    after_status: PaperOrderStatus | None = None
+    apply_to_ledger: bool | None = None
+    message_cn: str
+
+
+class BrokerOrderSyncResult(BaseModel):
+    broker: str
+    checked_at: datetime
+    total_count: int
+    filled_count: int = 0
+    canceled_count: int = 0
+    unchanged_count: int = 0
+    skipped_count: int = 0
+    missing_count: int = 0
+    items: list[BrokerOrderSyncItemResult] = Field(default_factory=list)
 
 
 class PaperOrderRiskPlan(BaseModel):

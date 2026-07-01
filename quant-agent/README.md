@@ -144,6 +144,7 @@ Endpoints:
 - `GET /paper-orders`
 - `POST /paper-orders/risk-plan`
 - `POST /paper-orders`
+- `POST /paper-orders/broker-sync`
 - `POST /paper-orders/{order_id}/fill`
 - `POST /paper-orders/{order_id}/cancel`
 - `GET /execution/kill-switch`
@@ -159,7 +160,8 @@ paper router.
 Use `GET /paper-orders` to audit recent submitted, filled, or canceled paper orders
 separately from the trade ledger and P&L records. Submitted broker or dry-run orders
 can be resolved with `POST /paper-orders/{order_id}/fill` or
-`POST /paper-orders/{order_id}/cancel`.
+`POST /paper-orders/{order_id}/cancel`; broker pollers/webhooks can batch the same
+lifecycle updates through `POST /paper-orders/broker-sync`.
 `POST /paper-orders/risk-plan` computes the maximum and recommended order quantity
 from account equity, per-trade risk, max position size, max gross exposure, max
 sector exposure, entry price, and stop-loss distance. `POST /paper-orders` enforces
@@ -307,7 +309,10 @@ Submitted buy orders also block new automatic buys for the same recommendation o
 ticker until the order is filled or canceled, independent of the time-based dedupe
 window. Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted dry-run or
 broker-submitted order, or `POST /paper-orders/{order_id}/fill` to record a broker
-fill and release the pending-order gate.
+fill and release the pending-order gate. For adapter polling, send broker status
+snapshots to `POST /paper-orders/broker-sync`; `filled` snapshots update holdings and
+trades, while `canceled` or `rejected` snapshots resolve the submitted order as
+canceled.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
 Before moving beyond paper or live dry-run, reconcile broker positions against the

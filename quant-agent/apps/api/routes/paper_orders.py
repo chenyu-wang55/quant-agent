@@ -4,6 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import (
+    BrokerOrderSyncRequest,
+    BrokerOrderSyncResult,
     Direction,
     PaperOrder,
     PaperOrderCancelRequest,
@@ -122,6 +124,14 @@ def submit_paper_order(
     state.positions = updated_positions
     state.record_paper_order(order, recommendation=recommendation)
     return order
+
+
+@router.post("/paper-orders/broker-sync", response_model=BrokerOrderSyncResult)
+def sync_broker_order_statuses(
+    request: BrokerOrderSyncRequest,
+    state: AppState = Depends(get_app_state),
+) -> BrokerOrderSyncResult:
+    return state.sync_broker_order_statuses(request)
 
 
 @router.post("/paper-orders/{order_id}/cancel", response_model=PaperOrder)

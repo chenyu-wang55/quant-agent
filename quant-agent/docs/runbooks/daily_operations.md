@@ -70,7 +70,9 @@ the same recommendation or ticker blocks a new automatic buy until that order is
 filled or canceled, even if the time-based dedupe window has expired or is disabled.
 Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted order when it should
 no longer block automation, or `POST /paper-orders/{order_id}/fill` to record the
-broker fill and optionally apply it to the holding/trade ledger.
+broker fill and optionally apply it to the holding/trade ledger. Broker adapters can
+batch poll/webhook results into `POST /paper-orders/broker-sync`, using `filled`,
+`canceled`, or `rejected` status snapshots.
 Before enabling any real broker adapter, submit a broker/account position snapshot to
 `POST /portfolio/reconciliation`. The report is persisted and visible on the
 dashboard; any missing, extra, or quantity-mismatched position sets
@@ -291,6 +293,10 @@ curl -X POST http://localhost:8000/paper-orders/<order_id>/fill \
   -H "Content-Type: application/json" \
   -d '{"fill_price":123.45,"filled_by":"broker-webhook","apply_to_ledger":true,"note":"broker fill"}'
 
+curl -X POST http://localhost:8000/paper-orders/broker-sync \
+  -H "Content-Type: application/json" \
+  -d '{"broker":"example-broker","updated_by":"broker-poller","statuses":[{"broker_order_id":"<broker_order_id>","status":"filled","fill_price":123.45,"broker_message":"avg fill confirmed"},{"order_id":"<order_id>","status":"rejected","reason":"broker rejected"}]}'
+
 curl "http://localhost:8000/paper-orders?recommendation_id=<id>&status=filled"
 ```
 
@@ -298,7 +304,9 @@ Filled BUY paper orders automatically create/update the monitored holding and wr
 buy row to `/portfolio/trades`, so sell alerts and later recommendation attribution
 start from the approved order fill instead of a separate manual entry. For live
 dry-runs, set `apply_to_ledger=false` when using `/fill` so the audit order can be
-resolved without creating a fake holding.
+resolved without creating a fake holding. `/paper-orders/broker-sync` uses the same
+fill/cancel handlers, so it releases pending-order gates and produces the same durable
+events as manual order lifecycle updates.
 `/paper-orders/risk-plan` shows `recommended_qty`, stop-loss risk, position percentage,
 gross exposure, sector exposure, and any violations. `/paper-orders` enforces the same
 limits unless `enforce_risk_limits` is explicitly set to `false`.
@@ -377,7 +385,8 @@ ledger.
 Submitted buy orders always block duplicate automatic buys for the same recommendation
 or ticker until the order lifecycle is resolved. Resolve stale submitted orders with
 `POST /paper-orders/{order_id}/fill` when the broker confirms a fill, or
-`POST /paper-orders/{order_id}/cancel` when the order is no longer live.
+`POST /paper-orders/{order_id}/cancel` when the order is no longer live. Automated
+broker status pollers should prefer `POST /paper-orders/broker-sync`.
 When `sell_alert_cooldown_minutes` is positive, automatic sell alerts are skipped if
 the same ticker and alert reason already produced a recent sell execution.
 When `max_auto_buy_price_drift_pct` is positive, automatic buys are skipped if the

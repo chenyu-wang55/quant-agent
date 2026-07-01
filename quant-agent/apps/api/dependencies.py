@@ -16,6 +16,11 @@ from domain.entities.models import (
     AutopilotPreflightCheck,
     AutopilotPolicy,
     BacktestRunResult,
+    BrokerOrderStatusSnapshot,
+    BrokerOrderSyncItemResult,
+    BrokerOrderSyncRequest,
+    BrokerOrderSyncResult,
+    BrokerOrderSyncStatus,
     Direction,
     FeatureSnapshot,
     HoldingControlAudit,
@@ -497,6 +502,14 @@ class AppState:
             return order
         return next((item for item in self.paper_orders if item.id == order_id), None)
 
+    def get_paper_order_by_broker_order_id(self, broker_order_id: str | None) -> PaperOrder | None:
+        if not broker_order_id:
+            return None
+        order = self.paper_order_repo.get_by_broker_order_id(broker_order_id)
+        if order is not None:
+            return order
+        return next((item for item in self.paper_orders if item.broker_order_id == broker_order_id), None)
+
     def cancel_paper_order(self, order_id: str, request: PaperOrderCancelRequest) -> PaperOrder:
         order = self.get_paper_order(order_id)
         if order is None:
@@ -633,6 +646,189 @@ class AppState:
             },
         )
         return updated
+
+    def _resolve_broker_sync_order(self, snapshot: BrokerOrderStatusSnapshot) -> PaperOrder | None:
+        if snapshot.order_id:
+            order = self.get_paper_order(snapshot.order_id)
+            if order is not None:
+                return order
+        return self.get_paper_order_by_broker_order_id(snapshot.broker_order_id)
+
+    def sync_broker_order_statuses(self, request: BrokerOrderSyncRequest) -> BrokerOrderSyncResult:
+        checked_at = request.checked_at or datetime.now(timezone.utc)
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=timezone.utc)
+        else:
+            checked_at = checked_at.astimezone(timezone.utc)
+
+        items: list[BrokerOrderSyncItemResult] = []
+        filled_count = 0
+        canceled_count = 0
+        unchanged_count = 0
+        skipped_count = 0
+        missing_count = 0
+
+        for snapshot in request.statuses:
+            order = self._resolve_broker_sync_order(snapshot)
+            if order is None:
+                missing_count += 1
+                items.append(
+                    BrokerOrderSyncItemResult(
+                        order_id=snapshot.order_id,
+                        broker_order_id=snapshot.broker_order_id,
+                        broker_status=snapshot.status,
+                        action="missing",
+                        message_cn="未找到匹配的本地订单。",
+                    )
+                )
+                continue
+
+            before_status = order.status
+            apply_to_ledger = (
+                snapshot.apply_to_ledger
+                if snapshot.apply_to_ledger is not None
+                else request.apply_fills_to_ledger
+            )
+            broker_note = snapshot.broker_message or snapshot.reason
+            try:
+                if snapshot.status == BrokerOrderSyncStatus.FILLED:
+                    if order.status == PaperOrderStatus.CANCELED:
+                        skipped_count += 1
+                        items.append(
+                            BrokerOrderSyncItemResult(
+                                order_id=order.id,
+                                broker_order_id=order.broker_order_id,
+                                broker_status=snapshot.status,
+                                action="skipped",
+                                before_status=before_status,
+                                after_status=order.status,
+                                apply_to_ledger=apply_to_ledger,
+                                message_cn="本地订单已取消，跳过 broker fill。",
+                            )
+                        )
+                        continue
+                    updated = self.fill_paper_order(
+                        order.id,
+                        PaperOrderFillRequest(
+                            fill_price=float(snapshot.fill_price or 0.0),
+                            filled_at=snapshot.filled_at or checked_at,
+                            filled_by=f"{request.updated_by}:{request.broker}",
+                            apply_to_ledger=apply_to_ledger,
+                            note=broker_note,
+                        ),
+                    )
+                    action = "unchanged" if before_status == PaperOrderStatus.FILLED else "filled"
+                    if action == "filled":
+                        filled_count += 1
+                    else:
+                        unchanged_count += 1
+                    items.append(
+                        BrokerOrderSyncItemResult(
+                            order_id=updated.id,
+                            broker_order_id=updated.broker_order_id,
+                            broker_status=snapshot.status,
+                            action=action,
+                            before_status=before_status,
+                            after_status=updated.status,
+                            apply_to_ledger=apply_to_ledger,
+                            message_cn="已回写 broker 成交。" if action == "filled" else "订单已是 filled。",
+                        )
+                    )
+                elif snapshot.status in {BrokerOrderSyncStatus.CANCELED, BrokerOrderSyncStatus.REJECTED}:
+                    if order.status == PaperOrderStatus.FILLED:
+                        skipped_count += 1
+                        items.append(
+                            BrokerOrderSyncItemResult(
+                                order_id=order.id,
+                                broker_order_id=order.broker_order_id,
+                                broker_status=snapshot.status,
+                                action="skipped",
+                                before_status=before_status,
+                                after_status=order.status,
+                                message_cn="本地订单已成交，跳过 broker cancel/reject。",
+                            )
+                        )
+                        continue
+                    reason = snapshot.reason or f"{snapshot.status.value}_by_{request.broker}"
+                    if snapshot.broker_message:
+                        reason = f"{reason}; {snapshot.broker_message}"
+                    updated = self.cancel_paper_order(
+                        order.id,
+                        PaperOrderCancelRequest(
+                            reason=reason,
+                            canceled_by=f"{request.updated_by}:{request.broker}",
+                        ),
+                    )
+                    action = "unchanged" if before_status == PaperOrderStatus.CANCELED else "canceled"
+                    if action == "canceled":
+                        canceled_count += 1
+                    else:
+                        unchanged_count += 1
+                    items.append(
+                        BrokerOrderSyncItemResult(
+                            order_id=updated.id,
+                            broker_order_id=updated.broker_order_id,
+                            broker_status=snapshot.status,
+                            action=action,
+                            before_status=before_status,
+                            after_status=updated.status,
+                            message_cn="已回写 broker 取消/拒单。" if action == "canceled" else "订单已是 canceled。",
+                        )
+                    )
+                else:
+                    unchanged_count += 1
+                    items.append(
+                        BrokerOrderSyncItemResult(
+                            order_id=order.id,
+                            broker_order_id=order.broker_order_id,
+                            broker_status=snapshot.status,
+                            action="unchanged",
+                            before_status=before_status,
+                            after_status=order.status,
+                            message_cn="broker 仍显示 submitted，本地保持不变。",
+                        )
+                    )
+            except ValueError as exc:
+                current_order = self.get_paper_order(order.id)
+                skipped_count += 1
+                items.append(
+                    BrokerOrderSyncItemResult(
+                        order_id=order.id,
+                        broker_order_id=order.broker_order_id,
+                        broker_status=snapshot.status,
+                        action="skipped",
+                        before_status=before_status,
+                        after_status=current_order.status if current_order is not None else before_status,
+                        apply_to_ledger=apply_to_ledger,
+                        message_cn=str(exc),
+                    )
+                )
+
+        result = BrokerOrderSyncResult(
+            broker=request.broker,
+            checked_at=checked_at,
+            total_count=len(request.statuses),
+            filled_count=filled_count,
+            canceled_count=canceled_count,
+            unchanged_count=unchanged_count,
+            skipped_count=skipped_count,
+            missing_count=missing_count,
+            items=items,
+        )
+        self.publish_event(
+            EventType.BROKER_ORDER_SYNC,
+            {
+                "broker": result.broker,
+                "checked_at": result.checked_at.isoformat(),
+                "total_count": result.total_count,
+                "filled_count": result.filled_count,
+                "canceled_count": result.canceled_count,
+                "unchanged_count": result.unchanged_count,
+                "skipped_count": result.skipped_count,
+                "missing_count": result.missing_count,
+            },
+        )
+        return result
 
     def list_source_snapshots(self, limit: int = 50) -> list[SourceSnapshotSummary]:
         return self.source_snapshot_repo.list_summaries(limit=limit)

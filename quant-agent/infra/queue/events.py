@@ -17,6 +17,7 @@ class EventType(str, Enum):
     ORDER_ROUTED = "order_routed"
     ORDER_CANCELED = "order_canceled"
     PAPER_FILL = "paper_fill"
+    BROKER_ORDER_SYNC = "broker_order_sync"
     MODEL_EVALUATION = "model_evaluation"
     SELL_ALERT = "sell_alert"
     SELL_ROUTED = "sell_routed"

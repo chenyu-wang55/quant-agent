@@ -362,6 +362,19 @@ class PaperOrderRepository:
                 return None
             return self._to_domain(record)
 
+    def get_by_broker_order_id(self, broker_order_id: str) -> PaperOrder | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(PaperOrderRecord)
+                .where(PaperOrderRecord.broker_order_id == broker_order_id)
+                .order_by(PaperOrderRecord.submitted_at.desc())
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+            if record is None:
+                return None
+            return self._to_domain(record)
+
     def list_recent(
         self,
         limit: int = 100,
