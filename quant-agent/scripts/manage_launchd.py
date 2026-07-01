@@ -52,6 +52,10 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.max_auto_sells),
         "--rebuy-cooldown-minutes",
         str(args.rebuy_cooldown_minutes),
+        "--min-snapshot-bar-coverage",
+        str(args.min_snapshot_bar_coverage),
+        "--min-snapshot-fundamental-coverage",
+        str(args.min_snapshot_fundamental_coverage),
         "--account-equity",
         str(args.account_equity),
         "--risk-per-trade-pct",
@@ -159,6 +163,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-auto-buys", type=int, default=1)
     parser.add_argument("--max-auto-sells", type=int, default=10)
     parser.add_argument("--rebuy-cooldown-minutes", type=int, default=240)
+    parser.add_argument("--min-snapshot-bar-coverage", type=float, default=1.0)
+    parser.add_argument("--min-snapshot-fundamental-coverage", type=float, default=1.0)
     parser.add_argument("--account-equity", type=float, default=100_000.0)
     parser.add_argument("--risk-per-trade-pct", type=float, default=0.01)
     parser.add_argument("--max-position-pct", type=float, default=0.10)

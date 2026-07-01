@@ -537,6 +537,47 @@ def _auto_execution_report(*, enabled: bool, mode: str, actions: list[dict[str, 
     }
 
 
+def _snapshot_quality_gate(
+    *,
+    source_snapshot_id: str,
+    min_bar_coverage: float,
+    min_fundamental_coverage: float,
+) -> dict[str, Any]:
+    state = get_app_state()
+    summary = state.source_snapshot_repo.get_summary(source_snapshot_id)
+    if summary is None:
+        return {
+            "passed": False,
+            "source_snapshot_id": source_snapshot_id,
+            "reason": "source_snapshot_missing",
+            "reasons": ["source_snapshot_missing"],
+            "min_bar_coverage": min_bar_coverage,
+            "min_fundamental_coverage": min_fundamental_coverage,
+            "data_quality": {},
+        }
+
+    quality = summary.data_quality or {}
+    bar_coverage = float(quality.get("bar_coverage") or 0.0)
+    fundamental_coverage = float(quality.get("fundamental_coverage") or 0.0)
+    reasons: list[str] = []
+    if bar_coverage < min_bar_coverage:
+        reasons.append("snapshot_bar_coverage_below_threshold")
+    if fundamental_coverage < min_fundamental_coverage:
+        reasons.append("snapshot_fundamental_coverage_below_threshold")
+
+    return {
+        "passed": not reasons,
+        "source_snapshot_id": source_snapshot_id,
+        "reason": reasons[0] if reasons else None,
+        "reasons": reasons,
+        "min_bar_coverage": min_bar_coverage,
+        "min_fundamental_coverage": min_fundamental_coverage,
+        "bar_coverage": bar_coverage,
+        "fundamental_coverage": fundamental_coverage,
+        "data_quality": quality,
+    }
+
+
 def _apply_autopilot_policy(
     *,
     policy: AutopilotPolicy,
@@ -573,6 +614,8 @@ def _apply_autopilot_policy(
                 int(daily_usage.get("remaining_sells", policy.max_auto_sells)),
             ),
             "rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes,
+            "min_snapshot_bar_coverage": policy.min_snapshot_bar_coverage,
+            "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,
@@ -598,6 +641,8 @@ def system_cycle(
     max_auto_buys: int = 1,
     max_auto_sells: int = 10,
     rebuy_cooldown_minutes: int = 240,
+    min_snapshot_bar_coverage: float = 1.0,
+    min_snapshot_fundamental_coverage: float = 1.0,
     account_equity: float = 100_000.0,
     risk_per_trade_pct: float = 0.01,
     max_position_pct: float = 0.10,
@@ -624,6 +669,8 @@ def system_cycle(
                 "max_auto_buys": max_auto_buys,
                 "max_auto_sells": max_auto_sells,
                 "rebuy_cooldown_minutes": rebuy_cooldown_minutes,
+                "min_snapshot_bar_coverage": min_snapshot_bar_coverage,
+                "min_snapshot_fundamental_coverage": min_snapshot_fundamental_coverage,
                 "account_equity": account_equity,
                 "risk_per_trade_pct": risk_per_trade_pct,
                 "max_position_pct": max_position_pct,
@@ -642,6 +689,8 @@ def system_cycle(
         max_auto_buys = policy_values["max_auto_buys"]
         max_auto_sells = policy_values["max_auto_sells"]
         rebuy_cooldown_minutes = policy_values["rebuy_cooldown_minutes"]
+        min_snapshot_bar_coverage = policy_values["min_snapshot_bar_coverage"]
+        min_snapshot_fundamental_coverage = policy_values["min_snapshot_fundamental_coverage"]
         account_equity = policy_values["account_equity"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
         max_position_pct = policy_values["max_position_pct"]
@@ -659,12 +708,30 @@ def system_cycle(
     )
     output = state.pipeline.run(request)
     state.ingest_run_output(request, output)
+    snapshot_quality_gate = _snapshot_quality_gate(
+        source_snapshot_id=output.result.source_snapshot_id,
+        min_bar_coverage=min_snapshot_bar_coverage,
+        min_fundamental_coverage=min_snapshot_fundamental_coverage,
+    )
+    snapshot_quality_passed = bool(snapshot_quality_gate.get("passed"))
     auto_approval = (
         _auto_approve_cycle(
             recommendations=output.result.recommendations[:top_n],
             max_auto_approvals=max_auto_approvals,
             min_confidence=auto_approve_min_confidence,
             min_composite=auto_approve_min_composite,
+        )
+        if auto_approve_recommendations and snapshot_quality_passed
+        else _auto_approval_report(
+            enabled=False,
+            actions=[
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "reason": "snapshot_quality_gate_failed",
+                    "snapshot_quality_gate": snapshot_quality_gate,
+                }
+            ],
         )
         if auto_approve_recommendations
         else _auto_approval_report(enabled=False, actions=[])
@@ -687,9 +754,23 @@ def system_cycle(
             max_gross_exposure_pct=max_gross_exposure_pct,
             max_sector_exposure_pct=max_sector_exposure_pct,
         )
+        if auto_execute_approved and snapshot_quality_passed
+        else _auto_execution_report(
+            enabled=False,
+            mode=auto_execution_mode,
+            actions=[
+                {
+                    "action": "auto_execution",
+                    "status": "skipped",
+                    "reason": "snapshot_quality_gate_failed",
+                    "snapshot_quality_gate": snapshot_quality_gate,
+                }
+            ],
+        )
         if auto_execute_approved
         else _auto_execution_report(enabled=False, mode=auto_execution_mode, actions=[])
     )
+    effective_auto_execute_approved = auto_execute_approved and snapshot_quality_passed
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()
     finished_at = datetime.now(timezone.utc)
@@ -722,6 +803,7 @@ def system_cycle(
     metrics["auto_execution"] = auto_execution
     metrics["autopilot_policy"] = autopilot_policy
     metrics["autopilot_preflight"] = autopilot_preflight
+    metrics["snapshot_quality_gate"] = snapshot_quality_gate
     run = SystemCycleRun(
         id=run_id,
         started_at=started_at,
@@ -732,7 +814,7 @@ def system_cycle(
         sell_alert_count=len(alerts),
         consumed_event_count=len(consumed_events),
         pending_event_count=pending_event_count,
-        auto_execution_enabled=auto_execute_approved,
+        auto_execution_enabled=effective_auto_execute_approved,
         top_recommendations=top_recommendations,
         sell_alerts=sell_alerts,
         consumed_event_type_counts=consumed_type_counts,
@@ -752,10 +834,11 @@ def system_cycle(
         "top_recommendations": top_recommendations,
         "sell_alert_count": len(alerts),
         "sell_alerts": sell_alerts,
-        "auto_execution_enabled": auto_execute_approved,
+        "auto_execution_enabled": effective_auto_execute_approved,
         "use_autopilot_policy": use_autopilot_policy,
         "autopilot_policy": autopilot_policy,
         "autopilot_preflight": autopilot_preflight,
+        "snapshot_quality_gate": snapshot_quality_gate,
         "auto_approval": auto_approval,
         "auto_execution": auto_execution,
         "consumed_event_count": len(consumed_events),
@@ -912,6 +995,18 @@ def main() -> None:
         default=240,
         help="minutes to block automatic rebuy after the latest sell for the same ticker; set 0 to disable",
     )
+    parser.add_argument(
+        "--min-snapshot-bar-coverage",
+        type=float,
+        default=1.0,
+        help="minimum source snapshot bar coverage required before automatic approval/execution",
+    )
+    parser.add_argument(
+        "--min-snapshot-fundamental-coverage",
+        type=float,
+        default=1.0,
+        help="minimum source snapshot fundamental coverage required before automatic approval/execution",
+    )
     parser.add_argument("--account-equity", type=float, default=100_000.0, help="account equity for auto buy risk sizing")
     parser.add_argument(
         "--risk-per-trade-pct",
@@ -982,6 +1077,8 @@ def main() -> None:
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
+            min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
+            min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
             account_equity=args.account_equity,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
@@ -1006,6 +1103,8 @@ def main() -> None:
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
+            min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
+            min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
             account_equity=args.account_equity,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,

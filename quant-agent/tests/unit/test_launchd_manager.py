@@ -36,6 +36,10 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "2",
         "--rebuy-cooldown-minutes",
         "180",
+        "--min-snapshot-bar-coverage",
+        "0.95",
+        "--min-snapshot-fundamental-coverage",
+        "0.9",
     )
 
     plist = manage_launchd.build_plist(args, home=tmp_path)
@@ -61,6 +65,10 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "60.0" in round_trip["ProgramArguments"]
     assert "--rebuy-cooldown-minutes" in round_trip["ProgramArguments"]
     assert "180" in round_trip["ProgramArguments"]
+    assert "--min-snapshot-bar-coverage" in round_trip["ProgramArguments"]
+    assert "0.95" in round_trip["ProgramArguments"]
+    assert "--min-snapshot-fundamental-coverage" in round_trip["ProgramArguments"]
+    assert "0.9" in round_trip["ProgramArguments"]
     assert str(tmp_path / "Library" / "Logs") in round_trip["StandardOutPath"]
 
 

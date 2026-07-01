@@ -184,6 +184,64 @@ def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
     assert state.list_paper_orders(limit=1, recommendation_id=buy_action["recommendation_id"])
 
 
+def test_system_cycle_blocks_auto_actions_when_snapshot_quality_gate_fails(monkeypatch) -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
+        state.close_holding(holding.ticker)
+
+    original_get_summary = state.source_snapshot_repo.get_summary
+
+    def degraded_summary(source_snapshot_id: str):
+        summary = original_get_summary(source_snapshot_id)
+        if summary is None:
+            return None
+        quality = dict(summary.data_quality)
+        quality.update(
+            {
+                "status": "partial",
+                "bar_coverage": 0.5,
+                "missing_bar_count": 1,
+                "missing_bar_tickers": [summary.tickers[0]],
+            }
+        )
+        return summary.model_copy(update={"data_quality": quality})
+
+    monkeypatch.setattr(state.source_snapshot_repo, "get_summary", degraded_summary)
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        auto_approve_recommendations=True,
+        auto_approve_min_confidence=0.5,
+        auto_approve_min_composite=0.0,
+        max_auto_approvals=1,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        rebuy_cooldown_minutes=0,
+        min_snapshot_bar_coverage=1.0,
+        min_snapshot_fundamental_coverage=1.0,
+    )
+
+    assert result["snapshot_quality_gate"]["passed"] is False
+    assert "snapshot_bar_coverage_below_threshold" in result["snapshot_quality_gate"]["reasons"]
+    assert result["auto_execution_enabled"] is False
+    assert result["auto_approval"]["enabled"] is False
+    assert result["auto_approval"]["approved_count"] == 0
+    assert result["auto_approval"]["actions"][0]["reason"] == "snapshot_quality_gate_failed"
+    assert result["auto_execution"]["enabled"] is False
+    assert result["auto_execution"]["buy_order_count"] == 0
+    assert result["auto_execution"]["actions"][0]["reason"] == "snapshot_quality_gate_failed"
+    latest_run = state.list_system_cycle_runs(limit=1)[0]
+    assert latest_run.auto_execution_enabled is False
+    assert latest_run.metrics["snapshot_quality_gate"]["passed"] is False
+
+
 def test_system_cycle_uses_persisted_autopilot_policy() -> None:
     state = get_app_state()
     state.reset()

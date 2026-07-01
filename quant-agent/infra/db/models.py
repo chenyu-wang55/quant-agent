@@ -303,6 +303,8 @@ class AutopilotPolicyRecord(Base):
     max_daily_auto_buys: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     max_daily_auto_sells: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     rebuy_cooldown_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=240)
+    min_snapshot_bar_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    min_snapshot_fundamental_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     account_equity: Mapped[float] = mapped_column(Float, nullable=False, default=100_000.0)
     risk_per_trade_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.01)
     max_position_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.10)

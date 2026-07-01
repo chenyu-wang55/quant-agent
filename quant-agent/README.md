@@ -57,6 +57,12 @@ The run output reports this under `universe_summary.snapshot.operation`:
 - `replayed`: provider data was loaded from an existing snapshot
 - `disabled`: the pipeline was constructed without a snapshot repository
 
+Snapshot summaries include `data_quality` coverage metrics for captured bars,
+fundamentals, and news/event tickers. `system_cycle` checks this before any
+automatic approval or automatic execution. If bar or fundamental coverage is below
+the configured threshold, the cycle records `snapshot_quality_gate.passed=false`
+and skips automatic actions for that run.
+
 Snapshot audit and replay endpoints:
 - `GET /source-snapshots`
 - `GET /source-snapshots/{source_snapshot_id}`
@@ -224,11 +230,13 @@ python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
 Automatic execution is conservative: sell alerts are handled first, buys only route
 recommendations that already have an `approved` decision, and all actions still pass
 through the existing kill switch, risk sizing, paper-order, live-dry-run, sell audit,
-trade-ledger, and event gates. Use `--auto-execution-mode live_dry_run` to validate
+trade-ledger, event, and source-snapshot quality gates. Use `--auto-execution-mode live_dry_run` to validate
 broker-shaped orders without mutating holdings. Use `--max-auto-buys`,
 `--max-auto-sells`, `--account-equity`, `--risk-per-trade-pct`,
 `--max-position-pct`, `--max-gross-exposure-pct`, and
-`--max-sector-exposure-pct` to tune the automatic sizing envelope.
+`--max-sector-exposure-pct` to tune the automatic sizing envelope. Use
+`--min-snapshot-bar-coverage` and `--min-snapshot-fundamental-coverage` to tune the
+minimum data completeness required before automatic actions can run.
 
 Full autopilot mode also auto-approves qualifying recommendations before execution:
 

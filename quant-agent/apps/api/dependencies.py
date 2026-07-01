@@ -1078,6 +1078,21 @@ class AppState:
                 details={"rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes},
             )
         )
+        checks.append(
+            AutopilotPreflightCheck(
+                name="snapshot_quality_policy",
+                status="pass",
+                message_cn=(
+                    "自动审批/执行前要求本轮行情快照 bars 覆盖率 "
+                    f">= {policy.min_snapshot_bar_coverage:.0%}，基本面覆盖率 "
+                    f">= {policy.min_snapshot_fundamental_coverage:.0%}。"
+                ),
+                details={
+                    "min_snapshot_bar_coverage": policy.min_snapshot_bar_coverage,
+                    "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
+                },
+            )
+        )
 
         if can_auto_approve or can_auto_execute:
             status = "ready"

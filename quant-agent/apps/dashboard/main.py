@@ -731,6 +731,8 @@ def dashboard_home() -> str:
         <div class="field"><label for="autopilotDailyBuys">Daily Buys</label><input id="autopilotDailyBuys" type="number" min="0" step="1" value="3" /></div>
         <div class="field"><label for="autopilotDailySells">Daily Sells</label><input id="autopilotDailySells" type="number" min="0" step="1" value="10" /></div>
         <div class="field"><label for="autopilotCooldownMinutes">Rebuy Cooldown</label><input id="autopilotCooldownMinutes" type="number" min="0" step="15" value="240" /></div>
+        <div class="field"><label for="autopilotMinSnapshotBars">Min Bars %</label><input id="autopilotMinSnapshotBars" type="number" min="0" max="100" step="1" value="100" /></div>
+        <div class="field"><label for="autopilotMinSnapshotFundamentals">Min Fundamentals %</label><input id="autopilotMinSnapshotFundamentals" type="number" min="0" max="100" step="1" value="100" /></div>
         <div class="field"><label for="autopilotAccountEquity">Policy Equity</label><input id="autopilotAccountEquity" type="number" min="1" step="1000" value="100000" /></div>
         <div class="field"><label for="autopilotRiskPct">Policy Risk %</label><input id="autopilotRiskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
         <div class="field"><label for="autopilotMaxPositionPct">Policy Position %</label><input id="autopilotMaxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
@@ -1056,6 +1058,8 @@ def dashboard_home() -> str:
       setFieldValue('autopilotDailyBuys', currentAutopilotPolicy.max_daily_auto_buys ?? 3);
       setFieldValue('autopilotDailySells', currentAutopilotPolicy.max_daily_auto_sells ?? 10);
       setFieldValue('autopilotCooldownMinutes', currentAutopilotPolicy.rebuy_cooldown_minutes ?? 240);
+      setFieldValue('autopilotMinSnapshotBars', pctInputValue(currentAutopilotPolicy.min_snapshot_bar_coverage, 1.0));
+      setFieldValue('autopilotMinSnapshotFundamentals', pctInputValue(currentAutopilotPolicy.min_snapshot_fundamental_coverage, 1.0));
       setFieldValue('autopilotAccountEquity', currentAutopilotPolicy.account_equity ?? 100000);
       setFieldValue('autopilotRiskPct', pctInputValue(currentAutopilotPolicy.risk_per_trade_pct, 0.01));
       setFieldValue('autopilotMaxPositionPct', pctInputValue(currentAutopilotPolicy.max_position_pct, 0.10));
@@ -1081,6 +1085,8 @@ def dashboard_home() -> str:
         max_daily_auto_buys: Math.max(0, Math.floor(numberValue('autopilotDailyBuys') ?? 3)),
         max_daily_auto_sells: Math.max(0, Math.floor(numberValue('autopilotDailySells') ?? 10)),
         rebuy_cooldown_minutes: Math.max(0, Math.floor(numberValue('autopilotCooldownMinutes') ?? 240)),
+        min_snapshot_bar_coverage: Math.max(0, Math.min(100, numberValue('autopilotMinSnapshotBars') ?? 100)) / 100,
+        min_snapshot_fundamental_coverage: Math.max(0, Math.min(100, numberValue('autopilotMinSnapshotFundamentals') ?? 100)) / 100,
         account_equity: numberValue('autopilotAccountEquity') ?? 100000,
         risk_per_trade_pct: (numberValue('autopilotRiskPct') ?? 1) / 100,
         max_position_pct: (numberValue('autopilotMaxPositionPct') ?? 10) / 100,
