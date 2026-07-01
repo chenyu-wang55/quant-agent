@@ -991,6 +991,7 @@ class AutopilotPolicyRepository:
                 rebuy_cooldown_minutes=policy.rebuy_cooldown_minutes,
                 min_snapshot_bar_coverage=policy.min_snapshot_bar_coverage,
                 min_snapshot_fundamental_coverage=policy.min_snapshot_fundamental_coverage,
+                max_snapshot_bar_age_minutes=policy.max_snapshot_bar_age_minutes,
                 max_open_risk_pct=policy.max_open_risk_pct,
                 account_equity=policy.account_equity,
                 risk_per_trade_pct=policy.risk_per_trade_pct,
@@ -1037,6 +1038,7 @@ class AutopilotPolicyRepository:
                 "min_snapshot_fundamental_coverage",
                 1.0,
             ),
+            max_snapshot_bar_age_minutes=getattr(record, "max_snapshot_bar_age_minutes", 4320),
             max_open_risk_pct=getattr(record, "max_open_risk_pct", 0.06),
             account_equity=record.account_equity,
             risk_per_trade_pct=record.risk_per_trade_pct,
@@ -1120,11 +1122,17 @@ class SourceSnapshotRepository:
                 if minutes is not None
             },
             "data_quality": self._build_snapshot_quality(
+                as_of=as_of,
                 tickers=tickers,
                 bar_tickers=list(bars_by_ticker),
                 fundamental_tickers=list(fundamentals_by_ticker),
                 event_tickers=event_tickers,
                 event_count=len(events_list),
+                latest_bar_at=max(
+                    (bar.timestamp for bars in bars_by_ticker.values() for bar in bars),
+                    default=None,
+                ),
+                latest_event_at=max((event.published_at for event in events_list), default=None),
             ),
         }
 
@@ -1228,6 +1236,14 @@ class SourceSnapshotRepository:
             .select_from(SnapshotEventRecord)
             .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
         )
+        latest_bar_at = session.scalar(
+            select(func.max(SnapshotMarketBarRecord.timestamp))
+            .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
+        )
+        latest_event_at = session.scalar(
+            select(func.max(SnapshotEventRecord.published_at))
+            .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
+        )
         recommendation_count = session.scalar(
             select(func.count())
             .select_from(RecommendationRecord)
@@ -1274,23 +1290,42 @@ class SourceSnapshotRepository:
             event_count=int(event_count or 0),
             recommendation_count=int(recommendation_count or 0),
             data_quality=self._build_snapshot_quality(
+                as_of=_ensure_utc(record.as_of),
                 tickers=tickers,
                 bar_tickers=bar_tickers,
                 fundamental_tickers=fundamental_tickers,
                 event_tickers=event_tickers,
                 event_count=int(event_count or 0),
+                latest_bar_at=_ensure_utc(latest_bar_at) if latest_bar_at is not None else None,
+                latest_event_at=_ensure_utc(latest_event_at) if latest_event_at is not None else None,
             ),
         )
 
     @staticmethod
     def _build_snapshot_quality(
         *,
+        as_of: datetime,
         tickers: Iterable[str],
         bar_tickers: Iterable[str],
         fundamental_tickers: Iterable[str],
         event_tickers: Iterable[str],
         event_count: int,
+        latest_bar_at: datetime | None = None,
+        latest_event_at: datetime | None = None,
     ) -> dict[str, object]:
+        as_of_utc = _ensure_utc(as_of)
+        latest_bar_utc = _ensure_utc(latest_bar_at) if latest_bar_at is not None else None
+        latest_event_utc = _ensure_utc(latest_event_at) if latest_event_at is not None else None
+        latest_bar_age_minutes = (
+            max(0, int((as_of_utc - latest_bar_utc).total_seconds() // 60))
+            if latest_bar_utc is not None
+            else None
+        )
+        latest_event_age_minutes = (
+            max(0, int((as_of_utc - latest_event_utc).total_seconds() // 60))
+            if latest_event_utc is not None
+            else None
+        )
         universe_set = {ticker.upper() for ticker in tickers}
         bar_set = {ticker.upper() for ticker in bar_tickers}
         fundamental_set = {ticker.upper() for ticker in fundamental_tickers}
@@ -1315,6 +1350,12 @@ class SourceSnapshotRepository:
             "fundamental_ticker_count": fundamental_covered,
             "event_ticker_count": event_covered,
             "event_count": int(event_count),
+            "latest_bar_at": latest_bar_utc.isoformat() if latest_bar_utc is not None else None,
+            "latest_bar_age_minutes": latest_bar_age_minutes,
+            "latest_event_at": (
+                latest_event_utc.isoformat() if latest_event_utc is not None else None
+            ),
+            "latest_event_age_minutes": latest_event_age_minutes,
             "bar_coverage": round(bar_covered / expected_count, 6) if expected_count else 0.0,
             "fundamental_coverage": (
                 round(fundamental_covered / expected_count, 6) if expected_count else 0.0

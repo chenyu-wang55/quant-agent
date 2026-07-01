@@ -117,6 +117,8 @@ def test_source_snapshot_records_and_replays_without_live_provider() -> None:
     assert metadata_quality["status"] == "complete"
     assert metadata_quality["bar_coverage"] == 1.0
     assert metadata_quality["fundamental_coverage"] == 1.0
+    assert metadata_quality["latest_bar_at"]
+    assert metadata_quality["latest_bar_age_minutes"] >= 0
     assert metadata_quality["captured_ticker_count"] > 0
     assert "SPY" in metadata_quality["extra_bar_tickers"]
     assert summary_quality["status"] == metadata_quality["status"]

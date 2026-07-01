@@ -57,11 +57,11 @@ The run output reports this under `universe_summary.snapshot.operation`:
 - `replayed`: provider data was loaded from an existing snapshot
 - `disabled`: the pipeline was constructed without a snapshot repository
 
-Snapshot summaries include `data_quality` coverage metrics for captured bars,
+Snapshot summaries include `data_quality` coverage and freshness metrics for captured bars,
 fundamentals, and news/event tickers. `system_cycle` checks this before any
 automatic approval or automatic execution. If bar or fundamental coverage is below
-the configured threshold, the cycle records `snapshot_quality_gate.passed=false`
-and skips automatic actions for that run.
+the configured threshold, or the latest captured bar is too old, the cycle records
+`snapshot_quality_gate.passed=false` and skips automatic actions for that run.
 
 Snapshot audit and replay endpoints:
 - `GET /source-snapshots`
@@ -238,7 +238,9 @@ broker-shaped orders without mutating holdings. Use `--max-auto-buys`,
 `--max-open-risk-pct` to stop new automatic buys when current portfolio risk to stop
 is already too high while still allowing automatic sell alerts to run. Use
 `--min-snapshot-bar-coverage` and `--min-snapshot-fundamental-coverage` to tune the
-minimum data completeness required before automatic actions can run.
+minimum data completeness required before automatic actions can run. Use
+`--max-snapshot-bar-age-minutes` to tune how old the latest captured bar may be
+before automatic actions are blocked.
 
 Full autopilot mode also auto-approves qualifying recommendations before execution:
 

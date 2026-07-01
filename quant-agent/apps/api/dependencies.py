@@ -1085,11 +1085,13 @@ class AppState:
                 message_cn=(
                     "自动审批/执行前要求本轮行情快照 bars 覆盖率 "
                     f">= {policy.min_snapshot_bar_coverage:.0%}，基本面覆盖率 "
-                    f">= {policy.min_snapshot_fundamental_coverage:.0%}。"
+                    f">= {policy.min_snapshot_fundamental_coverage:.0%}，"
+                    f"最新 bar 年龄 <= {policy.max_snapshot_bar_age_minutes} 分钟。"
                 ),
                 details={
                     "min_snapshot_bar_coverage": policy.min_snapshot_bar_coverage,
                     "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
+                    "max_snapshot_bar_age_minutes": policy.max_snapshot_bar_age_minutes,
                 },
             )
         )

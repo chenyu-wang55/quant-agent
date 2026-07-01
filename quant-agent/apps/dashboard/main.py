@@ -733,6 +733,7 @@ def dashboard_home() -> str:
         <div class="field"><label for="autopilotCooldownMinutes">Rebuy Cooldown</label><input id="autopilotCooldownMinutes" type="number" min="0" step="15" value="240" /></div>
         <div class="field"><label for="autopilotMinSnapshotBars">Min Bars %</label><input id="autopilotMinSnapshotBars" type="number" min="0" max="100" step="1" value="100" /></div>
         <div class="field"><label for="autopilotMinSnapshotFundamentals">Min Fundamentals %</label><input id="autopilotMinSnapshotFundamentals" type="number" min="0" max="100" step="1" value="100" /></div>
+        <div class="field"><label for="autopilotMaxSnapshotBarAge">Max Bar Age</label><input id="autopilotMaxSnapshotBarAge" type="number" min="0" step="60" value="4320" /></div>
         <div class="field"><label for="autopilotAccountEquity">Policy Equity</label><input id="autopilotAccountEquity" type="number" min="1" step="1000" value="100000" /></div>
         <div class="field"><label for="autopilotMaxOpenRiskPct">Policy Open Risk %</label><input id="autopilotMaxOpenRiskPct" type="number" min="0" max="100" step="0.5" value="6" /></div>
         <div class="field"><label for="autopilotRiskPct">Policy Risk %</label><input id="autopilotRiskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
@@ -1061,6 +1062,7 @@ def dashboard_home() -> str:
       setFieldValue('autopilotCooldownMinutes', currentAutopilotPolicy.rebuy_cooldown_minutes ?? 240);
       setFieldValue('autopilotMinSnapshotBars', pctInputValue(currentAutopilotPolicy.min_snapshot_bar_coverage, 1.0));
       setFieldValue('autopilotMinSnapshotFundamentals', pctInputValue(currentAutopilotPolicy.min_snapshot_fundamental_coverage, 1.0));
+      setFieldValue('autopilotMaxSnapshotBarAge', currentAutopilotPolicy.max_snapshot_bar_age_minutes ?? 4320);
       setFieldValue('autopilotAccountEquity', currentAutopilotPolicy.account_equity ?? 100000);
       setFieldValue('autopilotMaxOpenRiskPct', pctInputValue(currentAutopilotPolicy.max_open_risk_pct, 0.06));
       setFieldValue('autopilotRiskPct', pctInputValue(currentAutopilotPolicy.risk_per_trade_pct, 0.01));
@@ -1089,6 +1091,7 @@ def dashboard_home() -> str:
         rebuy_cooldown_minutes: Math.max(0, Math.floor(numberValue('autopilotCooldownMinutes') ?? 240)),
         min_snapshot_bar_coverage: Math.max(0, Math.min(100, numberValue('autopilotMinSnapshotBars') ?? 100)) / 100,
         min_snapshot_fundamental_coverage: Math.max(0, Math.min(100, numberValue('autopilotMinSnapshotFundamentals') ?? 100)) / 100,
+        max_snapshot_bar_age_minutes: Math.max(0, Math.floor(numberValue('autopilotMaxSnapshotBarAge') ?? 4320)),
         account_equity: numberValue('autopilotAccountEquity') ?? 100000,
         max_open_risk_pct: Math.max(0, Math.min(100, numberValue('autopilotMaxOpenRiskPct') ?? 6)) / 100,
         risk_per_trade_pct: (numberValue('autopilotRiskPct') ?? 1) / 100,

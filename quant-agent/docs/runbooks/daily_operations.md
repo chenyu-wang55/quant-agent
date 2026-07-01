@@ -52,10 +52,12 @@ at `GET /operations/system-runs`. Automatic action details are included under
 are also persisted in the run metrics JSON.
 Automatic approval and execution also require the current source snapshot to pass
 `snapshot_quality_gate`. By default the worker requires 100% captured bar coverage
-and 100% captured fundamental coverage for the tickers that were actually modeled.
+and 100% captured fundamental coverage for the tickers that were actually modeled,
+plus a latest captured bar no older than 4320 minutes.
 Tune this with `--min-snapshot-bar-coverage`, `--min-snapshot-fundamental-coverage`,
-or the matching autopilot policy fields. If the gate fails, the cycle records the
-failed coverage and skips automatic actions without changing holdings.
+`--max-snapshot-bar-age-minutes`, or the matching autopilot policy fields. If the
+gate fails, the cycle records the failed coverage/freshness and skips automatic
+actions without changing holdings.
 Automatic buys also pass `portfolio_risk_gate` after any sell alerts have run. When
 current open risk to stop is above `--max-open-risk-pct` or the matching policy field,
 the cycle skips new buys but still allows sell alerts to reduce risk.

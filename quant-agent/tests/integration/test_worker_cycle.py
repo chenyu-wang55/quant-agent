@@ -242,6 +242,55 @@ def test_system_cycle_blocks_auto_actions_when_snapshot_quality_gate_fails(monke
     assert latest_run.metrics["snapshot_quality_gate"]["passed"] is False
 
 
+def test_system_cycle_blocks_auto_actions_when_snapshot_bars_are_stale(monkeypatch) -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
+        state.close_holding(holding.ticker)
+
+    original_get_summary = state.source_snapshot_repo.get_summary
+
+    def stale_summary(source_snapshot_id: str):
+        summary = original_get_summary(source_snapshot_id)
+        if summary is None:
+            return None
+        quality = dict(summary.data_quality)
+        quality.update(
+            {
+                "latest_bar_age_minutes": 600,
+            }
+        )
+        return summary.model_copy(update={"data_quality": quality})
+
+    monkeypatch.setattr(state.source_snapshot_repo, "get_summary", stale_summary)
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        auto_approve_recommendations=True,
+        auto_approve_min_confidence=0.5,
+        auto_approve_min_composite=0.0,
+        max_auto_approvals=1,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        rebuy_cooldown_minutes=0,
+        max_snapshot_bar_age_minutes=60,
+    )
+
+    assert result["snapshot_quality_gate"]["passed"] is False
+    assert "snapshot_bar_age_above_threshold" in result["snapshot_quality_gate"]["reasons"]
+    assert result["snapshot_quality_gate"]["latest_bar_age_minutes"] == 600
+    assert result["snapshot_quality_gate"]["max_bar_age_minutes"] == 60
+    assert result["auto_execution_enabled"] is False
+    assert result["auto_approval"]["enabled"] is False
+    assert result["auto_execution"]["enabled"] is False
+
+
 def test_system_cycle_blocks_auto_buy_when_open_risk_exceeds_policy_limit() -> None:
     state = get_app_state()
     state.reset()

@@ -583,6 +583,7 @@ def _snapshot_quality_gate(
     source_snapshot_id: str,
     min_bar_coverage: float,
     min_fundamental_coverage: float,
+    max_bar_age_minutes: int,
 ) -> dict[str, Any]:
     state = get_app_state()
     summary = state.source_snapshot_repo.get_summary(source_snapshot_id)
@@ -594,17 +595,23 @@ def _snapshot_quality_gate(
             "reasons": ["source_snapshot_missing"],
             "min_bar_coverage": min_bar_coverage,
             "min_fundamental_coverage": min_fundamental_coverage,
+            "max_bar_age_minutes": max_bar_age_minutes,
             "data_quality": {},
         }
 
     quality = summary.data_quality or {}
     bar_coverage = float(quality.get("bar_coverage") or 0.0)
     fundamental_coverage = float(quality.get("fundamental_coverage") or 0.0)
+    latest_bar_age_minutes = quality.get("latest_bar_age_minutes")
     reasons: list[str] = []
     if bar_coverage < min_bar_coverage:
         reasons.append("snapshot_bar_coverage_below_threshold")
     if fundamental_coverage < min_fundamental_coverage:
         reasons.append("snapshot_fundamental_coverage_below_threshold")
+    if latest_bar_age_minutes is None:
+        reasons.append("snapshot_latest_bar_missing")
+    elif int(latest_bar_age_minutes) > max_bar_age_minutes:
+        reasons.append("snapshot_bar_age_above_threshold")
 
     return {
         "passed": not reasons,
@@ -613,8 +620,10 @@ def _snapshot_quality_gate(
         "reasons": reasons,
         "min_bar_coverage": min_bar_coverage,
         "min_fundamental_coverage": min_fundamental_coverage,
+        "max_bar_age_minutes": max_bar_age_minutes,
         "bar_coverage": bar_coverage,
         "fundamental_coverage": fundamental_coverage,
+        "latest_bar_age_minutes": latest_bar_age_minutes,
         "data_quality": quality,
     }
 
@@ -657,6 +666,7 @@ def _apply_autopilot_policy(
             "rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes,
             "min_snapshot_bar_coverage": policy.min_snapshot_bar_coverage,
             "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
+            "max_snapshot_bar_age_minutes": policy.max_snapshot_bar_age_minutes,
             "max_open_risk_pct": policy.max_open_risk_pct,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
@@ -685,6 +695,7 @@ def system_cycle(
     rebuy_cooldown_minutes: int = 240,
     min_snapshot_bar_coverage: float = 1.0,
     min_snapshot_fundamental_coverage: float = 1.0,
+    max_snapshot_bar_age_minutes: int = 4320,
     account_equity: float = 100_000.0,
     max_open_risk_pct: float = 0.06,
     risk_per_trade_pct: float = 0.01,
@@ -714,6 +725,7 @@ def system_cycle(
                 "rebuy_cooldown_minutes": rebuy_cooldown_minutes,
                 "min_snapshot_bar_coverage": min_snapshot_bar_coverage,
                 "min_snapshot_fundamental_coverage": min_snapshot_fundamental_coverage,
+                "max_snapshot_bar_age_minutes": max_snapshot_bar_age_minutes,
                 "account_equity": account_equity,
                 "max_open_risk_pct": max_open_risk_pct,
                 "risk_per_trade_pct": risk_per_trade_pct,
@@ -735,6 +747,7 @@ def system_cycle(
         rebuy_cooldown_minutes = policy_values["rebuy_cooldown_minutes"]
         min_snapshot_bar_coverage = policy_values["min_snapshot_bar_coverage"]
         min_snapshot_fundamental_coverage = policy_values["min_snapshot_fundamental_coverage"]
+        max_snapshot_bar_age_minutes = policy_values["max_snapshot_bar_age_minutes"]
         account_equity = policy_values["account_equity"]
         max_open_risk_pct = policy_values["max_open_risk_pct"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
@@ -757,6 +770,7 @@ def system_cycle(
         source_snapshot_id=output.result.source_snapshot_id,
         min_bar_coverage=min_snapshot_bar_coverage,
         min_fundamental_coverage=min_snapshot_fundamental_coverage,
+        max_bar_age_minutes=max_snapshot_bar_age_minutes,
     )
     snapshot_quality_passed = bool(snapshot_quality_gate.get("passed"))
     auto_approval = (
@@ -1053,6 +1067,12 @@ def main() -> None:
         default=1.0,
         help="minimum source snapshot fundamental coverage required before automatic approval/execution",
     )
+    parser.add_argument(
+        "--max-snapshot-bar-age-minutes",
+        type=int,
+        default=4320,
+        help="maximum age of the latest captured source snapshot bar before automatic approval/execution is blocked",
+    )
     parser.add_argument("--account-equity", type=float, default=100_000.0, help="account equity for auto buy risk sizing")
     parser.add_argument(
         "--max-open-risk-pct",
@@ -1131,6 +1151,7 @@ def main() -> None:
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
+            max_snapshot_bar_age_minutes=args.max_snapshot_bar_age_minutes,
             account_equity=args.account_equity,
             max_open_risk_pct=args.max_open_risk_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
@@ -1158,6 +1179,7 @@ def main() -> None:
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
+            max_snapshot_bar_age_minutes=args.max_snapshot_bar_age_minutes,
             account_equity=args.account_equity,
             max_open_risk_pct=args.max_open_risk_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
