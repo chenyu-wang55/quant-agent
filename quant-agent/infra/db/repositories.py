@@ -355,6 +355,13 @@ class PaperOrderRepository:
             session.merge(record)
             session.commit()
 
+    def get(self, order_id: str) -> PaperOrder | None:
+        with SessionLocal() as session:
+            record = session.get(PaperOrderRecord, order_id)
+            if record is None:
+                return None
+            return self._to_domain(record)
+
     def list_recent(
         self,
         limit: int = 100,
@@ -372,32 +379,33 @@ class PaperOrderRepository:
                 stmt = stmt.where(PaperOrderRecord.status == status.value)
             stmt = stmt.order_by(PaperOrderRecord.submitted_at.desc()).limit(limit)
             records = list(session.execute(stmt).scalars())
-        return [
-            PaperOrder(
-                id=record.id,
-                recommendation_id=record.recommendation_id,
-                source_snapshot_id=getattr(record, "source_snapshot_id", None),
-                strategy_config_id=getattr(record, "strategy_config_id", None),
-                side=Direction(record.side),
-                qty=record.qty,
-                limit_price=record.limit_price,
-                execution_mode=OrderExecutionMode(getattr(record, "execution_mode", "paper")),
-                dry_run=bool(getattr(record, "dry_run", 0)),
-                broker_order_id=getattr(record, "broker_order_id", None),
-                adapter_message=getattr(record, "adapter_message", None),
-                submitted_at=_ensure_utc(record.submitted_at),
-                status=PaperOrderStatus(record.status),
-                simulated_fill_price=record.simulated_fill_price,
-                filled_at=_ensure_utc(record.filled_at) if record.filled_at else None,
-                cancel_reason=record.cancel_reason,
-            )
-            for record in records
-        ]
+        return [self._to_domain(record) for record in records]
 
     def clear_all(self) -> None:
         with SessionLocal() as session:
             session.execute(delete(PaperOrderRecord))
             session.commit()
+
+    @staticmethod
+    def _to_domain(record: PaperOrderRecord) -> PaperOrder:
+        return PaperOrder(
+            id=record.id,
+            recommendation_id=record.recommendation_id,
+            source_snapshot_id=getattr(record, "source_snapshot_id", None),
+            strategy_config_id=getattr(record, "strategy_config_id", None),
+            side=Direction(record.side),
+            qty=record.qty,
+            limit_price=record.limit_price,
+            execution_mode=OrderExecutionMode(getattr(record, "execution_mode", "paper")),
+            dry_run=bool(getattr(record, "dry_run", 0)),
+            broker_order_id=getattr(record, "broker_order_id", None),
+            adapter_message=getattr(record, "adapter_message", None),
+            submitted_at=_ensure_utc(record.submitted_at),
+            status=PaperOrderStatus(record.status),
+            simulated_fill_price=record.simulated_fill_price,
+            filled_at=_ensure_utc(record.filled_at) if record.filled_at else None,
+            cancel_reason=record.cancel_reason,
+        )
 
 
 class PositionRepository:

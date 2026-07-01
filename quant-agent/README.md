@@ -301,7 +301,8 @@ keeps fast unattended loops from duplicating broker submissions.
 has drifted beyond the allowed entry-zone tolerance, reducing stale-snapshot chasing.
 Submitted buy orders also block new automatic buys for the same recommendation or
 ticker until the order is filled or canceled, independent of the time-based dedupe
-window.
+window. Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted dry-run or
+broker-submitted order and release the pending-order gate.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
 Before moving beyond paper or live dry-run, reconcile broker positions against the

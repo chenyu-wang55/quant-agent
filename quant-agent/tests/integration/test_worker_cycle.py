@@ -13,6 +13,7 @@ from domain.entities.models import (
     ManualBuyRequest,
     ManualSellRequest,
     OrderExecutionMode,
+    PaperOrderCancelRequest,
     PaperOrderStatus,
     SystemCycleRun,
 )
@@ -669,6 +670,39 @@ def test_system_cycle_skips_pending_duplicate_buy_order() -> None:
     assert buy_action["pending_buy_order_gate"]["pending_order_id"] == first_order.id
     current_order_ids = {order.id for order in state.list_paper_orders(limit=1000)}
     assert current_order_ids == existing_order_ids
+
+    canceled = state.cancel_paper_order(
+        first_order.id,
+        PaperOrderCancelRequest(reason="release pending gate", canceled_by="worker-test"),
+    )
+    assert canceled.status == PaperOrderStatus.CANCELED
+
+    third = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        auto_approve_recommendations=True,
+        auto_approve_min_confidence=0.0,
+        auto_approve_min_composite=0.0,
+        max_auto_approvals=1,
+        auto_execute_approved=True,
+        auto_execution_mode="live_dry_run",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        order_dedupe_minutes=0,
+        rebuy_cooldown_minutes=0,
+        max_snapshot_bar_age_minutes=999999,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
+    )
+
+    assert third["auto_execution"]["buy_order_count"] == 1
+    third_buy_action = next(
+        item for item in third["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert third_buy_action["status"] == "executed"
+    assert third_buy_action["order_id"] != first_order.id
 
 
 def test_system_cycle_skips_recent_duplicate_filled_buy_order() -> None:

@@ -15,6 +15,7 @@ class EventType(str, Enum):
     FEATURE_RECOMPUTATION = "feature_recomputation"
     RECOMMENDATION_READY = "recommendation_ready"
     ORDER_ROUTED = "order_routed"
+    ORDER_CANCELED = "order_canceled"
     PAPER_FILL = "paper_fill"
     MODEL_EVALUATION = "model_evaluation"
     SELL_ALERT = "sell_alert"

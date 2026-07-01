@@ -6,6 +6,7 @@ from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import (
     Direction,
     PaperOrder,
+    PaperOrderCancelRequest,
     PaperOrderRequest,
     PaperOrderRiskPlan,
     PaperOrderStatus,
@@ -96,6 +97,13 @@ def submit_paper_order(
             detail="Recommendation must be approved before paper-order routing",
         )
 
+    pending_buy_gate = state.get_pending_buy_order_gate(
+        ticker=recommendation.ticker,
+        recommendation_id=request.recommendation_id,
+    )
+    if request.side == Direction.BUY and not pending_buy_gate["passed"]:
+        raise HTTPException(status_code=409, detail=pending_buy_gate)
+
     risk_plan = state.build_paper_order_risk_plan(recommendation=recommendation, request=request)
     if request.enforce_risk_limits and not risk_plan.is_within_limits:
         raise HTTPException(status_code=409, detail=risk_plan.model_dump(mode="json"))
@@ -113,3 +121,17 @@ def submit_paper_order(
     state.positions = updated_positions
     state.record_paper_order(order, recommendation=recommendation)
     return order
+
+
+@router.post("/paper-orders/{order_id}/cancel", response_model=PaperOrder)
+def cancel_paper_order(
+    order_id: str,
+    request: PaperOrderCancelRequest,
+    state: AppState = Depends(get_app_state),
+) -> PaperOrder:
+    try:
+        return state.cancel_paper_order(order_id=order_id, request=request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="paper order not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

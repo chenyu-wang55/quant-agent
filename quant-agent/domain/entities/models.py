@@ -456,6 +456,11 @@ class PaperOrderRequest(BaseModel):
     enforce_risk_limits: bool = True
 
 
+class PaperOrderCancelRequest(BaseModel):
+    reason: str | None = None
+    canceled_by: str = "operator"
+
+
 class PaperOrderRiskPlan(BaseModel):
     recommendation_id: str
     ticker: str

@@ -68,6 +68,8 @@ policy field.
 Automatic buys also pass `pending_buy_order_gate`: an existing submitted buy order for
 the same recommendation or ticker blocks a new automatic buy until that order is
 filled or canceled, even if the time-based dedupe window has expired or is disabled.
+Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted order when it should
+no longer block automation.
 Before enabling any real broker adapter, submit a broker/account position snapshot to
 `POST /portfolio/reconciliation`. The report is persisted and visible on the
 dashboard; any missing, extra, or quantity-mismatched position sets
@@ -366,7 +368,8 @@ When `order_dedupe_minutes` is positive, automatic buys are skipped if the same
 recommendation or ticker already has a recent non-canceled buy order in the paper-order
 ledger.
 Submitted buy orders always block duplicate automatic buys for the same recommendation
-or ticker until the order lifecycle is resolved.
+or ticker until the order lifecycle is resolved. Cancel stale submitted orders with
+`POST /paper-orders/{order_id}/cancel`.
 When `sell_alert_cooldown_minutes` is positive, automatic sell alerts are skipped if
 the same ticker and alert reason already produced a recent sell execution.
 When `max_auto_buy_price_drift_pct` is positive, automatic buys are skipped if the

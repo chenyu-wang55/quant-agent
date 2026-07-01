@@ -32,6 +32,7 @@ from domain.entities.models import (
     OperationControlCenter,
     OperationRecommendationCandidate,
     PaperOrder,
+    PaperOrderCancelRequest,
     PaperOrderRequest,
     PaperOrderRiskPlan,
     PaperOrderStatus,
@@ -488,6 +489,57 @@ class AppState:
         ]
         merged = sorted([*orders, *memory_only], key=lambda order: order.submitted_at, reverse=True)
         return merged[:limit]
+
+    def get_paper_order(self, order_id: str) -> PaperOrder | None:
+        order = self.paper_order_repo.get(order_id)
+        if order is not None:
+            return order
+        return next((item for item in self.paper_orders if item.id == order_id), None)
+
+    def cancel_paper_order(self, order_id: str, request: PaperOrderCancelRequest) -> PaperOrder:
+        order = self.get_paper_order(order_id)
+        if order is None:
+            raise KeyError("paper order not found")
+        if order.status == PaperOrderStatus.CANCELED:
+            return order
+        if order.status != PaperOrderStatus.SUBMITTED:
+            raise ValueError("Only submitted orders can be canceled")
+
+        reason = request.reason or f"canceled_by:{request.canceled_by}"
+        updated = order.model_copy(
+            update={
+                "status": PaperOrderStatus.CANCELED,
+                "cancel_reason": reason,
+                "adapter_message": (
+                    f"{order.adapter_message}; canceled_by={request.canceled_by}"
+                    if order.adapter_message
+                    else f"canceled_by={request.canceled_by}"
+                ),
+            }
+        )
+        self.paper_order_repo.add(updated)
+        for index, item in enumerate(self.paper_orders):
+            if item.id == updated.id:
+                self.paper_orders[index] = updated
+                break
+        else:
+            self.paper_orders.append(updated)
+        self.metrics_store.inc("paper_orders_canceled")
+        self.publish_event(
+            EventType.ORDER_CANCELED,
+            {
+                "order_id": updated.id,
+                "recommendation_id": updated.recommendation_id,
+                "source_snapshot_id": updated.source_snapshot_id,
+                "strategy_config_id": updated.strategy_config_id,
+                "execution_mode": updated.execution_mode.value,
+                "dry_run": updated.dry_run,
+                "broker_order_id": updated.broker_order_id,
+                "cancel_reason": updated.cancel_reason,
+                "canceled_by": request.canceled_by,
+            },
+        )
+        return updated
 
     def list_source_snapshots(self, limit: int = 50) -> list[SourceSnapshotSummary]:
         return self.source_snapshot_repo.list_summaries(limit=limit)

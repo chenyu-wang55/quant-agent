@@ -841,7 +841,7 @@ def dashboard_home() -> str:
         <span class="small">审批后的下单、成交和取消状态审计轨迹</span>
       </div>
       <table>
-        <thead><tr><th>时间</th><th>Order</th><th>推荐</th><th>Exec</th><th>方向</th><th>数量</th><th>限价</th><th>状态</th><th>成交价</th><th>Adapter</th></tr></thead>
+        <thead><tr><th>时间</th><th>Order</th><th>推荐</th><th>Exec</th><th>方向</th><th>数量</th><th>限价</th><th>状态</th><th>成交价</th><th>Adapter</th><th>操作</th></tr></thead>
         <tbody id="orderBody"></tbody>
       </table>
     </div>
@@ -1790,7 +1790,7 @@ def dashboard_home() -> str:
     function renderPaperOrders(items) {
       const body = document.getElementById("orderBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="10" class="small">暂无纸单记录。</td></tr>';
+        body.innerHTML = '<tr><td colspan="11" class="small">暂无纸单记录。</td></tr>';
         return;
       }
       body.innerHTML = items.map((order) => `
@@ -1805,8 +1805,23 @@ def dashboard_home() -> str:
           <td>${esc(order.status)}</td>
           <td>${fmtNullableNum(order.simulated_fill_price, 2)}</td>
           <td class="small" title="${esc(order.broker_order_id || '')}">${esc(order.adapter_message || '-')}</td>
+          <td>${order.status === 'submitted' ? `<button class="btn-mini danger" onclick="cancelPaperOrder('${esc(order.id)}')">取消</button>` : '<span class="small">-</span>'}</td>
         </tr>
       `).join("");
+    }
+
+    async function cancelPaperOrder(orderId) {
+      const reason = window.prompt('取消原因', 'operator_cancel') || 'operator_cancel';
+      try {
+        const order = await postJson(`/paper-orders/${encodeURIComponent(orderId)}/cancel`, {
+          reason,
+          canceled_by: 'dashboard',
+        });
+        setActionStatus(`已取消订单 ${shortId(order.id, 12)}；${order.cancel_reason || reason}`);
+        await loadData(false);
+      } catch (err) {
+        setActionStatus(`取消订单失败: ${err.message || err}`, true);
+      }
     }
 
     function renderTrades(items) {

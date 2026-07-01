@@ -399,6 +399,23 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert holdings_after_dry_run.status_code == 200
     assert all(item["ticker"] != recommendation["ticker"] for item in holdings_after_dry_run.json())
 
+    duplicate_pending_order = client.post(
+        "/paper-orders",
+        json={"recommendation_id": recommendation_id, "side": "BUY", "qty": 10, "limit_price": None},
+        headers=AUTH_HEADERS,
+    )
+    assert duplicate_pending_order.status_code == 409
+    assert duplicate_pending_order.json()["detail"]["reason"] == "same_recommendation_pending_buy_order"
+
+    canceled_live_dry_run = client.post(
+        f"/paper-orders/{live_dry_run_data['id']}/cancel",
+        json={"reason": "integration cancel dry-run", "canceled_by": "qa"},
+        headers=AUTH_HEADERS,
+    )
+    assert canceled_live_dry_run.status_code == 200
+    assert canceled_live_dry_run.json()["status"] == "canceled"
+    assert canceled_live_dry_run.json()["cancel_reason"] == "integration cancel dry-run"
+
     order_response = client.post(
         "/paper-orders",
         json={"recommendation_id": recommendation_id, "side": "BUY", "qty": 10, "limit_price": None},
@@ -410,3 +427,11 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert order_response.json()["dry_run"] is False
     assert order_response.json()["source_snapshot_id"] == recommendation["source_snapshot_id"]
     assert order_response.json()["strategy_config_id"] == recommendation["strategy_config_id"]
+
+    cancel_filled_order = client.post(
+        f"/paper-orders/{order_response.json()['id']}/cancel",
+        json={"reason": "cannot cancel fill", "canceled_by": "qa"},
+        headers=AUTH_HEADERS,
+    )
+    assert cancel_filled_order.status_code == 409
+    assert "Only submitted orders can be canceled" in cancel_filled_order.json()["detail"]
