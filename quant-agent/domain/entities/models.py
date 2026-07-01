@@ -461,6 +461,14 @@ class PaperOrderCancelRequest(BaseModel):
     canceled_by: str = "operator"
 
 
+class PaperOrderFillRequest(BaseModel):
+    fill_price: float = Field(gt=0)
+    filled_at: datetime | None = None
+    filled_by: str = "operator"
+    apply_to_ledger: bool | None = None
+    note: str | None = None
+
+
 class PaperOrderRiskPlan(BaseModel):
     recommendation_id: str
     ticker: str

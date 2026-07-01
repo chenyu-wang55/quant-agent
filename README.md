@@ -104,6 +104,8 @@ execution_mode: "research_only"
 - `/recommendations/{id}`
 - `/recommendations/{id}/evidence`
 - `/paper-orders`
+- `/paper-orders/{order_id}/fill`
+- `/paper-orders/{order_id}/cancel`
 - `/metrics`
 
 新增持仓监控与卖出提醒能力：

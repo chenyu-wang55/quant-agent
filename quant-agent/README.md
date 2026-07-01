@@ -144,6 +144,8 @@ Endpoints:
 - `GET /paper-orders`
 - `POST /paper-orders/risk-plan`
 - `POST /paper-orders`
+- `POST /paper-orders/{order_id}/fill`
+- `POST /paper-orders/{order_id}/cancel`
 - `GET /execution/kill-switch`
 - `POST /execution/kill-switch`
 - `GET /execution/autopilot-policy`
@@ -155,7 +157,9 @@ the trade ledger, so approved dashboard buys flow into stop/take-profit alerts a
 later P&L attribution. Manual buys remain available for trades placed outside the
 paper router.
 Use `GET /paper-orders` to audit recent submitted, filled, or canceled paper orders
-separately from the trade ledger and P&L records.
+separately from the trade ledger and P&L records. Submitted broker or dry-run orders
+can be resolved with `POST /paper-orders/{order_id}/fill` or
+`POST /paper-orders/{order_id}/cancel`.
 `POST /paper-orders/risk-plan` computes the maximum and recommended order quantity
 from account equity, per-trade risk, max position size, max gross exposure, max
 sector exposure, entry price, and stop-loss distance. `POST /paper-orders` enforces
@@ -302,7 +306,8 @@ has drifted beyond the allowed entry-zone tolerance, reducing stale-snapshot cha
 Submitted buy orders also block new automatic buys for the same recommendation or
 ticker until the order is filled or canceled, independent of the time-based dedupe
 window. Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted dry-run or
-broker-submitted order and release the pending-order gate.
+broker-submitted order, or `POST /paper-orders/{order_id}/fill` to record a broker
+fill and release the pending-order gate.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
 Before moving beyond paper or live dry-run, reconcile broker positions against the

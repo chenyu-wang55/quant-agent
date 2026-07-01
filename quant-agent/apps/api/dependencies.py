@@ -33,6 +33,7 @@ from domain.entities.models import (
     OperationRecommendationCandidate,
     PaperOrder,
     PaperOrderCancelRequest,
+    PaperOrderFillRequest,
     PaperOrderRequest,
     PaperOrderRiskPlan,
     PaperOrderStatus,
@@ -537,6 +538,98 @@ class AppState:
                 "broker_order_id": updated.broker_order_id,
                 "cancel_reason": updated.cancel_reason,
                 "canceled_by": request.canceled_by,
+            },
+        )
+        return updated
+
+    def fill_paper_order(self, order_id: str, request: PaperOrderFillRequest) -> PaperOrder:
+        order = self.get_paper_order(order_id)
+        if order is None:
+            raise KeyError("paper order not found")
+        if order.status == PaperOrderStatus.FILLED:
+            return order
+        if order.status == PaperOrderStatus.CANCELED:
+            raise ValueError("Canceled orders cannot be filled")
+        if order.status != PaperOrderStatus.SUBMITTED:
+            raise ValueError("Only submitted orders can be filled")
+
+        apply_to_ledger = (not order.dry_run) if request.apply_to_ledger is None else request.apply_to_ledger
+        recommendation = self._get_recommendation_by_id(order.recommendation_id)
+        if apply_to_ledger:
+            if order.side != Direction.BUY:
+                raise ValueError("Only BUY fills can be applied to the holding ledger")
+            if recommendation is None:
+                raise ValueError("Recommendation id not found for ledger application")
+
+        filled_at = request.filled_at or datetime.now(timezone.utc)
+        if filled_at.tzinfo is None:
+            filled_at = filled_at.replace(tzinfo=timezone.utc)
+        else:
+            filled_at = filled_at.astimezone(timezone.utc)
+
+        fill_note_parts = [
+            f"filled_by={request.filled_by}",
+            f"apply_to_ledger={str(apply_to_ledger).lower()}",
+        ]
+        if request.note:
+            fill_note_parts.append(f"note={request.note}")
+        fill_message = "; ".join(fill_note_parts)
+
+        updated = order.model_copy(
+            update={
+                "status": PaperOrderStatus.FILLED,
+                "simulated_fill_price": round(request.fill_price, 6),
+                "filled_at": filled_at,
+                "cancel_reason": None,
+                "adapter_message": (
+                    f"{order.adapter_message}; {fill_message}"
+                    if order.adapter_message
+                    else fill_message
+                ),
+            }
+        )
+        self.paper_order_repo.add(updated)
+        for index, item in enumerate(self.paper_orders):
+            if item.id == updated.id:
+                self.paper_orders[index] = updated
+                break
+        else:
+            self.paper_orders.append(updated)
+
+        if apply_to_ledger and recommendation is not None:
+            ledger_note = f"paper_order_fill:{updated.id}"
+            if request.note:
+                ledger_note = f"{ledger_note}; {request.note}"
+            self.record_manual_buy(
+                ManualBuyRequest(
+                    ticker=recommendation.ticker,
+                    qty=updated.qty,
+                    buy_price=updated.simulated_fill_price or request.fill_price,
+                    source_recommendation_id=recommendation.id,
+                    note=ledger_note,
+                    stop_loss=recommendation.stop_loss,
+                    take_profit1=recommendation.tp1,
+                    take_profit2=recommendation.tp2,
+                    bought_at=updated.filled_at,
+                )
+            )
+
+        self.metrics_store.inc("paper_order_fills")
+        self.publish_event(
+            EventType.PAPER_FILL,
+            {
+                "order_id": updated.id,
+                "recommendation_id": updated.recommendation_id,
+                "source_snapshot_id": updated.source_snapshot_id,
+                "strategy_config_id": updated.strategy_config_id,
+                "execution_mode": updated.execution_mode.value,
+                "dry_run": updated.dry_run,
+                "status": updated.status.value,
+                "fill_price": updated.simulated_fill_price,
+                "filled_at": updated.filled_at.isoformat() if updated.filled_at else None,
+                "filled_by": request.filled_by,
+                "apply_to_ledger": apply_to_ledger,
+                "broker_order_id": updated.broker_order_id,
             },
         )
         return updated

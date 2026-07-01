@@ -1805,9 +1805,36 @@ def dashboard_home() -> str:
           <td>${esc(order.status)}</td>
           <td>${fmtNullableNum(order.simulated_fill_price, 2)}</td>
           <td class="small" title="${esc(order.broker_order_id || '')}">${esc(order.adapter_message || '-')}</td>
-          <td>${order.status === 'submitted' ? `<button class="btn-mini danger" onclick="cancelPaperOrder('${esc(order.id)}')">取消</button>` : '<span class="small">-</span>'}</td>
+          <td>${order.status === 'submitted' ? `
+            <button class="btn-mini" onclick="fillPaperOrder('${esc(order.id)}', '${esc(order.simulated_fill_price || order.limit_price || '')}')">成交</button>
+            <button class="btn-mini danger" onclick="cancelPaperOrder('${esc(order.id)}')">取消</button>
+          ` : '<span class="small">-</span>'}</td>
         </tr>
       `).join("");
+    }
+
+    async function fillPaperOrder(orderId, defaultPrice) {
+      const suggestedPrice = Number(defaultPrice) > 0 ? String(defaultPrice) : '';
+      const rawPrice = window.prompt('成交价', suggestedPrice);
+      if (rawPrice === null) return;
+      const fillPrice = Number(rawPrice);
+      if (!Number.isFinite(fillPrice) || fillPrice <= 0) {
+        setActionStatus('成交价必须大于 0', true);
+        return;
+      }
+      const applyToLedger = window.confirm('写入持仓和交易流水？dry-run 通常选择取消。');
+      try {
+        const order = await postJson(`/paper-orders/${encodeURIComponent(orderId)}/fill`, {
+          fill_price: fillPrice,
+          filled_by: 'dashboard',
+          apply_to_ledger: applyToLedger,
+        });
+        const ledgerText = applyToLedger ? '已写入持仓/流水' : '仅更新订单状态';
+        setActionStatus(`已回写成交 ${shortId(order.id, 12)} @ ${fmtNum(order.simulated_fill_price, 2)}；${ledgerText}`);
+        await loadData(false);
+      } catch (err) {
+        setActionStatus(`回写成交失败: ${err.message || err}`, true);
+      }
     }
 
     async function cancelPaperOrder(orderId) {

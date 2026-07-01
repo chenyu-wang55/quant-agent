@@ -69,7 +69,8 @@ Automatic buys also pass `pending_buy_order_gate`: an existing submitted buy ord
 the same recommendation or ticker blocks a new automatic buy until that order is
 filled or canceled, even if the time-based dedupe window has expired or is disabled.
 Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted order when it should
-no longer block automation.
+no longer block automation, or `POST /paper-orders/{order_id}/fill` to record the
+broker fill and optionally apply it to the holding/trade ledger.
 Before enabling any real broker adapter, submit a broker/account position snapshot to
 `POST /portfolio/reconciliation`. The report is persisted and visible on the
 dashboard; any missing, extra, or quantity-mismatched position sets
@@ -286,12 +287,18 @@ curl -X POST http://localhost:8000/paper-orders \
   -H "Content-Type: application/json" \
   -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"execution_mode":"live","dry_run":true,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10,"max_gross_exposure_pct":1.0,"max_sector_exposure_pct":0.30}'
 
+curl -X POST http://localhost:8000/paper-orders/<order_id>/fill \
+  -H "Content-Type: application/json" \
+  -d '{"fill_price":123.45,"filled_by":"broker-webhook","apply_to_ledger":true,"note":"broker fill"}'
+
 curl "http://localhost:8000/paper-orders?recommendation_id=<id>&status=filled"
 ```
 
 Filled BUY paper orders automatically create/update the monitored holding and write a
 buy row to `/portfolio/trades`, so sell alerts and later recommendation attribution
-start from the approved order fill instead of a separate manual entry.
+start from the approved order fill instead of a separate manual entry. For live
+dry-runs, set `apply_to_ledger=false` when using `/fill` so the audit order can be
+resolved without creating a fake holding.
 `/paper-orders/risk-plan` shows `recommended_qty`, stop-loss risk, position percentage,
 gross exposure, sector exposure, and any violations. `/paper-orders` enforces the same
 limits unless `enforce_risk_limits` is explicitly set to `false`.
@@ -368,8 +375,9 @@ When `order_dedupe_minutes` is positive, automatic buys are skipped if the same
 recommendation or ticker already has a recent non-canceled buy order in the paper-order
 ledger.
 Submitted buy orders always block duplicate automatic buys for the same recommendation
-or ticker until the order lifecycle is resolved. Cancel stale submitted orders with
-`POST /paper-orders/{order_id}/cancel`.
+or ticker until the order lifecycle is resolved. Resolve stale submitted orders with
+`POST /paper-orders/{order_id}/fill` when the broker confirms a fill, or
+`POST /paper-orders/{order_id}/cancel` when the order is no longer live.
 When `sell_alert_cooldown_minutes` is positive, automatic sell alerts are skipped if
 the same ticker and alert reason already produced a recent sell execution.
 When `max_auto_buy_price_drift_pct` is positive, automatic buys are skipped if the

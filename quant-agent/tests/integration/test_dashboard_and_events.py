@@ -102,6 +102,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "推荐归因" in dashboard_home.text
     assert "renderPaperOrders" in dashboard_home.text
     assert "cancelPaperOrder" in dashboard_home.text
+    assert "fillPaperOrder" in dashboard_home.text
     assert "renderTrades" in dashboard_home.text
     assert "renderHoldingControlAudits" in dashboard_home.text
     assert "renderSellExecutions" in dashboard_home.text
@@ -133,6 +134,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "Dry-run完成" in dashboard_home.text
     assert "/paper-orders" in dashboard_home.text
     assert "/paper-orders/risk-plan" in dashboard_home.text
+    assert "/fill" in dashboard_home.text
     assert "adapter_message" in dashboard_home.text
     assert "holdingControlAuditCount" in dashboard_home.text
     assert "sellExecutionCount" in dashboard_home.text

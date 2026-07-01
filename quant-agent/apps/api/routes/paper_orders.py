@@ -7,6 +7,7 @@ from domain.entities.models import (
     Direction,
     PaperOrder,
     PaperOrderCancelRequest,
+    PaperOrderFillRequest,
     PaperOrderRequest,
     PaperOrderRiskPlan,
     PaperOrderStatus,
@@ -131,6 +132,20 @@ def cancel_paper_order(
 ) -> PaperOrder:
     try:
         return state.cancel_paper_order(order_id=order_id, request=request)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="paper order not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/paper-orders/{order_id}/fill", response_model=PaperOrder)
+def fill_paper_order(
+    order_id: str,
+    request: PaperOrderFillRequest,
+    state: AppState = Depends(get_app_state),
+) -> PaperOrder:
+    try:
+        return state.fill_paper_order(order_id=order_id, request=request)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="paper order not found") from exc
     except ValueError as exc:

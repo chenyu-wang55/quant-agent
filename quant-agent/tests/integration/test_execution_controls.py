@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
+from domain.entities.models import Direction, OrderExecutionMode, PaperOrder, PaperOrderStatus
 
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
@@ -407,8 +411,50 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert duplicate_pending_order.status_code == 409
     assert duplicate_pending_order.json()["detail"]["reason"] == "same_recommendation_pending_buy_order"
 
-    canceled_live_dry_run = client.post(
+    filled_live_dry_run = client.post(
+        f"/paper-orders/{live_dry_run_data['id']}/fill",
+        json={
+            "fill_price": recommendation["entry_zone_high"],
+            "filled_by": "qa",
+            "apply_to_ledger": False,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert filled_live_dry_run.status_code == 200
+    filled_live_dry_run_data = filled_live_dry_run.json()
+    assert filled_live_dry_run_data["status"] == "filled"
+    assert filled_live_dry_run_data["simulated_fill_price"] == recommendation["entry_zone_high"]
+    assert filled_live_dry_run_data["filled_at"] is not None
+    assert "filled_by=qa" in filled_live_dry_run_data["adapter_message"]
+    holdings_after_fill = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings_after_fill.status_code == 200
+    assert all(item["ticker"] != recommendation["ticker"] for item in holdings_after_fill.json())
+
+    cancel_filled_dry_run = client.post(
         f"/paper-orders/{live_dry_run_data['id']}/cancel",
+        json={"reason": "cannot cancel fill", "canceled_by": "qa"},
+        headers=AUTH_HEADERS,
+    )
+    assert cancel_filled_dry_run.status_code == 409
+    assert "Only submitted orders can be canceled" in cancel_filled_dry_run.json()["detail"]
+
+    second_live_dry_run = client.post(
+        "/paper-orders",
+        json={
+            "recommendation_id": recommendation_id,
+            "side": "BUY",
+            "qty": 5,
+            "limit_price": None,
+            "execution_mode": "live",
+            "dry_run": True,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert second_live_dry_run.status_code == 200
+    assert second_live_dry_run.json()["status"] == "submitted"
+
+    canceled_live_dry_run = client.post(
+        f"/paper-orders/{second_live_dry_run.json()['id']}/cancel",
         json={"reason": "integration cancel dry-run", "canceled_by": "qa"},
         headers=AUTH_HEADERS,
     )
@@ -435,3 +481,103 @@ def test_kill_switch_blocks_paper_orders() -> None:
     )
     assert cancel_filled_order.status_code == 409
     assert "Only submitted orders can be canceled" in cancel_filled_order.json()["detail"]
+
+
+def test_submitted_paper_order_fill_can_apply_to_ledger() -> None:
+    state = get_app_state()
+    state.reset()
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "submitted-fill-ledger-test",
+            "as_of": "2026-04-10T09:30:00Z",
+            "snapshot_mode": "point_in_time",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "max_name_weight": 0.10,
+                "max_sector_weight": 0.30,
+                "max_gross_exposure": 1.0,
+                "max_correlated_cluster_weight": 0.35,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1000000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100000000,
+                "allowed_sectors": [],
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    recommendation_id = recommendation["id"]
+    state.close_holding(recommendation["ticker"])
+
+    recommendation_obj = state.recommendations_by_id[recommendation_id]
+    order = PaperOrder(
+        id=f"broker_fill_{uuid4().hex[:10]}",
+        recommendation_id=recommendation_id,
+        source_snapshot_id=recommendation["source_snapshot_id"],
+        strategy_config_id=recommendation["strategy_config_id"],
+        side=Direction.BUY,
+        qty=3,
+        limit_price=None,
+        execution_mode=OrderExecutionMode.LIVE,
+        dry_run=False,
+        broker_order_id="broker_order_fill_test",
+        adapter_message="broker accepted",
+        submitted_at=datetime.now(timezone.utc),
+        status=PaperOrderStatus.SUBMITTED,
+    )
+    state.record_paper_order(order, recommendation=recommendation_obj)
+
+    fill_price = recommendation["entry_zone_high"]
+    fill_response = client.post(
+        f"/paper-orders/{order.id}/fill",
+        json={
+            "fill_price": fill_price,
+            "filled_by": "broker-webhook",
+            "note": "broker fill",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert fill_response.status_code == 200
+    filled = fill_response.json()
+    assert filled["status"] == "filled"
+    assert filled["simulated_fill_price"] == fill_price
+    assert filled["filled_at"] is not None
+    assert "filled_by=broker-webhook" in filled["adapter_message"]
+    assert "apply_to_ledger=true" in filled["adapter_message"]
+
+    persisted = state.get_paper_order(order.id)
+    assert persisted is not None
+    assert persisted.status == PaperOrderStatus.FILLED
+    assert persisted.simulated_fill_price == fill_price
+
+    holdings = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings.status_code == 200
+    holding = next(item for item in holdings.json() if item["ticker"] == recommendation["ticker"])
+    assert holding["qty"] == 3
+    assert holding["avg_buy_price"] == fill_price
+    assert holding["source_recommendation_id"] == recommendation_id
+
+    trades = client.get(
+        f"/portfolio/trades?ticker={recommendation['ticker']}&side=buy",
+        headers=AUTH_HEADERS,
+    )
+    assert trades.status_code == 200
+    assert any(
+        item["source_recommendation_id"] == recommendation_id
+        and item["price"] == fill_price
+        and (item["reason"] or "").startswith(f"paper_order_fill:{order.id}")
+        for item in trades.json()
+    )
