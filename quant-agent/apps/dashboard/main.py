@@ -731,6 +731,7 @@ def dashboard_home() -> str:
         <div class="field"><label for="autopilotDailyBuys">Daily Buys</label><input id="autopilotDailyBuys" type="number" min="0" step="1" value="3" /></div>
         <div class="field"><label for="autopilotDailySells">Daily Sells</label><input id="autopilotDailySells" type="number" min="0" step="1" value="10" /></div>
         <div class="field"><label for="autopilotOrderDedupeMinutes">Order Dedupe</label><input id="autopilotOrderDedupeMinutes" type="number" min="0" step="60" value="1440" /></div>
+        <div class="field"><label for="autopilotSellAlertCooldownMinutes">Sell Cooldown</label><input id="autopilotSellAlertCooldownMinutes" type="number" min="0" step="15" value="60" /></div>
         <div class="field"><label for="autopilotCooldownMinutes">Rebuy Cooldown</label><input id="autopilotCooldownMinutes" type="number" min="0" step="15" value="240" /></div>
         <div class="field"><label for="autopilotMinSnapshotBars">Min Bars %</label><input id="autopilotMinSnapshotBars" type="number" min="0" max="100" step="1" value="100" /></div>
         <div class="field"><label for="autopilotMinSnapshotFundamentals">Min Fundamentals %</label><input id="autopilotMinSnapshotFundamentals" type="number" min="0" max="100" step="1" value="100" /></div>
@@ -1062,6 +1063,7 @@ def dashboard_home() -> str:
       setFieldValue('autopilotDailyBuys', currentAutopilotPolicy.max_daily_auto_buys ?? 3);
       setFieldValue('autopilotDailySells', currentAutopilotPolicy.max_daily_auto_sells ?? 10);
       setFieldValue('autopilotOrderDedupeMinutes', currentAutopilotPolicy.order_dedupe_minutes ?? 1440);
+      setFieldValue('autopilotSellAlertCooldownMinutes', currentAutopilotPolicy.sell_alert_cooldown_minutes ?? 60);
       setFieldValue('autopilotCooldownMinutes', currentAutopilotPolicy.rebuy_cooldown_minutes ?? 240);
       setFieldValue('autopilotMinSnapshotBars', pctInputValue(currentAutopilotPolicy.min_snapshot_bar_coverage, 1.0));
       setFieldValue('autopilotMinSnapshotFundamentals', pctInputValue(currentAutopilotPolicy.min_snapshot_fundamental_coverage, 1.0));
@@ -1093,6 +1095,7 @@ def dashboard_home() -> str:
         max_daily_auto_buys: Math.max(0, Math.floor(numberValue('autopilotDailyBuys') ?? 3)),
         max_daily_auto_sells: Math.max(0, Math.floor(numberValue('autopilotDailySells') ?? 10)),
         order_dedupe_minutes: Math.max(0, Math.floor(numberValue('autopilotOrderDedupeMinutes') ?? 1440)),
+        sell_alert_cooldown_minutes: Math.max(0, Math.floor(numberValue('autopilotSellAlertCooldownMinutes') ?? 60)),
         rebuy_cooldown_minutes: Math.max(0, Math.floor(numberValue('autopilotCooldownMinutes') ?? 240)),
         min_snapshot_bar_coverage: Math.max(0, Math.min(100, numberValue('autopilotMinSnapshotBars') ?? 100)) / 100,
         min_snapshot_fundamental_coverage: Math.max(0, Math.min(100, numberValue('autopilotMinSnapshotFundamentals') ?? 100)) / 100,

@@ -129,6 +129,8 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
         max_auto_buys=1,
         max_auto_sells=0,
         rebuy_cooldown_minutes=0,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
     )
 
     assert result["auto_execution_enabled"] is True
@@ -173,6 +175,8 @@ def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
         max_auto_buys=1,
         max_auto_sells=0,
         rebuy_cooldown_minutes=0,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
     )
 
     assert result["auto_approval"]["enabled"] is True
@@ -351,6 +355,7 @@ def test_system_cycle_blocks_auto_buy_when_open_risk_exceeds_policy_limit() -> N
         rebuy_cooldown_minutes=0,
         account_equity=100_000,
         max_open_risk_pct=0.01,
+        max_daily_realized_loss_pct=1.0,
     )
 
     gate = result["auto_execution"]["portfolio_risk_gate"]
@@ -541,6 +546,8 @@ def test_system_cycle_uses_persisted_autopilot_policy() -> None:
             "max_auto_approvals": 1,
             "max_auto_buys": 1,
             "max_auto_sells": 0,
+            "account_equity": 100_000_000,
+            "max_daily_realized_loss_pct": 1.0,
             "rebuy_cooldown_minutes": 0,
             "updated_by": "worker-test",
             "reason": "policy-driven-cycle",
@@ -585,6 +592,8 @@ def test_system_cycle_autopilot_preflight_blocks_on_kill_switch() -> None:
             "max_auto_approvals": 1,
             "max_auto_buys": 1,
             "max_auto_sells": 1,
+            "account_equity": 100_000_000,
+            "max_daily_realized_loss_pct": 1.0,
             "updated_by": "worker-test",
             "reason": "kill switch preflight",
         }
@@ -622,6 +631,8 @@ def test_system_cycle_autopilot_market_hours_gate_blocks_auto_execution() -> Non
             "max_auto_approvals": 0,
             "max_auto_buys": 1,
             "max_auto_sells": 1,
+            "account_equity": 100_000_000,
+            "max_daily_realized_loss_pct": 1.0,
             "updated_by": "worker-test",
             "reason": "market hours gate",
         }
@@ -684,6 +695,8 @@ def test_system_cycle_autopilot_daily_budget_blocks_after_usage() -> None:
             "max_daily_auto_approvals": 1,
             "max_daily_auto_buys": 1,
             "max_daily_auto_sells": 0,
+            "account_equity": 100_000_000,
+            "max_daily_realized_loss_pct": 1.0,
             "updated_by": "worker-test",
             "reason": "daily budget gate",
         }
@@ -730,6 +743,8 @@ def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> N
         auto_execution_mode="paper",
         max_auto_buys=1,
         max_auto_sells=1,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
     )
 
     assert result["auto_execution"]["sell_order_count"] == 1
@@ -744,6 +759,72 @@ def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> N
     assert holding is not None
     assert holding.status == HoldingStatus.CLOSED
     assert state.list_sell_execution_audits(limit=1, ticker="AAPL")[0].id == sell_action["sell_execution_id"]
+
+
+def test_system_cycle_skips_repeated_sell_alert_during_cooldown() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    state.close_holding("AAPL")
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker="AAPL",
+            qty=8,
+            buy_price=100,
+            stop_loss=1,
+            take_profit1=2,
+            take_profit2=999999,
+            note="worker cycle sell cooldown setup",
+        )
+    )
+
+    first = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=0,
+        max_auto_sells=1,
+        sell_alert_cooldown_minutes=0,
+        max_snapshot_bar_age_minutes=999999,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
+    )
+
+    assert first["auto_execution"]["sell_order_count"] == 1
+    first_sell = next(item for item in first["auto_execution"]["actions"] if item["action"] == "sell_alert")
+    assert first_sell["status"] == "executed"
+    assert first_sell["reason_code"] == "take_profit1_hit"
+    assert first_sell["sold_qty"] == 4
+    holding_after_first = state.holding_watch_repo.get("AAPL")
+    assert holding_after_first is not None
+    assert holding_after_first.status == HoldingStatus.OPEN
+    assert holding_after_first.qty == 4
+
+    second = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=0,
+        max_auto_sells=1,
+        sell_alert_cooldown_minutes=60,
+        max_snapshot_bar_age_minutes=999999,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
+    )
+
+    assert second["auto_execution"]["sell_order_count"] == 0
+    second_sell = next(item for item in second["auto_execution"]["actions"] if item["action"] == "sell_alert")
+    assert second_sell["status"] == "skipped"
+    assert second_sell["reason"] == "sell_alert_cooldown_active"
+    assert second_sell["cooldown"]["last_sell_execution_id"] == first_sell["sell_execution_id"]
+    holding_after_second = state.holding_watch_repo.get("AAPL")
+    assert holding_after_second is not None
+    assert holding_after_second.status == HoldingStatus.OPEN
+    assert holding_after_second.qty == 4
 
 
 def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
@@ -803,6 +884,8 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
         max_auto_buys=1,
         max_auto_sells=0,
         rebuy_cooldown_minutes=240,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
     )
 
     assert sell_result.holding.status == HoldingStatus.CLOSED

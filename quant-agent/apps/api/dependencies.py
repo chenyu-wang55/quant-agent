@@ -1119,6 +1119,18 @@ class AppState:
         )
         checks.append(
             AutopilotPreflightCheck(
+                name="sell_alert_cooldown",
+                status="pass" if policy.sell_alert_cooldown_minutes > 0 else "warn",
+                message_cn=(
+                    f"同一股票同一卖出提醒在 {policy.sell_alert_cooldown_minutes} 分钟内禁止自动重复卖出。"
+                    if policy.sell_alert_cooldown_minutes > 0
+                    else "未启用自动卖出提醒冷却期。"
+                ),
+                details={"sell_alert_cooldown_minutes": policy.sell_alert_cooldown_minutes},
+            )
+        )
+        checks.append(
+            AutopilotPreflightCheck(
                 name="order_dedupe",
                 status="pass" if policy.order_dedupe_minutes > 0 else "warn",
                 message_cn=(
@@ -1332,6 +1344,57 @@ class AppState:
             "last_sell_at": sold_at.isoformat(),
             "cooldown_until": cooldown_until.isoformat(),
             "minutes_remaining": max(0, int((cooldown_until - now).total_seconds() // 60)),
+        }
+
+    def get_sell_alert_cooldown(
+        self,
+        ticker: str,
+        reason_code: str,
+        cooldown_minutes: int,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        ticker_upper = ticker.upper()
+        if cooldown_minutes <= 0:
+            return {
+                "active": False,
+                "ticker": ticker_upper,
+                "reason_code": reason_code,
+                "cooldown_minutes": cooldown_minutes,
+            }
+        now = as_of or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone(timezone.utc)
+        alert_marker = f"alert:{reason_code}"
+        recent_executions = self.list_sell_execution_audits(limit=1000, ticker=ticker_upper)
+        for execution in recent_executions:
+            if alert_marker not in (execution.reason or ""):
+                continue
+            submitted_at = execution.submitted_at
+            if submitted_at.tzinfo is None:
+                submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+            submitted_at = submitted_at.astimezone(timezone.utc)
+            if submitted_at > now:
+                continue
+            cooldown_until = submitted_at + timedelta(minutes=cooldown_minutes)
+            if now >= cooldown_until:
+                continue
+            return {
+                "active": True,
+                "ticker": ticker_upper,
+                "reason_code": reason_code,
+                "cooldown_minutes": cooldown_minutes,
+                "last_sell_execution_id": execution.id,
+                "last_sell_reason": execution.reason,
+                "last_sell_at": submitted_at.isoformat(),
+                "cooldown_until": cooldown_until.isoformat(),
+                "minutes_remaining": max(0, int((cooldown_until - now).total_seconds() // 60)),
+            }
+        return {
+            "active": False,
+            "ticker": ticker_upper,
+            "reason_code": reason_code,
+            "cooldown_minutes": cooldown_minutes,
         }
 
     def get_recent_buy_order_gate(

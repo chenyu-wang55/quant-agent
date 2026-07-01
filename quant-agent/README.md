@@ -295,6 +295,8 @@ when the loss gate trips, automatic approvals and automatic buys stop while sell
 execution can still reduce risk. `order_dedupe_minutes` blocks repeat automatic buy
 orders for the same recommendation or ticker after a recent routed buy order, which
 keeps fast unattended loops from duplicating broker submissions.
+`sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
+from repeatedly selling partial positions on every loop.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

@@ -26,6 +26,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["max_daily_auto_buys"] == 3
     assert default_policy["max_daily_auto_sells"] == 10
     assert default_policy["order_dedupe_minutes"] == 1440
+    assert default_policy["sell_alert_cooldown_minutes"] == 60
     assert default_policy["rebuy_cooldown_minutes"] == 240
     assert default_policy["min_snapshot_bar_coverage"] == 1.0
     assert default_policy["min_snapshot_fundamental_coverage"] == 1.0
@@ -49,6 +50,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
             "max_daily_auto_buys": 5,
             "max_daily_auto_sells": 6,
             "order_dedupe_minutes": 90,
+            "sell_alert_cooldown_minutes": 45,
             "rebuy_cooldown_minutes": 120,
             "min_snapshot_bar_coverage": 0.95,
             "min_snapshot_fundamental_coverage": 0.9,
@@ -78,6 +80,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert updated_policy["max_daily_auto_buys"] == 5
     assert updated_policy["max_daily_auto_sells"] == 6
     assert updated_policy["order_dedupe_minutes"] == 90
+    assert updated_policy["sell_alert_cooldown_minutes"] == 45
     assert updated_policy["rebuy_cooldown_minutes"] == 120
     assert updated_policy["min_snapshot_bar_coverage"] == 0.95
     assert updated_policy["min_snapshot_fundamental_coverage"] == 0.9
@@ -104,6 +107,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert "portfolio_open_risk" in preflight_check_names
     assert "daily_realized_loss" in preflight_check_names
     assert "order_dedupe" in preflight_check_names
+    assert "sell_alert_cooldown" in preflight_check_names
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200

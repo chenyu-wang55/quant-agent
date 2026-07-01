@@ -325,6 +325,7 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "max_daily_auto_buys": 3,
     "max_daily_auto_sells": 10,
     "order_dedupe_minutes": 1440,
+    "sell_alert_cooldown_minutes": 60,
     "max_daily_realized_loss_pct": 0.03,
     "updated_by": "ops",
     "reason": "paper autopilot"
@@ -341,6 +342,8 @@ run so existing risk can be reduced.
 When `order_dedupe_minutes` is positive, automatic buys are skipped if the same
 recommendation or ticker already has a recent non-canceled buy order in the paper-order
 ledger.
+When `sell_alert_cooldown_minutes` is positive, automatic sell alerts are skipped if
+the same ticker and alert reason already produced a recent sell execution.
 
 Run one full audited system cycle from the API or dashboard:
 

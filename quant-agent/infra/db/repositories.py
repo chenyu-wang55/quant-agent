@@ -989,6 +989,7 @@ class AutopilotPolicyRepository:
                 max_daily_auto_buys=policy.max_daily_auto_buys,
                 max_daily_auto_sells=policy.max_daily_auto_sells,
                 order_dedupe_minutes=policy.order_dedupe_minutes,
+                sell_alert_cooldown_minutes=policy.sell_alert_cooldown_minutes,
                 rebuy_cooldown_minutes=policy.rebuy_cooldown_minutes,
                 min_snapshot_bar_coverage=policy.min_snapshot_bar_coverage,
                 min_snapshot_fundamental_coverage=policy.min_snapshot_fundamental_coverage,
@@ -1034,6 +1035,7 @@ class AutopilotPolicyRepository:
             max_daily_auto_buys=getattr(record, "max_daily_auto_buys", 3),
             max_daily_auto_sells=getattr(record, "max_daily_auto_sells", 10),
             order_dedupe_minutes=getattr(record, "order_dedupe_minutes", 1440),
+            sell_alert_cooldown_minutes=getattr(record, "sell_alert_cooldown_minutes", 60),
             rebuy_cooldown_minutes=getattr(record, "rebuy_cooldown_minutes", 240),
             min_snapshot_bar_coverage=getattr(record, "min_snapshot_bar_coverage", 1.0),
             min_snapshot_fundamental_coverage=getattr(

@@ -303,6 +303,7 @@ class AutopilotPolicyRecord(Base):
     max_daily_auto_buys: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     max_daily_auto_sells: Mapped[int] = mapped_column(Integer, nullable=False, default=10)
     order_dedupe_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=1440)
+    sell_alert_cooldown_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60)
     rebuy_cooldown_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=240)
     min_snapshot_bar_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     min_snapshot_fundamental_coverage: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)

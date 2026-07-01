@@ -31,6 +31,7 @@ class AutopilotPolicyUpdateBody(BaseModel):
     max_daily_auto_buys: int | None = Field(default=None, ge=0)
     max_daily_auto_sells: int | None = Field(default=None, ge=0)
     order_dedupe_minutes: int | None = Field(default=None, ge=0)
+    sell_alert_cooldown_minutes: int | None = Field(default=None, ge=0)
     rebuy_cooldown_minutes: int | None = Field(default=None, ge=0)
     min_snapshot_bar_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
     min_snapshot_fundamental_coverage: float | None = Field(default=None, ge=0.0, le=1.0)

@@ -287,6 +287,7 @@ def _auto_execute_cycle(
     max_auto_buys: int,
     max_auto_sells: int,
     order_dedupe_minutes: int,
+    sell_alert_cooldown_minutes: int,
     rebuy_cooldown_minutes: int,
     as_of: datetime,
     account_equity: float,
@@ -333,6 +334,24 @@ def _auto_execute_cycle(
                         "status": "skipped",
                         "ticker": alert.ticker,
                         "reason": "open_holding_not_found",
+                    }
+                )
+                continue
+            cooldown = state.get_sell_alert_cooldown(
+                ticker=alert.ticker,
+                reason_code=alert.reason_code,
+                cooldown_minutes=sell_alert_cooldown_minutes,
+                as_of=as_of,
+            )
+            if cooldown.get("active"):
+                actions.append(
+                    {
+                        "action": "sell_alert",
+                        "status": "skipped",
+                        "ticker": alert.ticker,
+                        "reason_code": alert.reason_code,
+                        "reason": "sell_alert_cooldown_active",
+                        "cooldown": cooldown,
                     }
                 )
                 continue
@@ -724,6 +743,7 @@ def _apply_autopilot_policy(
                 int(daily_usage.get("remaining_sells", policy.max_auto_sells)),
             ),
             "order_dedupe_minutes": policy.order_dedupe_minutes,
+            "sell_alert_cooldown_minutes": policy.sell_alert_cooldown_minutes,
             "rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes,
             "min_snapshot_bar_coverage": policy.min_snapshot_bar_coverage,
             "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
@@ -755,6 +775,7 @@ def system_cycle(
     max_auto_buys: int = 1,
     max_auto_sells: int = 10,
     order_dedupe_minutes: int = 1440,
+    sell_alert_cooldown_minutes: int = 60,
     rebuy_cooldown_minutes: int = 240,
     min_snapshot_bar_coverage: float = 1.0,
     min_snapshot_fundamental_coverage: float = 1.0,
@@ -787,6 +808,7 @@ def system_cycle(
                 "max_auto_buys": max_auto_buys,
                 "max_auto_sells": max_auto_sells,
                 "order_dedupe_minutes": order_dedupe_minutes,
+                "sell_alert_cooldown_minutes": sell_alert_cooldown_minutes,
                 "rebuy_cooldown_minutes": rebuy_cooldown_minutes,
                 "min_snapshot_bar_coverage": min_snapshot_bar_coverage,
                 "min_snapshot_fundamental_coverage": min_snapshot_fundamental_coverage,
@@ -811,6 +833,7 @@ def system_cycle(
         max_auto_buys = policy_values["max_auto_buys"]
         max_auto_sells = policy_values["max_auto_sells"]
         order_dedupe_minutes = policy_values["order_dedupe_minutes"]
+        sell_alert_cooldown_minutes = policy_values["sell_alert_cooldown_minutes"]
         rebuy_cooldown_minutes = policy_values["rebuy_cooldown_minutes"]
         min_snapshot_bar_coverage = policy_values["min_snapshot_bar_coverage"]
         min_snapshot_fundamental_coverage = policy_values["min_snapshot_fundamental_coverage"]
@@ -890,6 +913,7 @@ def system_cycle(
             max_auto_buys=max_auto_buys,
             max_auto_sells=max_auto_sells,
             order_dedupe_minutes=order_dedupe_minutes,
+            sell_alert_cooldown_minutes=sell_alert_cooldown_minutes,
             rebuy_cooldown_minutes=rebuy_cooldown_minutes,
             as_of=started_at,
             account_equity=account_equity,
@@ -1144,6 +1168,12 @@ def main() -> None:
         help="minutes to block repeat auto buys for the same recommendation or ticker after a routed buy order",
     )
     parser.add_argument(
+        "--sell-alert-cooldown-minutes",
+        type=int,
+        default=60,
+        help="minutes to block repeat auto sells for the same ticker and alert reason",
+    )
+    parser.add_argument(
         "--rebuy-cooldown-minutes",
         type=int,
         default=240,
@@ -1249,6 +1279,7 @@ def main() -> None:
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
             order_dedupe_minutes=args.order_dedupe_minutes,
+            sell_alert_cooldown_minutes=args.sell_alert_cooldown_minutes,
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
@@ -1279,6 +1310,7 @@ def main() -> None:
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
             order_dedupe_minutes=args.order_dedupe_minutes,
+            sell_alert_cooldown_minutes=args.sell_alert_cooldown_minutes,
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
