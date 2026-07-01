@@ -1,13 +1,50 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
+from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate
+from services.execution.router import ExecutionRouter
 
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
+
+
+class FakeBrokerAdapter:
+    name = "fake-broker"
+
+    def __init__(
+        self,
+        *,
+        raw_status: str,
+        fill_price: float | None = None,
+        filled_qty: float | None = None,
+        broker_order_id: str = "fake_sell_broker_order",
+    ) -> None:
+        self.raw_status = raw_status
+        self.fill_price = fill_price
+        self.filled_qty = filled_qty
+        self.broker_order_id = broker_order_id
+        self.placements: list[BrokerOrderPlacement] = []
+
+    def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
+        self.placements.append(placement)
+        return BrokerOrderUpdate(
+            broker_order_id=self.broker_order_id,
+            raw_status=self.raw_status,
+            client_order_id=placement.client_order_id,
+            submitted_at=datetime.now(timezone.utc),
+            filled_at=datetime.now(timezone.utc) if self.raw_status in {"filled", "partially_filled"} else None,
+            filled_avg_price=self.fill_price,
+            filled_qty=self.filled_qty,
+        )
+
+    def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
+        raise AssertionError("not used in this test")
 
 
 def test_manual_buy_record_and_sell_alerts() -> None:
@@ -423,6 +460,130 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     assert sell_rows[0]["source_snapshot_id"] == recommendation["source_snapshot_id"]
     assert sell_rows[0]["strategy_config_id"] == recommendation["strategy_config_id"]
     assert sell_rows[0]["reason"] == "alert:stop_loss_breach"
+
+
+def test_confirmed_live_sell_uses_configured_broker_adapter_and_records_fill() -> None:
+    state = get_app_state()
+    state.reset()
+    original_router = state.execution_router
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "configured-live-sell-broker-test",
+            "as_of": "2026-04-10T09:30:00Z",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "max_name_weight": 0.10,
+                "max_sector_weight": 0.30,
+                "max_gross_exposure": 1.0,
+                "max_correlated_cluster_weight": 0.35,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1000000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100000000,
+                "allowed_sectors": [],
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    ticker = recommendation["ticker"]
+    state.close_holding(ticker)
+
+    buy_price = recommendation["entry_zone_high"]
+    buy_response = client.post(
+        "/portfolio/buys",
+        json={
+            "ticker": ticker,
+            "qty": 10,
+            "buy_price": buy_price,
+            "source_recommendation_id": recommendation["id"],
+            "note": "live sell setup",
+            "stop_loss": recommendation["stop_loss"],
+            "take_profit1": recommendation["tp1"],
+            "take_profit2": recommendation["tp2"],
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert buy_response.status_code == 200
+
+    sell_price = round(buy_price + 5.0, 6)
+    fake_adapter = FakeBrokerAdapter(raw_status="filled", fill_price=sell_price, filled_qty=4)
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        sell_response = client.post(
+            f"/portfolio/holdings/{ticker}/sell",
+            json={
+                "qty": 4,
+                "sell_price": sell_price,
+                "execution_mode": "live",
+                "dry_run": False,
+                "confirm_live": True,
+                "reason": "live broker sell test",
+            },
+            headers=AUTH_HEADERS,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert sell_response.status_code == 200
+    execution = sell_response.json()
+    assert execution["execution_mode"] == "live"
+    assert execution["dry_run"] is False
+    assert execution["applied_to_ledger"] is True
+    assert execution["broker_order_id"] == "fake_sell_broker_order"
+    assert execution["sold_qty"] == 4
+    assert execution["sell_price"] == sell_price
+    assert execution["remaining_qty"] == 6
+    assert execution["holding"]["status"] == "open"
+    assert execution["holding"]["qty"] == 6
+    assert "fake-broker: status=filled" in execution["adapter_message"]
+
+    assert len(fake_adapter.placements) == 1
+    placement = fake_adapter.placements[0]
+    assert placement.symbol == ticker
+    assert placement.side == "sell"
+    assert placement.qty == 4
+    assert placement.limit_price == sell_price
+    assert placement.client_order_id.startswith("quant_sell_")
+
+    holdings = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings.status_code == 200
+    holding = next(item for item in holdings.json() if item["ticker"] == ticker)
+    assert holding["qty"] == 6
+    assert holding["last_sell_price"] == sell_price
+    assert holding["last_sell_reason"] == "live broker sell test"
+
+    sell_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
+    assert sell_trades.status_code == 200
+    sell_rows = sell_trades.json()
+    assert sell_rows
+    assert sell_rows[0]["price"] == sell_price
+    assert sell_rows[0]["qty"] == 4
+    assert sell_rows[0]["reason"] == "live broker sell test"
+    assert sell_rows[0]["source_recommendation_id"] == recommendation["id"]
+
+    sell_audits = client.get(
+        f"/portfolio/sell-executions?ticker={ticker}&applied_to_ledger=true",
+        headers=AUTH_HEADERS,
+    )
+    assert sell_audits.status_code == 200
+    audit = next(item for item in sell_audits.json() if item["id"] == execution["sell_execution_id"])
+    assert audit["execution_mode"] == "live"
+    assert audit["status"] == "filled"
+    assert audit["broker_order_id"] == "fake_sell_broker_order"
+    assert audit["remaining_qty"] == 6
 
 
 def test_update_holding_controls_records_audit_and_drives_alerts() -> None:

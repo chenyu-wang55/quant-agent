@@ -104,6 +104,7 @@ from infra.observability.metrics import MetricsStore
 from infra.queue.events import EventStatus, EventType, SystemEvent
 from infra.queue.in_memory import InMemoryEventQueue
 from services.execution.router import ExecutionRouter
+from services.execution.broker_adapter import BrokerAdapterError, BrokerOrderPlacement
 from services.ingestion.interfaces import DataProvider
 from services.ingestion.provider_factory import build_data_provider
 from services.ranking.pipeline import PipelineOutput, ResearchPipeline
@@ -2175,7 +2176,12 @@ class AppState:
             if not request.dry_run and not request.confirm_live:
                 raise ValueError("Live sell execution requires dry_run=true or confirm_live=true")
             if not request.dry_run:
-                raise NotImplementedError("Live broker sell adapter is not configured")
+                return self._sell_holding_live_broker(
+                    holding=holding,
+                    request=request,
+                    sell_qty=sell_qty,
+                    provenance=provenance,
+                )
 
             estimated_delta = (request.sell_price - holding.avg_buy_price) * sell_qty
             projected_remaining_qty = round(max(0.0, holding.qty - sell_qty), 6)
@@ -2350,6 +2356,221 @@ class AppState:
             adapter_message=adapter_message,
             applied_to_ledger=True,
             message_cn=f"{ticker_upper} 已{action}，本次已实现盈亏 {realized_delta:.2f}。",
+        )
+
+    def _sell_holding_live_broker(
+        self,
+        *,
+        holding: HoldingWatch,
+        request: ManualSellRequest,
+        sell_qty: float,
+        provenance: dict[str, str | None],
+    ) -> SellExecutionResult:
+        ticker_upper = holding.ticker.upper()
+        broker_adapter = self.execution_router.broker_adapter
+        if broker_adapter is None:
+            raise NotImplementedError("Live broker sell adapter is not configured")
+
+        client_order_id = f"quant_sell_{uuid4().hex[:16]}"
+        try:
+            broker_update = broker_adapter.submit_order(
+                BrokerOrderPlacement(
+                    client_order_id=client_order_id,
+                    symbol=ticker_upper,
+                    qty=round(sell_qty, 6),
+                    side=TradeSide.SELL.value,
+                    limit_price=request.sell_price,
+                )
+            )
+        except BrokerAdapterError:
+            raise
+        except Exception as exc:
+            raise BrokerAdapterError(f"Live broker sell submit failed: {exc}") from exc
+
+        raw_status = broker_update.raw_status.lower()
+        adapter_message = (
+            f"{broker_adapter.name}: status={broker_update.raw_status}; "
+            f"client_order_id={broker_update.client_order_id or client_order_id}"
+        )
+        if broker_update.message:
+            adapter_message = f"{adapter_message}; message={broker_update.message}"
+        submitted_at = broker_update.submitted_at or datetime.now(timezone.utc)
+        estimated_delta = (request.sell_price - holding.avg_buy_price) * sell_qty
+
+        if raw_status in {"filled", "partially_filled"}:
+            if broker_update.filled_avg_price is None:
+                raise BrokerAdapterError("Live broker returned sell fill without filled_avg_price")
+            filled_qty = broker_update.filled_qty if broker_update.filled_qty is not None else sell_qty
+            if filled_qty <= 0:
+                raise BrokerAdapterError("Live broker returned sell fill without a positive filled quantity")
+            if filled_qty > holding.qty + 1e-9:
+                raise BrokerAdapterError("Live broker sell fill exceeds open holding quantity")
+
+            actual_qty = round(filled_qty, 6)
+            actual_price = round(float(broker_update.filled_avg_price), 6)
+            sold_at = broker_update.filled_at or submitted_at
+            realized_delta = (actual_price - holding.avg_buy_price) * actual_qty
+            remaining_qty = round(max(0.0, holding.qty - actual_qty), 6)
+            is_closed = remaining_qty <= 1e-9
+            total_realized = round(holding.realized_pnl + realized_delta, 6)
+            updated = HoldingWatch(
+                ticker=holding.ticker,
+                qty=0.0 if is_closed else remaining_qty,
+                avg_buy_price=holding.avg_buy_price,
+                bought_at=holding.bought_at,
+                source_recommendation_id=holding.source_recommendation_id,
+                stop_loss=holding.stop_loss,
+                take_profit1=holding.take_profit1,
+                take_profit2=holding.take_profit2,
+                note=holding.note,
+                status=HoldingStatus.CLOSED if is_closed else HoldingStatus.OPEN,
+                updated_at=sold_at,
+                realized_pnl=total_realized,
+                closed_at=sold_at if is_closed else None,
+                last_sell_price=actual_price,
+                last_sell_reason=request.reason,
+            )
+            self.holdings_by_ticker[ticker_upper] = updated
+            self.holding_watch_repo.upsert(updated)
+            self._record_trade(
+                TradeLedgerEntry(
+                    trade_id=uuid4().hex[:16],
+                    ticker=ticker_upper,
+                    side=TradeSide.SELL,
+                    qty=actual_qty,
+                    price=actual_price,
+                    executed_at=sold_at,
+                    source_recommendation_id=holding.source_recommendation_id,
+                    source_snapshot_id=provenance["source_snapshot_id"],
+                    strategy_config_id=provenance["strategy_config_id"],
+                    reason=request.reason,
+                    realized_pnl_delta=round(realized_delta, 6),
+                    holding_status_after=updated.status,
+                )
+            )
+            audit = SellExecutionAudit(
+                id=uuid4().hex[:16],
+                ticker=ticker_upper,
+                qty=actual_qty,
+                sell_price=actual_price,
+                submitted_at=sold_at,
+                execution_mode=OrderExecutionMode.LIVE,
+                dry_run=False,
+                broker_order_id=broker_update.broker_order_id,
+                adapter_message=adapter_message,
+                applied_to_ledger=True,
+                status=raw_status,
+                reason=request.reason,
+                source_recommendation_id=holding.source_recommendation_id,
+                source_snapshot_id=provenance["source_snapshot_id"],
+                strategy_config_id=provenance["strategy_config_id"],
+                realized_pnl_delta=round(realized_delta, 6),
+                estimated_realized_pnl_delta=round(estimated_delta, 6),
+                remaining_qty=updated.qty,
+                holding_status_after=updated.status,
+            )
+            self._record_sell_execution_audit(audit)
+            self.metrics_store.inc("live_sells")
+            self.metrics_store.set_gauge("open_holdings", len(self.list_open_holdings()))
+            self.publish_event(
+                EventType.PORTFOLIO_SELL,
+                {
+                    "sell_execution_id": audit.id,
+                    "ticker": ticker_upper,
+                    "sold_qty": actual_qty,
+                    "sell_price": actual_price,
+                    "realized_pnl_delta": round(realized_delta, 6),
+                    "remaining_qty": updated.qty,
+                    "status": updated.status.value,
+                    "reason": request.reason,
+                    "execution_mode": OrderExecutionMode.LIVE.value,
+                    "dry_run": False,
+                    "broker_order_id": broker_update.broker_order_id,
+                    "adapter_message": adapter_message,
+                    "applied_to_ledger": True,
+                    "source_recommendation_id": holding.source_recommendation_id,
+                    "source_snapshot_id": provenance["source_snapshot_id"],
+                    "strategy_config_id": provenance["strategy_config_id"],
+                },
+            )
+            action = "全部卖出并关闭持仓" if is_closed else f"卖出 {actual_qty:g} 股，剩余 {remaining_qty:g} 股"
+            return SellExecutionResult(
+                sell_execution_id=audit.id,
+                holding=updated,
+                sold_qty=actual_qty,
+                sell_price=actual_price,
+                realized_pnl_delta=round(realized_delta, 6),
+                estimated_realized_pnl_delta=round(estimated_delta, 6),
+                total_realized_pnl=total_realized,
+                remaining_qty=updated.qty,
+                execution_mode=OrderExecutionMode.LIVE,
+                dry_run=False,
+                broker_order_id=broker_update.broker_order_id,
+                adapter_message=adapter_message,
+                applied_to_ledger=True,
+                message_cn=f"{ticker_upper} live broker 已{action}，本次已实现盈亏 {realized_delta:.2f}。",
+            )
+
+        terminal_without_fill = raw_status in {"canceled", "expired", "rejected"}
+        audit_status = "canceled" if terminal_without_fill else "submitted"
+        audit = SellExecutionAudit(
+            id=uuid4().hex[:16],
+            ticker=ticker_upper,
+            qty=round(sell_qty, 6),
+            sell_price=request.sell_price,
+            submitted_at=submitted_at,
+            execution_mode=OrderExecutionMode.LIVE,
+            dry_run=False,
+            broker_order_id=broker_update.broker_order_id,
+            adapter_message=adapter_message,
+            applied_to_ledger=False,
+            status=audit_status,
+            reason=request.reason,
+            source_recommendation_id=holding.source_recommendation_id,
+            source_snapshot_id=provenance["source_snapshot_id"],
+            strategy_config_id=provenance["strategy_config_id"],
+            realized_pnl_delta=0.0,
+            estimated_realized_pnl_delta=round(estimated_delta, 6),
+            remaining_qty=holding.qty,
+            holding_status_after=holding.status,
+        )
+        self._record_sell_execution_audit(audit)
+        self.publish_event(
+            EventType.SELL_ROUTED,
+            {
+                "sell_execution_id": audit.id,
+                "ticker": ticker_upper,
+                "side": TradeSide.SELL.value,
+                "qty": round(sell_qty, 6),
+                "sell_price": request.sell_price,
+                "execution_mode": OrderExecutionMode.LIVE.value,
+                "dry_run": False,
+                "broker_order_id": broker_update.broker_order_id,
+                "adapter_message": adapter_message,
+                "applied_to_ledger": False,
+                "status": raw_status,
+                "reason": request.reason,
+                "source_recommendation_id": holding.source_recommendation_id,
+                "source_snapshot_id": provenance["source_snapshot_id"],
+                "strategy_config_id": provenance["strategy_config_id"],
+            },
+        )
+        status_text = "未成交" if terminal_without_fill else "已提交，等待券商成交回报"
+        return SellExecutionResult(
+            sell_execution_id=audit.id,
+            holding=holding,
+            sold_qty=round(sell_qty, 6),
+            sell_price=request.sell_price,
+            realized_pnl_delta=0.0,
+            estimated_realized_pnl_delta=round(estimated_delta, 6),
+            total_realized_pnl=holding.realized_pnl,
+            remaining_qty=holding.qty,
+            execution_mode=OrderExecutionMode.LIVE,
+            dry_run=False,
+            broker_order_id=broker_update.broker_order_id,
+            adapter_message=adapter_message,
+            applied_to_ledger=False,
+            message_cn=f"{ticker_upper} live broker 卖出订单{status_text}；本地持仓和交易流水未改变。",
         )
 
     def list_open_holdings(self) -> list[HoldingWatch]:

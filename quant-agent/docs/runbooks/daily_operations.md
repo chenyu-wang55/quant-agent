@@ -333,14 +333,20 @@ curl -X POST http://localhost:8000/portfolio/holdings/<ticker>/sell \
   -H "Content-Type: application/json" \
   -d '{"sell_price":125.50,"execution_mode":"live","dry_run":true,"reason":"adapter_rehearsal"}'
 
+curl -X POST http://localhost:8000/portfolio/holdings/<ticker>/sell \
+  -H "Content-Type: application/json" \
+  -d '{"qty":10,"sell_price":125.50,"execution_mode":"live","dry_run":false,"confirm_live":true,"reason":"confirmed_alpaca_sell"}'
+
 curl -X POST http://localhost:8000/portfolio/alerts/<ticker>/execute \
   -H "Content-Type: application/json" \
   -d '{"reason_code":"stop_loss_breach","execution_mode":"live","dry_run":true}'
 ```
 
 Live sell dry-runs emit `sell_routed` with `applied_to_ledger=false`; they do not close
-holdings or create sell trades. Real live sells intentionally return `501` until a broker
-adapter is configured and reviewed.
+holdings or create sell trades. Confirmed live sells require the same Alpaca adapter
+environment as confirmed live buys. Immediate broker fills update the holding and
+trade ledger; submitted, rejected, canceled, or expired broker responses are recorded
+as sell execution audits without mutating local holdings.
 Use `GET /portfolio/sell-executions?dry_run=true` to audit rehearsed sell routes that
 were validated but not sent to a broker or ledger.
 

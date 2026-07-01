@@ -175,10 +175,12 @@ Confirmed live BUY orders still require approval and risk-plan checks; filled br
 responses create monitored holdings and trade-ledger rows through the same fill path.
 Sell requests and alert execution use the same gate. `execution_mode=live` with
 `dry_run=true` validates the exit, emits a `sell_routed` event, and returns adapter
-metadata without closing the holding or writing a sell trade. Confirmed live sells return
-`501` until a real broker adapter is configured.
+metadata without closing the holding or writing a sell trade. Confirmed live SELL
+orders use the same configured Alpaca adapter; immediate broker fills update holdings
+and trade-ledger rows, while submitted or rejected responses are audited without
+mutating local holdings.
 
-Alpaca BUY adapter environment:
+Alpaca adapter environment:
 
 ```bash
 export QUANT_BROKER_ADAPTER=alpaca

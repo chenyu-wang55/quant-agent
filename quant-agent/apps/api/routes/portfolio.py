@@ -28,6 +28,7 @@ from domain.entities.models import (
     TradeLedgerEntry,
     TradeSide,
 )
+from services.execution.broker_adapter import BrokerAdapterError
 
 
 router = APIRouter(tags=["portfolio"])
@@ -204,6 +205,8 @@ def sell_holding(
         raise HTTPException(status_code=404, detail="open holding not found") from exc
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except BrokerAdapterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -228,5 +231,7 @@ def execute_sell_alert(
         raise HTTPException(status_code=404, detail="open holding not found") from exc
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except BrokerAdapterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
