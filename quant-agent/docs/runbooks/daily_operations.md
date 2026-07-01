@@ -90,6 +90,7 @@ curl http://localhost:8000/dashboard/realtime-data
 curl http://localhost:8000/metrics
 curl http://localhost:8000/operations/control-center
 curl http://localhost:8000/operations/system-runs
+curl -X POST http://localhost:8000/operations/system-cycle -H "Content-Type: application/json" -d '{"top_n":8,"min_confidence":0,"use_autopilot_policy":true}'
 curl http://localhost:8000/execution/kill-switch
 curl http://localhost:8000/execution/autopilot-policy
 curl http://localhost:8000/events/pending
@@ -307,6 +308,14 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "updated_by": "ops",
     "reason": "paper autopilot"
   }'
+```
+
+Run one full audited system cycle from the API or dashboard:
+
+```bash
+curl -X POST http://localhost:8000/operations/system-cycle \
+  -H "Content-Type: application/json" \
+  -d '{"top_n":8,"min_confidence":0,"consume_events":false,"use_autopilot_policy":true}'
 ```
 
 Kill switch can pause all execution:

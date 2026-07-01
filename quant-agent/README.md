@@ -132,6 +132,7 @@ Endpoints:
 - `POST /source-snapshots/{source_snapshot_id}/replay`
 - `POST /source-snapshots/{source_snapshot_id}/replay/compare`
 - `GET /operations/control-center`
+- `POST /operations/system-cycle`
 - `GET /strategy-configs`
 - `GET /strategy-configs/tuning-report`
 - `GET /paper-orders`
@@ -191,6 +192,10 @@ Default real-data universe:
 kill switch, autopilot policy, pending approvals, approved recommendations ready for
 buy routing, active sell alerts, pending events, and recent execution audit counts
 into prioritized next actions. It is read-only and is safe to poll from scripts.
+`POST /operations/system-cycle` runs one audited `system_cycle` from the API and
+defaults to `use_autopilot_policy=true`, which is the dashboard's manual "run now"
+button for recommendation generation, monitoring, and any policy-enabled automatic
+actions.
 System events are persisted in the database, so pending and consumed event audit trails
 survive API or worker restarts.
 

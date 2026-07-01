@@ -76,6 +76,8 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "autopilotEnabled" in dashboard_home.text
     assert "saveAutopilotPolicy" in dashboard_home.text
     assert "/execution/autopilot-policy" in dashboard_home.text
+    assert "runSystemCycle" in dashboard_home.text
+    assert "/operations/system-cycle" in dashboard_home.text
     assert "交易流水" in dashboard_home.text
     assert "持仓风控审计" in dashboard_home.text
     assert "卖出执行审计" in dashboard_home.text

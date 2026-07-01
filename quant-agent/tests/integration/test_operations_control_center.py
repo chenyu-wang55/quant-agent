@@ -133,3 +133,33 @@ def test_operations_control_center_surfaces_next_actions() -> None:
         headers=AUTH_HEADERS,
     )
     client.post(f"/portfolio/holdings/{ticker}/close", headers=AUTH_HEADERS)
+
+
+def test_operations_system_cycle_endpoint_runs_with_autopilot_policy() -> None:
+    state = get_app_state()
+    state.reset()
+    client = TestClient(app)
+
+    response = client.post(
+        "/operations/system-cycle",
+        json={
+            "top_n": 1,
+            "min_confidence": 0.0,
+            "consume_events": False,
+            "use_autopilot_policy": True,
+            "as_of": "2026-04-10T09:30:00Z",
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job"] == "system_cycle"
+    assert payload["system_cycle_run_id"]
+    assert payload["use_autopilot_policy"] is True
+    assert payload["autopilot_policy"]["enabled"] is False
+    assert payload["auto_approval"]["enabled"] is False
+    assert payload["auto_execution"]["enabled"] is False
+    assert payload["recommendation_count"] >= 1
+    latest_run = state.list_system_cycle_runs(limit=1)[0]
+    assert latest_run.id == payload["system_cycle_run_id"]

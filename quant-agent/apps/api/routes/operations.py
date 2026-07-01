@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel, Field
 
 from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import OperationControlCenter, SystemCycleRun
+
+
+class SystemCycleRunBody(BaseModel):
+    top_n: int = Field(default=8, ge=1, le=50)
+    min_confidence: float | None = Field(default=0.0, ge=0.0, le=1.0)
+    consume_events: bool = False
+    use_autopilot_policy: bool = True
+    as_of: datetime | None = None
 
 
 router = APIRouter(tags=["operations"])
@@ -27,4 +38,17 @@ def get_operation_control_center(
     return state.build_operation_control_center(
         recommendation_limit=recommendation_limit,
         refresh_alerts=refresh_alerts,
+    )
+
+
+@router.post("/operations/system-cycle")
+def run_system_cycle(body: SystemCycleRunBody) -> dict:
+    from apps.worker.main import system_cycle
+
+    return system_cycle(
+        top_n=body.top_n,
+        min_confidence=body.min_confidence,
+        consume_events=body.consume_events,
+        as_of=body.as_of,
+        use_autopilot_policy=body.use_autopilot_policy,
     )

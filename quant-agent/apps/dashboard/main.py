@@ -697,6 +697,7 @@ def dashboard_home() -> str:
       </div>
       <div style="margin-top:9px; display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn-mini" onclick="runResearch()">运行推荐</button>
+        <button class="btn-mini" onclick="runSystemCycle()">运行系统循环</button>
         <button class="btn-mini" onclick="replaySnapshotByInput()">回放快照</button>
         <button class="btn-mini" onclick="refreshNow(true)">刷新状态</button>
         <input id="tradeReason" style="flex:1; min-width:220px; border:1px solid var(--line-strong); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px;" placeholder="reason" />
@@ -1461,6 +1462,28 @@ def dashboard_home() -> str:
       try {
         const result = await postJson('/research/run', payload);
         setActionStatus(`已生成 ${result.recommendations?.length || 0} 条推荐，snapshot=${result.source_snapshot_id}`);
+        await refreshNow(false);
+      } catch (err) {
+        setActionStatus(String(err), true);
+      }
+    }
+
+    async function runSystemCycle() {
+      const topN = numberValue('topN') || 5;
+      const minConfidence = numberValue('minConfidence') ?? 0;
+      try {
+        const result = await postJson('/operations/system-cycle', {
+          top_n: topN,
+          min_confidence: minConfidence,
+          consume_events: false,
+          use_autopilot_policy: true,
+        });
+        const approval = result.auto_approval || {};
+        const execution = result.auto_execution || {};
+        setActionStatus(
+          `系统循环完成: 推荐 ${result.recommendation_count || 0}，提醒 ${result.sell_alert_count || 0}，` +
+          `自动审批 ${approval.approved_count || 0}，买入 ${execution.buy_order_count || 0}，卖出 ${execution.sell_order_count || 0}`
+        );
         await refreshNow(false);
       } catch (err) {
         setActionStatus(String(err), true);
