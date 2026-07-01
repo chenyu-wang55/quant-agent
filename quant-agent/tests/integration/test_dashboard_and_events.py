@@ -67,6 +67,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "Exec Mode" in dashboard_home.text
     assert "Live Dry Run" in dashboard_home.text
     assert "行情快照" in dashboard_home.text
+    assert "质量" in dashboard_home.text
     assert "策略版本" in dashboard_home.text
     assert "调参建议" in dashboard_home.text
     assert "自动循环历史" in dashboard_home.text
@@ -153,6 +154,8 @@ def test_dashboard_and_event_endpoints() -> None:
     assert payload["summary"]["source_snapshot_count"] >= 1
     assert payload["summary"]["strategy_config_count"] >= 1
     assert payload["summary"]["strategy_tuning_count"] >= 1
+    assert payload["source_snapshots"][0]["data_quality"]["bar_coverage"] >= 0
+    assert payload["source_snapshots"][0]["data_quality"]["fundamental_coverage"] >= 0
     assert "holding_control_audit_count" in payload["summary"]
     assert "latest_auto_approval_count" in payload["summary"]
     assert "latest_auto_action_count" in payload["summary"]

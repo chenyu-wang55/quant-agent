@@ -747,7 +747,7 @@ def dashboard_home() -> str:
         <span class="small">行情、基本面、新闻和推荐输入的可回放记录</span>
       </div>
       <table>
-        <thead><tr><th>Snapshot</th><th>时间</th><th>Provider</th><th>股票</th><th>Bars</th><th>News</th><th>评分</th><th>期望值</th><th>推荐</th><th>操作</th></tr></thead>
+        <thead><tr><th>Snapshot</th><th>时间</th><th>Provider</th><th>质量</th><th>股票</th><th>Bars</th><th>News</th><th>评分</th><th>期望值</th><th>推荐</th><th>操作</th></tr></thead>
         <tbody id="sourceSnapshotBody"></tbody>
       </table>
     </div>
@@ -1178,11 +1178,22 @@ def dashboard_home() -> str:
       return `${fmtNum(score.performance_score, 1)}<div class="small">${esc(score.quality_grade || '')}</div>`;
     }
 
+    function snapshotQualityCell(snapshot) {
+      const quality = snapshot?.data_quality || {};
+      const status = quality.status || 'unknown';
+      const cls = status === 'complete' ? 'b-ok' : (status === 'partial' ? 'b-warn' : 'b-neutral');
+      return `
+        <span class="badge ${cls}">${esc(status)}</span>
+        <div class="small">B ${fmtPct(quality.bar_coverage)} / F ${fmtPct(quality.fundamental_coverage)}</div>
+        <div class="small">N ${fmtPct(quality.event_ticker_coverage)}</div>
+      `;
+    }
+
     function renderSourceSnapshots(items, snapshotScores) {
       currentSnapshots = items || [];
       const body = document.getElementById("sourceSnapshotBody");
       if (!items || items.length === 0) {
-        body.innerHTML = '<tr><td colspan="10" class="small">暂无行情快照。</td></tr>';
+        body.innerHTML = '<tr><td colspan="11" class="small">暂无行情快照。</td></tr>';
         return;
       }
       const scoresBySnapshot = new Map((snapshotScores || []).map((row) => [row.source_snapshot_id, row]));
@@ -1194,6 +1205,7 @@ def dashboard_home() -> str:
           <td class="mono" title="${esc(snapshot.source_snapshot_id)}">${esc(shortId(snapshot.source_snapshot_id, 18))}</td>
           <td class="small">${fmtTime(snapshot.as_of)}</td>
           <td>${esc(snapshot.provider_name)}</td>
+          <td>${snapshotQualityCell(snapshot)}</td>
           <td>${esc(snapshot.ticker_count)}</td>
           <td>${esc(snapshot.bar_count)}</td>
           <td>${esc(snapshot.event_count)}</td>

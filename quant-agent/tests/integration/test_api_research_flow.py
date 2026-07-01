@@ -78,6 +78,10 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     snapshots_response = client.get("/source-snapshots?limit=5", headers=AUTH_HEADERS)
     assert snapshots_response.status_code == 200
     assert any(item["source_snapshot_id"] == snapshot_id for item in snapshots_response.json())
+    snapshot_summary = next(item for item in snapshots_response.json() if item["source_snapshot_id"] == snapshot_id)
+    assert snapshot_summary["data_quality"]["status"] == "complete"
+    assert snapshot_summary["data_quality"]["bar_coverage"] == 1.0
+    assert snapshot_summary["data_quality"]["fundamental_coverage"] == 1.0
 
     snapshot_detail_response = client.get(f"/source-snapshots/{snapshot_id}?event_limit=5", headers=AUTH_HEADERS)
     assert snapshot_detail_response.status_code == 200
@@ -86,6 +90,9 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     assert snapshot_detail["ticker_count"] > 0
     assert snapshot_detail["bar_count"] > 0
     assert snapshot_detail["recommendation_count"] >= 1
+    assert snapshot_detail["data_quality"]["captured_ticker_count"] > 0
+    assert snapshot_detail["data_quality"]["missing_bar_count"] == 0
+    assert snapshot_detail["data_quality"]["missing_fundamental_count"] == 0
 
     snapshot_bars_response = client.get(
         f"/source-snapshots/{snapshot_id}/bars/{ticker}?limit=3",

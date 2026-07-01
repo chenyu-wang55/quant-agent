@@ -1096,12 +1096,26 @@ class SourceSnapshotRepository:
         securities_list = list(securities)
         events_list = list(events)
         tickers = sorted({security.ticker.upper() for security in securities_list})
+        event_tickers = sorted(
+            {
+                ticker.upper()
+                for event in events_list
+                for ticker in event.tickers
+            }
+        )
         metadata = {
             "earnings_minutes_by_ticker": {
                 ticker.upper(): minutes
                 for ticker, minutes in earnings_minutes_by_ticker.items()
                 if minutes is not None
-            }
+            },
+            "data_quality": self._build_snapshot_quality(
+                tickers=tickers,
+                bar_tickers=list(bars_by_ticker),
+                fundamental_tickers=list(fundamentals_by_ticker),
+                event_tickers=event_tickers,
+                event_count=len(events_list),
+            ),
         }
 
         with SessionLocal() as session:
@@ -1210,6 +1224,33 @@ class SourceSnapshotRepository:
             .where(RecommendationRecord.source_snapshot_id == source_snapshot_id)
         )
         tickers = [str(ticker).upper() for ticker in record.tickers or []]
+        bar_tickers = list(
+            session.execute(
+                select(SnapshotMarketBarRecord.ticker)
+                .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
+                .distinct()
+            ).scalars()
+        )
+        fundamental_tickers = list(
+            session.execute(
+                select(SnapshotFundamentalRecord.ticker)
+                .where(SnapshotFundamentalRecord.source_snapshot_id == source_snapshot_id)
+                .distinct()
+            ).scalars()
+        )
+        event_ticker_rows = list(
+            session.execute(
+                select(SnapshotEventRecord.tickers)
+                .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
+            ).scalars()
+        )
+        event_tickers = sorted(
+            {
+                str(ticker).upper()
+                for tickers_row in event_ticker_rows
+                for ticker in (tickers_row or [])
+            }
+        )
         return SourceSnapshotSummary(
             source_snapshot_id=source_snapshot_id,
             created_at=_ensure_utc(record.created_at),
@@ -1222,7 +1263,59 @@ class SourceSnapshotRepository:
             fundamental_count=int(fundamental_count or 0),
             event_count=int(event_count or 0),
             recommendation_count=int(recommendation_count or 0),
+            data_quality=self._build_snapshot_quality(
+                tickers=tickers,
+                bar_tickers=bar_tickers,
+                fundamental_tickers=fundamental_tickers,
+                event_tickers=event_tickers,
+                event_count=int(event_count or 0),
+            ),
         )
+
+    @staticmethod
+    def _build_snapshot_quality(
+        *,
+        tickers: Iterable[str],
+        bar_tickers: Iterable[str],
+        fundamental_tickers: Iterable[str],
+        event_tickers: Iterable[str],
+        event_count: int,
+    ) -> dict[str, object]:
+        universe_set = {ticker.upper() for ticker in tickers}
+        bar_set = {ticker.upper() for ticker in bar_tickers}
+        fundamental_set = {ticker.upper() for ticker in fundamental_tickers}
+        event_set = {ticker.upper() for ticker in event_tickers}
+        captured_set = (bar_set | fundamental_set | event_set).intersection(universe_set)
+        expected_count = len(captured_set)
+        missing_bar_tickers = sorted(captured_set - bar_set)
+        missing_fundamental_tickers = sorted(captured_set - fundamental_set)
+        bar_covered = len(captured_set.intersection(bar_set))
+        fundamental_covered = len(captured_set.intersection(fundamental_set))
+        event_covered = len(captured_set.intersection(event_set))
+        return {
+            "status": (
+                "complete"
+                if expected_count > 0 and not missing_bar_tickers and not missing_fundamental_tickers
+                else "partial"
+            ),
+            "universe_ticker_count": len(universe_set),
+            "expected_ticker_count": expected_count,
+            "captured_ticker_count": expected_count,
+            "bar_ticker_count": bar_covered,
+            "fundamental_ticker_count": fundamental_covered,
+            "event_ticker_count": event_covered,
+            "event_count": int(event_count),
+            "bar_coverage": round(bar_covered / expected_count, 6) if expected_count else 0.0,
+            "fundamental_coverage": (
+                round(fundamental_covered / expected_count, 6) if expected_count else 0.0
+            ),
+            "event_ticker_coverage": round(event_covered / expected_count, 6) if expected_count else 0.0,
+            "missing_bar_count": len(missing_bar_tickers),
+            "missing_fundamental_count": len(missing_fundamental_tickers),
+            "missing_bar_tickers": missing_bar_tickers[:25],
+            "missing_fundamental_tickers": missing_fundamental_tickers[:25],
+            "extra_bar_tickers": sorted(bar_set - universe_set)[:25],
+        }
 
     def get_metadata(self, source_snapshot_id: str) -> dict:
         with SessionLocal() as session:

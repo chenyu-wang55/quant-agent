@@ -110,3 +110,14 @@ def test_source_snapshot_records_and_replays_without_live_provider() -> None:
     assert replay_output.result.universe_summary["snapshot"]["operation"] == "replayed"
     assert _projection(replay_output) == _projection(first_output)
     assert repository.snapshot_exists(snapshot_id)
+    metadata_quality = repository.get_metadata(snapshot_id)["data_quality"]
+    summary = repository.get_summary(snapshot_id)
+    assert summary is not None
+    summary_quality = summary.data_quality
+    assert metadata_quality["status"] == "complete"
+    assert metadata_quality["bar_coverage"] == 1.0
+    assert metadata_quality["fundamental_coverage"] == 1.0
+    assert metadata_quality["captured_ticker_count"] > 0
+    assert "SPY" in metadata_quality["extra_bar_tickers"]
+    assert summary_quality["status"] == metadata_quality["status"]
+    assert summary_quality["bar_coverage"] == metadata_quality["bar_coverage"]

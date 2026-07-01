@@ -308,6 +308,7 @@ class SourceSnapshotSummary(BaseModel):
     fundamental_count: int
     event_count: int
     recommendation_count: int
+    data_quality: dict[str, Any] = Field(default_factory=dict)
 
 
 class SourceSnapshotDetail(SourceSnapshotSummary):
