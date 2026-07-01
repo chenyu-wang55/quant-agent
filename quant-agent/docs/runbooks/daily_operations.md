@@ -243,6 +243,7 @@ curl -X POST http://localhost:8000/portfolio/alerts/MSFT/execute \
 ```
 
 默认动作由提醒原因决定：止损和第二目标位会清仓，第一目标位和 risk-off 会先减半。
+自动循环执行第一目标位减仓后，会把剩余仓位止损自动抬到成本附近并写入持仓风控审计。
 需要覆盖默认动作时可传 `qty`、`sell_price` 或 `sell_all`。
 
 ## Approval Gate

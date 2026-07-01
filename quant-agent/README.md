@@ -384,6 +384,8 @@ Sell controls record sell price, quantity, reason, realized P&L, and whether the
 Holding controls can be tightened or relaxed while a position is open; every stop-loss,
 target, or note change writes a durable holding-control audit row and emits a
 `holding_controls_updated` event.
+Autopilot TP1 partial sells also tighten the remaining holding stop toward breakeven
+through the same audited holding-control path.
 Every manual buy and sell also writes an immutable trade-ledger entry so repeated ticker cycles remain auditable
 even when the current holding watch row is reopened or overwritten.
 Every sell route also writes a sell-execution audit row. Paper sells are marked

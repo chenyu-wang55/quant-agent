@@ -15,6 +15,7 @@ from domain.entities.models import (
     AutopilotPolicy,
     BacktestRunRequest,
     Direction,
+    HoldingControlUpdateRequest,
     ManualSellRequest,
     OrderExecutionMode,
     PaperOrderRequest,
@@ -367,6 +368,11 @@ def _auto_execute_cycle(
                     confirm_live=False,
                 ),
             )
+            control_adjustment = _post_sell_control_adjustment(
+                alert=alert,
+                execution=execution,
+                run_id=run_id,
+            )
             sell_blocked_tickers.add(alert.ticker.upper())
             actions.append(
                 {
@@ -382,6 +388,7 @@ def _auto_execute_cycle(
                     "remaining_qty": execution.remaining_qty,
                     "message_cn": execution.message_cn,
                     "default_action_cn": default_action_cn,
+                    "control_adjustment": control_adjustment,
                 }
             )
         except Exception as exc:
@@ -625,6 +632,64 @@ def _auto_execute_cycle(
         portfolio_risk_gate=portfolio_risk_gate,
         daily_loss_gate=daily_loss_gate,
     )
+
+
+def _post_sell_control_adjustment(
+    *,
+    alert: SellAlert,
+    execution: Any,
+    run_id: str,
+) -> dict[str, Any] | None:
+    if alert.reason_code != "take_profit1_hit":
+        return None
+    if not execution.applied_to_ledger or execution.dry_run or execution.remaining_qty <= 0:
+        return {
+            "status": "skipped",
+            "reason": "sell_not_applied_to_open_holding",
+        }
+
+    holding = execution.holding
+    desired_stop = max(holding.stop_loss, holding.avg_buy_price)
+    stop_ceiling = max(0.000001, holding.take_profit1 * 0.999)
+    new_stop = round(min(desired_stop, stop_ceiling), 6)
+    if new_stop <= holding.stop_loss + 1e-9:
+        return {
+            "status": "skipped",
+            "reason": "stop_already_at_or_above_target",
+            "current_stop_loss": holding.stop_loss,
+            "target_stop_loss": new_stop,
+        }
+    if not new_stop < holding.take_profit1:
+        return {
+            "status": "skipped",
+            "reason": "target_stop_not_below_take_profit1",
+            "target_stop_loss": new_stop,
+            "take_profit1": holding.take_profit1,
+        }
+
+    state = get_app_state()
+    try:
+        result = state.update_holding_controls(
+            alert.ticker,
+            HoldingControlUpdateRequest(
+                stop_loss=new_stop,
+                reason=f"system_cycle:{run_id}:post_take_profit1_stop_tighten",
+                updated_by="system_cycle:auto_sell",
+            ),
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "reason": "holding_control_update_failed",
+            "error": str(exc),
+        }
+    return {
+        "status": "updated",
+        "audit_id": result.audit.id,
+        "old_stop_loss": result.audit.old_stop_loss,
+        "new_stop_loss": result.audit.new_stop_loss,
+        "message_cn": result.message_cn,
+    }
 
 
 def _auto_execution_report(

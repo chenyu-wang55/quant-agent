@@ -798,10 +798,17 @@ def test_system_cycle_skips_repeated_sell_alert_during_cooldown() -> None:
     assert first_sell["status"] == "executed"
     assert first_sell["reason_code"] == "take_profit1_hit"
     assert first_sell["sold_qty"] == 4
+    assert first_sell["control_adjustment"]["status"] == "updated"
+    assert first_sell["control_adjustment"]["old_stop_loss"] == 1
+    assert first_sell["control_adjustment"]["new_stop_loss"] == 1.998
     holding_after_first = state.holding_watch_repo.get("AAPL")
     assert holding_after_first is not None
     assert holding_after_first.status == HoldingStatus.OPEN
     assert holding_after_first.qty == 4
+    assert holding_after_first.stop_loss == 1.998
+    audit = state.list_holding_control_audits(limit=1, ticker="AAPL")[0]
+    assert audit.id == first_sell["control_adjustment"]["audit_id"]
+    assert audit.updated_by == "system_cycle:auto_sell"
 
     second = system_cycle(
         top_n=1,
