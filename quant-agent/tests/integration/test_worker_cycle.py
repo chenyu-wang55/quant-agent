@@ -601,7 +601,7 @@ def test_system_cycle_blocks_auto_buy_when_daily_realized_loss_exceeds_policy_li
     assert current_order_ids == existing_order_ids
 
 
-def test_system_cycle_skips_recent_duplicate_buy_order() -> None:
+def test_system_cycle_skips_pending_duplicate_buy_order() -> None:
     state = get_app_state()
     state.reset()
     state.consume_events(limit=1000)
@@ -650,11 +650,80 @@ def test_system_cycle_skips_recent_duplicate_buy_order() -> None:
         auto_execution_mode="live_dry_run",
         max_auto_buys=1,
         max_auto_sells=0,
+        order_dedupe_minutes=0,
+        rebuy_cooldown_minutes=0,
+        max_snapshot_bar_age_minutes=999999,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
+    )
+
+    assert second["auto_execution"]["enabled"] is True
+    assert second["auto_execution"]["buy_order_count"] == 0
+    buy_action = next(
+        item for item in second["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert buy_action["status"] == "skipped"
+    assert buy_action["reason"] == "pending_buy_order_gate_failed"
+    assert buy_action["pending_buy_order_gate"]["passed"] is False
+    assert buy_action["pending_buy_order_gate"]["pending_order_id"] == first_order.id
+    current_order_ids = {order.id for order in state.list_paper_orders(limit=1000)}
+    assert current_order_ids == existing_order_ids
+
+
+def test_system_cycle_skips_recent_duplicate_filled_buy_order() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
+        state.close_holding(holding.ticker)
+
+    first = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        auto_approve_recommendations=True,
+        auto_approve_min_confidence=0.0,
+        auto_approve_min_composite=0.0,
+        max_auto_approvals=1,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        order_dedupe_minutes=0,
+        rebuy_cooldown_minutes=0,
+        max_snapshot_bar_age_minutes=999999,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
+    )
+
+    assert first["auto_execution"]["buy_order_count"] == 1
+    first_buy_action = next(
+        item for item in first["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    first_order = state.list_paper_orders(
+        limit=1,
+        recommendation_id=first_buy_action["recommendation_id"],
+    )[0]
+    assert first_order.status == PaperOrderStatus.FILLED
+    state.close_holding(first_buy_action["ticker"])
+    existing_order_ids = {order.id for order in state.list_paper_orders(limit=1000)}
+
+    second = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
         order_dedupe_minutes=1440,
         rebuy_cooldown_minutes=0,
         max_snapshot_bar_age_minutes=999999,
         account_equity=100_000_000,
         max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
     )
 
     assert second["auto_execution"]["enabled"] is True

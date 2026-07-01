@@ -1549,6 +1549,51 @@ class AppState:
             "order_dedupe_minutes": order_dedupe_minutes,
         }
 
+    def get_pending_buy_order_gate(
+        self,
+        *,
+        ticker: str,
+        recommendation_id: str,
+    ) -> dict[str, Any]:
+        ticker_upper = ticker.upper()
+        pending_orders = self.list_paper_orders(
+            limit=1000,
+            side=Direction.BUY,
+            status=PaperOrderStatus.SUBMITTED,
+        )
+        for order in pending_orders:
+            match_reason = None
+            if order.recommendation_id == recommendation_id:
+                match_reason = "same_recommendation_pending_buy_order"
+            else:
+                source_recommendation = (
+                    self.recommendations_by_id.get(order.recommendation_id)
+                    or self.recommendation_repo.get(order.recommendation_id)
+                )
+                if source_recommendation is not None and source_recommendation.ticker.upper() == ticker_upper:
+                    match_reason = "same_ticker_pending_buy_order"
+            if match_reason is None:
+                continue
+
+            return {
+                "passed": False,
+                "reason": match_reason,
+                "ticker": ticker_upper,
+                "recommendation_id": recommendation_id,
+                "pending_order_id": order.id,
+                "pending_order_recommendation_id": order.recommendation_id,
+                "pending_order_status": order.status.value,
+                "pending_order_execution_mode": order.execution_mode.value,
+                "pending_order_submitted_at": order.submitted_at.isoformat(),
+                "pending_order_broker_order_id": order.broker_order_id,
+            }
+
+        return {
+            "passed": True,
+            "ticker": ticker_upper,
+            "recommendation_id": recommendation_id,
+        }
+
     def update_autopilot_policy(self, updates: dict[str, Any]) -> AutopilotPolicy:
         current = self.get_autopilot_policy()
         payload = current.model_dump(mode="python")
@@ -2858,6 +2903,7 @@ class AppState:
         self.approvals_by_recommendation_id.clear()
         self.recent_sell_alerts.clear()
         self.event_queue = InMemoryEventQueue()
+        self.paper_order_repo.clear_all()
         self.approval_repo.clear_all()
         self.autopilot_policy_repo.clear_all()
         self.system_cycle_run_repo.clear_all()

@@ -466,6 +466,22 @@ def _auto_execute_cycle(
                 }
             )
             continue
+        pending_buy_order_gate = state.get_pending_buy_order_gate(
+            ticker=recommendation.ticker,
+            recommendation_id=recommendation.id,
+        )
+        if not pending_buy_order_gate["passed"]:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "pending_buy_order_gate_failed",
+                    "pending_buy_order_gate": pending_buy_order_gate,
+                }
+            )
+            continue
         recent_buy_order_gate = state.get_recent_buy_order_gate(
             ticker=recommendation.ticker,
             recommendation_id=recommendation.id,

@@ -299,6 +299,9 @@ orders for the same recommendation or ticker after a recent routed buy order, wh
 keeps fast unattended loops from duplicating broker submissions.
 `max_auto_buy_price_drift_pct` blocks automatic buys when the current market price
 has drifted beyond the allowed entry-zone tolerance, reducing stale-snapshot chasing.
+Submitted buy orders also block new automatic buys for the same recommendation or
+ticker until the order is filled or canceled, independent of the time-based dedupe
+window.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
 Before moving beyond paper or live dry-run, reconcile broker positions against the

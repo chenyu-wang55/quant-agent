@@ -394,6 +394,11 @@ class PaperOrderRepository:
             for record in records
         ]
 
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(PaperOrderRecord))
+            session.commit()
+
 
 class PositionRepository:
     def replace_all(self, positions: Iterable[PositionState]) -> None:

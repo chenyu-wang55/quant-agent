@@ -65,6 +65,9 @@ Automatic buys also pass `price_drift_gate`: before routing a buy, the worker ch
 the latest provider price against the recommendation entry zone and skips stale or
 chasing entries when drift exceeds `--max-auto-buy-price-drift-pct` or the matching
 policy field.
+Automatic buys also pass `pending_buy_order_gate`: an existing submitted buy order for
+the same recommendation or ticker blocks a new automatic buy until that order is
+filled or canceled, even if the time-based dedupe window has expired or is disabled.
 Before enabling any real broker adapter, submit a broker/account position snapshot to
 `POST /portfolio/reconciliation`. The report is persisted and visible on the
 dashboard; any missing, extra, or quantity-mismatched position sets
@@ -362,6 +365,8 @@ run so existing risk can be reduced.
 When `order_dedupe_minutes` is positive, automatic buys are skipped if the same
 recommendation or ticker already has a recent non-canceled buy order in the paper-order
 ledger.
+Submitted buy orders always block duplicate automatic buys for the same recommendation
+or ticker until the order lifecycle is resolved.
 When `sell_alert_cooldown_minutes` is positive, automatic sell alerts are skipped if
 the same ticker and alert reason already produced a recent sell execution.
 When `max_auto_buy_price_drift_pct` is positive, automatic buys are skipped if the
