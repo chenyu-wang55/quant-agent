@@ -50,6 +50,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.max_auto_buys),
         "--max-auto-sells",
         str(args.max_auto_sells),
+        "--order-dedupe-minutes",
+        str(args.order_dedupe_minutes),
         "--rebuy-cooldown-minutes",
         str(args.rebuy_cooldown_minutes),
         "--min-snapshot-bar-coverage",
@@ -168,6 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-execution-mode", choices=["paper", "live_dry_run"], default="paper")
     parser.add_argument("--max-auto-buys", type=int, default=1)
     parser.add_argument("--max-auto-sells", type=int, default=10)
+    parser.add_argument("--order-dedupe-minutes", type=int, default=1440)
     parser.add_argument("--rebuy-cooldown-minutes", type=int, default=240)
     parser.add_argument("--min-snapshot-bar-coverage", type=float, default=1.0)
     parser.add_argument("--min-snapshot-fundamental-coverage", type=float, default=1.0)

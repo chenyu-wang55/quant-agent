@@ -324,6 +324,7 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "max_daily_auto_approvals": 3,
     "max_daily_auto_buys": 3,
     "max_daily_auto_sells": 10,
+    "order_dedupe_minutes": 1440,
     "max_daily_realized_loss_pct": 0.03,
     "updated_by": "ops",
     "reason": "paper autopilot"
@@ -337,6 +338,9 @@ run so the next open session has fresh context.
 When `daily_realized_loss` exceeds `max_daily_realized_loss_pct`, preflight blocks
 automatic approvals and the worker skips automatic buys; sell-alert execution can still
 run so existing risk can be reduced.
+When `order_dedupe_minutes` is positive, automatic buys are skipped if the same
+recommendation or ticker already has a recent non-canceled buy order in the paper-order
+ledger.
 
 Run one full audited system cycle from the API or dashboard:
 

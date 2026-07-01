@@ -129,6 +129,8 @@ def _auto_approve_cycle(
     max_auto_approvals: int,
     min_confidence: float,
     min_composite: float,
+    order_dedupe_minutes: int,
+    as_of: datetime,
 ) -> dict[str, Any]:
     state = get_app_state()
     actions: list[dict[str, Any]] = []
@@ -179,6 +181,24 @@ def _auto_approve_cycle(
                     "ticker": recommendation.ticker,
                     "recommendation_id": recommendation.id,
                     "reason": "already_open_holding",
+                }
+            )
+            continue
+        recent_buy_order_gate = state.get_recent_buy_order_gate(
+            ticker=recommendation.ticker,
+            recommendation_id=recommendation.id,
+            order_dedupe_minutes=order_dedupe_minutes,
+            as_of=as_of,
+        )
+        if not recent_buy_order_gate["passed"]:
+            actions.append(
+                {
+                    "action": "approve_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "recent_buy_order_gate_failed",
+                    "recent_buy_order_gate": recent_buy_order_gate,
                 }
             )
             continue
@@ -266,6 +286,7 @@ def _auto_execute_cycle(
     execution_mode: str,
     max_auto_buys: int,
     max_auto_sells: int,
+    order_dedupe_minutes: int,
     rebuy_cooldown_minutes: int,
     as_of: datetime,
     account_equity: float,
@@ -412,6 +433,24 @@ def _auto_execute_cycle(
                     "recommendation_id": recommendation.id,
                     "reason": "portfolio_open_risk_gate_failed",
                     "portfolio_risk_gate": portfolio_risk_gate,
+                }
+            )
+            continue
+        recent_buy_order_gate = state.get_recent_buy_order_gate(
+            ticker=recommendation.ticker,
+            recommendation_id=recommendation.id,
+            order_dedupe_minutes=order_dedupe_minutes,
+            as_of=as_of,
+        )
+        if not recent_buy_order_gate["passed"]:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "recent_buy_order_gate_failed",
+                    "recent_buy_order_gate": recent_buy_order_gate,
                 }
             )
             continue
@@ -684,6 +723,7 @@ def _apply_autopilot_policy(
                 policy.max_auto_sells,
                 int(daily_usage.get("remaining_sells", policy.max_auto_sells)),
             ),
+            "order_dedupe_minutes": policy.order_dedupe_minutes,
             "rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes,
             "min_snapshot_bar_coverage": policy.min_snapshot_bar_coverage,
             "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
@@ -714,6 +754,7 @@ def system_cycle(
     auto_execution_mode: str = "paper",
     max_auto_buys: int = 1,
     max_auto_sells: int = 10,
+    order_dedupe_minutes: int = 1440,
     rebuy_cooldown_minutes: int = 240,
     min_snapshot_bar_coverage: float = 1.0,
     min_snapshot_fundamental_coverage: float = 1.0,
@@ -745,6 +786,7 @@ def system_cycle(
                 "auto_execution_mode": auto_execution_mode,
                 "max_auto_buys": max_auto_buys,
                 "max_auto_sells": max_auto_sells,
+                "order_dedupe_minutes": order_dedupe_minutes,
                 "rebuy_cooldown_minutes": rebuy_cooldown_minutes,
                 "min_snapshot_bar_coverage": min_snapshot_bar_coverage,
                 "min_snapshot_fundamental_coverage": min_snapshot_fundamental_coverage,
@@ -768,6 +810,7 @@ def system_cycle(
         auto_execution_mode = policy_values["auto_execution_mode"]
         max_auto_buys = policy_values["max_auto_buys"]
         max_auto_sells = policy_values["max_auto_sells"]
+        order_dedupe_minutes = policy_values["order_dedupe_minutes"]
         rebuy_cooldown_minutes = policy_values["rebuy_cooldown_minutes"]
         min_snapshot_bar_coverage = policy_values["min_snapshot_bar_coverage"]
         min_snapshot_fundamental_coverage = policy_values["min_snapshot_fundamental_coverage"]
@@ -825,6 +868,8 @@ def system_cycle(
             max_auto_approvals=max_auto_approvals,
             min_confidence=auto_approve_min_confidence,
             min_composite=auto_approve_min_composite,
+            order_dedupe_minutes=order_dedupe_minutes,
+            as_of=started_at,
         )
         if auto_approve_recommendations and auto_approval_block is None
         else _auto_approval_report(
@@ -844,6 +889,7 @@ def system_cycle(
             execution_mode=auto_execution_mode,
             max_auto_buys=max_auto_buys,
             max_auto_sells=max_auto_sells,
+            order_dedupe_minutes=order_dedupe_minutes,
             rebuy_cooldown_minutes=rebuy_cooldown_minutes,
             as_of=started_at,
             account_equity=account_equity,
@@ -1092,6 +1138,12 @@ def main() -> None:
     parser.add_argument("--max-auto-buys", type=int, default=1, help="maximum approved buys per cycle")
     parser.add_argument("--max-auto-sells", type=int, default=10, help="maximum sell alerts to execute per cycle")
     parser.add_argument(
+        "--order-dedupe-minutes",
+        type=int,
+        default=1440,
+        help="minutes to block repeat auto buys for the same recommendation or ticker after a routed buy order",
+    )
+    parser.add_argument(
         "--rebuy-cooldown-minutes",
         type=int,
         default=240,
@@ -1196,6 +1248,7 @@ def main() -> None:
             auto_execution_mode=args.auto_execution_mode,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
+            order_dedupe_minutes=args.order_dedupe_minutes,
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
@@ -1225,6 +1278,7 @@ def main() -> None:
             auto_execution_mode=args.auto_execution_mode,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
+            order_dedupe_minutes=args.order_dedupe_minutes,
             rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,

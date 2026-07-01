@@ -292,7 +292,9 @@ checked from persisted `system_cycle` history so a fast loop cannot keep spendin
 same per-cycle budget all day. The same preflight also evaluates
 `max_daily_realized_loss_pct` against the trade ledger for the current US trading day;
 when the loss gate trips, automatic approvals and automatic buys stop while sell-alert
-execution can still reduce risk.
+execution can still reduce risk. `order_dedupe_minutes` blocks repeat automatic buy
+orders for the same recommendation or ticker after a recent routed buy order, which
+keeps fast unattended loops from duplicating broker submissions.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

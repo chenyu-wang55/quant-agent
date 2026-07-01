@@ -1119,6 +1119,18 @@ class AppState:
         )
         checks.append(
             AutopilotPreflightCheck(
+                name="order_dedupe",
+                status="pass" if policy.order_dedupe_minutes > 0 else "warn",
+                message_cn=(
+                    f"同一推荐或同一股票在 {policy.order_dedupe_minutes} 分钟内已有买单时禁止自动重复买入。"
+                    if policy.order_dedupe_minutes > 0
+                    else "未启用自动买入订单去重窗口。"
+                ),
+                details={"order_dedupe_minutes": policy.order_dedupe_minutes},
+            )
+        )
+        checks.append(
+            AutopilotPreflightCheck(
                 name="snapshot_quality_policy",
                 status="pass",
                 message_cn=(
@@ -1320,6 +1332,74 @@ class AppState:
             "last_sell_at": sold_at.isoformat(),
             "cooldown_until": cooldown_until.isoformat(),
             "minutes_remaining": max(0, int((cooldown_until - now).total_seconds() // 60)),
+        }
+
+    def get_recent_buy_order_gate(
+        self,
+        ticker: str,
+        recommendation_id: str,
+        order_dedupe_minutes: int,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        ticker_upper = ticker.upper()
+        if order_dedupe_minutes <= 0:
+            return {
+                "passed": True,
+                "ticker": ticker_upper,
+                "recommendation_id": recommendation_id,
+                "order_dedupe_minutes": order_dedupe_minutes,
+            }
+        now = as_of or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone(timezone.utc)
+        recent_orders = self.list_paper_orders(limit=1000, side=Direction.BUY)
+        for order in recent_orders:
+            if order.status == PaperOrderStatus.CANCELED:
+                continue
+            submitted_at = order.submitted_at
+            if submitted_at.tzinfo is None:
+                submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+            submitted_at = submitted_at.astimezone(timezone.utc)
+            if submitted_at > now:
+                continue
+            cooldown_until = submitted_at + timedelta(minutes=order_dedupe_minutes)
+            if now >= cooldown_until:
+                continue
+
+            match_reason = None
+            if order.recommendation_id == recommendation_id:
+                match_reason = "same_recommendation_recent_buy_order"
+            else:
+                source_recommendation = (
+                    self.recommendations_by_id.get(order.recommendation_id)
+                    or self.recommendation_repo.get(order.recommendation_id)
+                )
+                if source_recommendation is not None and source_recommendation.ticker.upper() == ticker_upper:
+                    match_reason = "same_ticker_recent_buy_order"
+            if match_reason is None:
+                continue
+
+            return {
+                "passed": False,
+                "reason": match_reason,
+                "ticker": ticker_upper,
+                "recommendation_id": recommendation_id,
+                "order_dedupe_minutes": order_dedupe_minutes,
+                "recent_order_id": order.id,
+                "recent_order_recommendation_id": order.recommendation_id,
+                "recent_order_status": order.status.value,
+                "recent_order_execution_mode": order.execution_mode.value,
+                "recent_order_submitted_at": submitted_at.isoformat(),
+                "dedupe_until": cooldown_until.isoformat(),
+                "minutes_remaining": max(0, int((cooldown_until - now).total_seconds() // 60)),
+            }
+
+        return {
+            "passed": True,
+            "ticker": ticker_upper,
+            "recommendation_id": recommendation_id,
+            "order_dedupe_minutes": order_dedupe_minutes,
         }
 
     def update_autopilot_policy(self, updates: dict[str, Any]) -> AutopilotPolicy:

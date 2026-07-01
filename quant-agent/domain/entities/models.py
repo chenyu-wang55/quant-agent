@@ -570,6 +570,7 @@ class AutopilotPolicy(BaseModel):
     max_daily_auto_approvals: int = Field(default=3, ge=0)
     max_daily_auto_buys: int = Field(default=3, ge=0)
     max_daily_auto_sells: int = Field(default=10, ge=0)
+    order_dedupe_minutes: int = Field(default=1440, ge=0)
     rebuy_cooldown_minutes: int = Field(default=240, ge=0)
     min_snapshot_bar_coverage: float = Field(default=1.0, ge=0.0, le=1.0)
     min_snapshot_fundamental_coverage: float = Field(default=1.0, ge=0.0, le=1.0)

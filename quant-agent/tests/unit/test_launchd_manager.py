@@ -34,6 +34,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "60",
         "--max-auto-buys",
         "2",
+        "--order-dedupe-minutes",
+        "720",
         "--rebuy-cooldown-minutes",
         "180",
         "--min-snapshot-bar-coverage",
@@ -70,6 +72,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "--interval-seconds" in round_trip["ProgramArguments"]
     assert "60.0" in round_trip["ProgramArguments"]
     assert "--rebuy-cooldown-minutes" in round_trip["ProgramArguments"]
+    assert "--order-dedupe-minutes" in round_trip["ProgramArguments"]
+    assert "720" in round_trip["ProgramArguments"]
     assert "180" in round_trip["ProgramArguments"]
     assert "--min-snapshot-bar-coverage" in round_trip["ProgramArguments"]
     assert "0.95" in round_trip["ProgramArguments"]

@@ -77,6 +77,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "autopilotEnabled" in dashboard_home.text
     assert "autopilotRegularHours" in dashboard_home.text
     assert "autopilotDailyBuys" in dashboard_home.text
+    assert "autopilotOrderDedupeMinutes" in dashboard_home.text
     assert "autopilotCooldownMinutes" in dashboard_home.text
     assert "autopilotMinSnapshotBars" in dashboard_home.text
     assert "autopilotMinSnapshotFundamentals" in dashboard_home.text
@@ -152,6 +153,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "recommendation_attribution" in payload
     assert payload["summary"]["recommendation_count"] >= 1
     assert payload["autopilot_policy"]["enabled"] is False
+    assert payload["autopilot_policy"]["order_dedupe_minutes"] == 1440
     assert payload["autopilot_policy"]["rebuy_cooldown_minutes"] == 240
     assert payload["autopilot_policy"]["min_snapshot_bar_coverage"] == 1.0
     assert payload["autopilot_policy"]["min_snapshot_fundamental_coverage"] == 1.0
