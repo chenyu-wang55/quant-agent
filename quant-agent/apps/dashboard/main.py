@@ -393,6 +393,40 @@ def dashboard_home() -> str:
       align-items: end;
     }
 
+    .autopilot-grid {
+      margin-top: 11px;
+      grid-template-columns: repeat(5, minmax(118px, 1fr));
+    }
+
+    .check-field {
+      min-height: 35px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      padding: 7px 9px;
+      background: #fbfdff;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--ink);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .check-field input {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--brand);
+    }
+
+    .autopilot-head {
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
     .field label {
       display: block;
       color: var(--ink-soft);
@@ -573,6 +607,7 @@ def dashboard_home() -> str:
     @media (max-width: 1140px) {
       .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .control-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .autopilot-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     }
 
     @media (max-width: 980px) {
@@ -580,6 +615,7 @@ def dashboard_home() -> str:
       .hero .right { text-align: left; align-items: flex-start; width: 100%; }
       .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .autopilot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
 
     @media (max-width: 680px) {
@@ -592,6 +628,7 @@ def dashboard_home() -> str:
       table { font-size: 12px; }
       th, td { padding: 8px 6px; }
       .control-grid { grid-template-columns: 1fr; }
+      .autopilot-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -631,6 +668,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">自动循环</div><div class="v" id="systemRunCount">0</div></div>
       <div class="stat"><div class="k">自动审批</div><div class="v" id="autoApprovalCount">0</div></div>
       <div class="stat"><div class="k">自动执行</div><div class="v" id="autoActionCount">0</div></div>
+      <div class="stat"><div class="k">Autopilot</div><div class="v" id="autopilotStatus">-</div></div>
       <div class="stat"><div class="k">Kill Switch</div><div class="v" id="killSwitch">-</div></div>
     </div>
 
@@ -662,6 +700,33 @@ def dashboard_home() -> str:
         <button class="btn-mini" onclick="replaySnapshotByInput()">回放快照</button>
         <button class="btn-mini" onclick="refreshNow(true)">刷新状态</button>
         <input id="tradeReason" style="flex:1; min-width:220px; border:1px solid var(--line-strong); border-radius:8px; padding:7px 9px; font:inherit; font-size:13px;" placeholder="reason" />
+      </div>
+      <div class="autopilot-head">
+        <div>
+          <span id="autopilotPolicyBadge" class="badge b-neutral">Autopilot Policy</span>
+          <span id="autopilotPolicyMeta" class="small"></span>
+        </div>
+        <div>
+          <button class="btn-mini" onclick="saveAutopilotPolicy()">保存 Autopilot</button>
+          <button class="btn-mini danger" onclick="disableAutopilotPolicy()">关闭 Autopilot</button>
+        </div>
+      </div>
+      <div class="control-grid autopilot-grid">
+        <label class="check-field"><input id="autopilotEnabled" type="checkbox" /><span>Enabled</span></label>
+        <label class="check-field"><input id="autopilotAutoApprove" type="checkbox" /><span>Auto Approve</span></label>
+        <label class="check-field"><input id="autopilotAutoExecute" type="checkbox" /><span>Auto Execute</span></label>
+        <div class="field"><label for="autopilotExecutionMode">Policy Exec</label><select id="autopilotExecutionMode"><option value="paper">Paper</option><option value="live_dry_run">Live Dry Run</option></select></div>
+        <div class="field"><label for="autopilotMinConfidence">Auto Min Conf</label><input id="autopilotMinConfidence" type="number" min="0" max="1" step="0.01" value="0.72" /></div>
+        <div class="field"><label for="autopilotMinComposite">Min Composite</label><input id="autopilotMinComposite" type="number" min="0" step="0.01" value="0" /></div>
+        <div class="field"><label for="autopilotMaxApprovals">Max Approvals</label><input id="autopilotMaxApprovals" type="number" min="0" step="1" value="1" /></div>
+        <div class="field"><label for="autopilotMaxBuys">Max Buys</label><input id="autopilotMaxBuys" type="number" min="0" step="1" value="1" /></div>
+        <div class="field"><label for="autopilotMaxSells">Max Sells</label><input id="autopilotMaxSells" type="number" min="0" step="1" value="10" /></div>
+        <div class="field"><label for="autopilotAccountEquity">Policy Equity</label><input id="autopilotAccountEquity" type="number" min="1" step="1000" value="100000" /></div>
+        <div class="field"><label for="autopilotRiskPct">Policy Risk %</label><input id="autopilotRiskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
+        <div class="field"><label for="autopilotMaxPositionPct">Policy Position %</label><input id="autopilotMaxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
+        <div class="field"><label for="autopilotMaxGrossPct">Policy Gross %</label><input id="autopilotMaxGrossPct" type="number" min="0.01" max="500" step="1" value="100" /></div>
+        <div class="field"><label for="autopilotMaxSectorPct">Policy Sector %</label><input id="autopilotMaxSectorPct" type="number" min="0.01" max="500" step="1" value="30" /></div>
+        <div class="field"><label for="autopilotReason">Policy Reason</label><input id="autopilotReason" type="text" placeholder="policy update reason" /></div>
       </div>
       <div class="status-line" id="operationLog"></div>
     </div>
@@ -840,6 +905,7 @@ def dashboard_home() -> str:
     let currentSnapshots = [];
     let currentStrategyConfigs = [];
     let currentStrategyTuning = [];
+    let currentAutopilotPolicy = {};
 
     function esc(v) {
       return String(v ?? "")
@@ -879,6 +945,27 @@ def dashboard_home() -> str:
       if (raw === undefined || raw === null || raw === '') return null;
       const value = Number(raw);
       return Number.isFinite(value) ? value : null;
+    }
+
+    function checkedValue(id) {
+      return Boolean(document.getElementById(id)?.checked);
+    }
+
+    function setChecked(id, value) {
+      const el = document.getElementById(id);
+      if (el) el.checked = Boolean(value);
+    }
+
+    function setFieldValue(id, value) {
+      const el = document.getElementById(id);
+      if (!el || value === undefined || value === null) return;
+      el.value = String(value);
+    }
+
+    function pctInputValue(value, fallback) {
+      const n = Number(value);
+      const safe = Number.isFinite(n) ? n : fallback;
+      return Number((safe * 100).toFixed(4)).toString();
     }
 
     function reasonValue(fallback) {
@@ -921,6 +1008,77 @@ def dashboard_home() -> str:
         throw new Error(message);
       }
       return data;
+    }
+
+    function renderAutopilotPolicy(policy) {
+      currentAutopilotPolicy = policy || {};
+      const enabled = Boolean(currentAutopilotPolicy.enabled);
+      document.getElementById('autopilotStatus').innerHTML = enabled
+        ? '<span class="badge b-ok">ON</span>'
+        : '<span class="badge b-neutral">OFF</span>';
+      document.getElementById('autopilotPolicyBadge').className = enabled
+        ? 'badge b-ok'
+        : 'badge b-neutral';
+      document.getElementById('autopilotPolicyBadge').textContent = enabled
+        ? 'Autopilot ON'
+        : 'Autopilot OFF';
+      document.getElementById('autopilotPolicyMeta').textContent =
+        ` #${currentAutopilotPolicy.policy_id || '-'} | ${currentAutopilotPolicy.updated_by || 'system'} | ${fmtTime(currentAutopilotPolicy.updated_at)}`;
+
+      setChecked('autopilotEnabled', enabled);
+      setChecked('autopilotAutoApprove', currentAutopilotPolicy.auto_approve_recommendations);
+      setChecked('autopilotAutoExecute', currentAutopilotPolicy.auto_execute_approved);
+      setFieldValue('autopilotExecutionMode', currentAutopilotPolicy.auto_execution_mode || 'paper');
+      setFieldValue('autopilotMinConfidence', currentAutopilotPolicy.auto_approve_min_confidence ?? 0.72);
+      setFieldValue('autopilotMinComposite', currentAutopilotPolicy.auto_approve_min_composite ?? 0);
+      setFieldValue('autopilotMaxApprovals', currentAutopilotPolicy.max_auto_approvals ?? 1);
+      setFieldValue('autopilotMaxBuys', currentAutopilotPolicy.max_auto_buys ?? 1);
+      setFieldValue('autopilotMaxSells', currentAutopilotPolicy.max_auto_sells ?? 10);
+      setFieldValue('autopilotAccountEquity', currentAutopilotPolicy.account_equity ?? 100000);
+      setFieldValue('autopilotRiskPct', pctInputValue(currentAutopilotPolicy.risk_per_trade_pct, 0.01));
+      setFieldValue('autopilotMaxPositionPct', pctInputValue(currentAutopilotPolicy.max_position_pct, 0.10));
+      setFieldValue('autopilotMaxGrossPct', pctInputValue(currentAutopilotPolicy.max_gross_exposure_pct, 1.0));
+      setFieldValue('autopilotMaxSectorPct', pctInputValue(currentAutopilotPolicy.max_sector_exposure_pct, 0.30));
+      setFieldValue('autopilotReason', currentAutopilotPolicy.reason || '');
+    }
+
+    function autopilotPolicyPayload(forceEnabled = null) {
+      const enabled = forceEnabled === null ? checkedValue('autopilotEnabled') : Boolean(forceEnabled);
+      return {
+        enabled,
+        auto_approve_recommendations: checkedValue('autopilotAutoApprove'),
+        auto_execute_approved: checkedValue('autopilotAutoExecute'),
+        auto_execution_mode: document.getElementById('autopilotExecutionMode')?.value || 'paper',
+        auto_approve_min_confidence: numberValue('autopilotMinConfidence') ?? 0.72,
+        auto_approve_min_composite: numberValue('autopilotMinComposite') ?? 0,
+        max_auto_approvals: Math.max(0, Math.floor(numberValue('autopilotMaxApprovals') ?? 1)),
+        max_auto_buys: Math.max(0, Math.floor(numberValue('autopilotMaxBuys') ?? 1)),
+        max_auto_sells: Math.max(0, Math.floor(numberValue('autopilotMaxSells') ?? 10)),
+        account_equity: numberValue('autopilotAccountEquity') ?? 100000,
+        risk_per_trade_pct: (numberValue('autopilotRiskPct') ?? 1) / 100,
+        max_position_pct: (numberValue('autopilotMaxPositionPct') ?? 10) / 100,
+        max_gross_exposure_pct: (numberValue('autopilotMaxGrossPct') ?? 100) / 100,
+        max_sector_exposure_pct: (numberValue('autopilotMaxSectorPct') ?? 30) / 100,
+        reason: document.getElementById('autopilotReason')?.value?.trim() || (
+          enabled ? 'dashboard_autopilot_policy' : 'dashboard_autopilot_disabled'
+        ),
+        updated_by: 'dashboard',
+      };
+    }
+
+    async function saveAutopilotPolicy(forceEnabled = null) {
+      try {
+        const result = await postJson('/execution/autopilot-policy', autopilotPolicyPayload(forceEnabled));
+        renderAutopilotPolicy(result);
+        setActionStatus(`Autopilot policy 已保存: ${result.enabled ? 'ON' : 'OFF'} #${result.policy_id}`);
+        await loadData();
+      } catch (err) {
+        setActionStatus(`保存 Autopilot policy 失败: ${err.message || err}`, true);
+      }
+    }
+
+    function disableAutopilotPolicy() {
+      saveAutopilotPolicy(false);
     }
 
     function providerReliability(provider) {
@@ -1741,6 +1899,7 @@ def dashboard_home() -> str:
       document.getElementById('killSwitch').innerHTML = data.kill_switch?.enabled
         ? '<span class="badge b-danger">ON</span>'
         : '<span class="badge b-ok">OFF</span>';
+      renderAutopilotPolicy(data.autopilot_policy || {});
       const updateTime = data.timestamp ? fmtTime(data.timestamp) : '-';
       document.getElementById('meta').textContent =
         `最后刷新: ${updateTime} | snapshot: ${data.source_snapshot_id || 'N/A'} | pending events: ${data.summary?.pending_event_count ?? 0}`;
