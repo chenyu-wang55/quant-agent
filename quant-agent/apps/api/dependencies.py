@@ -37,6 +37,9 @@ from domain.entities.models import (
     PaperOrderStatus,
     PortfolioPerformance,
     PortfolioSummary,
+    PositionReconciliationItem,
+    PositionReconciliationReport,
+    PositionReconciliationRequest,
     PositionState,
     Recommendation,
     RecommendationAttribution,
@@ -78,6 +81,7 @@ from infra.db.repositories import (
     HoldingControlAuditRepository,
     HoldingWatchRepository,
     PaperOrderRepository,
+    PositionReconciliationRepository,
     PositionRepository,
     RecommendationRepository,
     SellAlertAuditRepository,
@@ -116,6 +120,9 @@ class AppState:
     feature_repo: FeatureRepository = field(default_factory=FeatureRepository)
     paper_order_repo: PaperOrderRepository = field(default_factory=PaperOrderRepository)
     position_repo: PositionRepository = field(default_factory=PositionRepository)
+    position_reconciliation_repo: PositionReconciliationRepository = field(
+        default_factory=PositionReconciliationRepository
+    )
     holding_watch_repo: HoldingWatchRepository = field(default_factory=HoldingWatchRepository)
     holding_control_audit_repo: HoldingControlAuditRepository = field(default_factory=HoldingControlAuditRepository)
     trade_ledger_repo: TradeLedgerRepository = field(default_factory=TradeLedgerRepository)
@@ -1957,6 +1964,150 @@ class AppState:
             applied_to_ledger=applied_to_ledger,
         )
 
+    def reconcile_broker_positions(
+        self,
+        request: PositionReconciliationRequest,
+    ) -> PositionReconciliationReport:
+        checked_at = datetime.now(timezone.utc)
+        as_of = request.as_of or checked_at
+        if as_of.tzinfo is None:
+            as_of = as_of.replace(tzinfo=timezone.utc)
+        else:
+            as_of = as_of.astimezone(timezone.utc)
+
+        qty_tolerance = float(request.qty_tolerance)
+        local_holdings = self.list_open_holdings()
+        local_by_ticker = {holding.ticker.upper(): holding for holding in local_holdings}
+        broker_by_ticker: dict[str, dict[str, float | None]] = {}
+        for position in request.positions:
+            ticker = position.ticker.upper().strip()
+            if not ticker:
+                raise ValueError("broker position ticker cannot be empty")
+            qty = round(float(position.qty), 6)
+            current = broker_by_ticker.setdefault(
+                ticker,
+                {"qty": 0.0, "priced_qty": 0.0, "weighted_avg_price": 0.0, "avg_price": None},
+            )
+            current["qty"] = float(current["qty"] or 0.0) + qty
+            if position.avg_price is not None and qty > qty_tolerance:
+                current["priced_qty"] = float(current["priced_qty"] or 0.0) + qty
+                current["weighted_avg_price"] = (
+                    float(current["weighted_avg_price"] or 0.0) + qty * float(position.avg_price)
+                )
+
+        for current in broker_by_ticker.values():
+            priced_qty = float(current["priced_qty"] or 0.0)
+            if priced_qty > qty_tolerance:
+                current["avg_price"] = round(float(current["weighted_avg_price"] or 0.0) / priced_qty, 6)
+
+        broker_positive = {
+            ticker: item
+            for ticker, item in broker_by_ticker.items()
+            if float(item["qty"] or 0.0) > qty_tolerance
+        }
+        tickers = sorted(set(local_by_ticker) | set(broker_positive))
+        items: list[PositionReconciliationItem] = []
+        matched_count = 0
+        missing_in_broker_count = 0
+        broker_only_count = 0
+        qty_mismatch_count = 0
+
+        for ticker in tickers:
+            local = local_by_ticker.get(ticker)
+            broker = broker_by_ticker.get(ticker, {})
+            local_qty = round(float(local.qty if local is not None else 0.0), 6)
+            broker_qty = round(float(broker.get("qty") or 0.0), 6)
+            qty_diff = round(broker_qty - local_qty, 6)
+            local_present = local is not None and local_qty > qty_tolerance
+            broker_present = broker_qty > qty_tolerance
+
+            if local_present and broker_present and abs(qty_diff) <= qty_tolerance:
+                status = "matched"
+                message_cn = f"{ticker} 本地持仓与券商快照一致。"
+                matched_count += 1
+            elif local_present and not broker_present:
+                status = "missing_in_broker"
+                message_cn = f"{ticker} 本地记录有 {local_qty:g} 股，但券商快照没有该持仓。"
+                missing_in_broker_count += 1
+            elif broker_present and not local_present:
+                status = "broker_only"
+                message_cn = f"{ticker} 券商快照有 {broker_qty:g} 股，但本地没有 open holding。"
+                broker_only_count += 1
+            else:
+                status = "qty_mismatch"
+                message_cn = (
+                    f"{ticker} 数量不一致：本地 {local_qty:g} 股，券商 {broker_qty:g} 股，"
+                    f"差额 {qty_diff:g} 股。"
+                )
+                qty_mismatch_count += 1
+
+            items.append(
+                PositionReconciliationItem(
+                    ticker=ticker,
+                    local_qty=local_qty,
+                    broker_qty=broker_qty,
+                    qty_diff=qty_diff,
+                    local_avg_price=round(local.avg_buy_price, 6) if local is not None else None,
+                    broker_avg_price=broker.get("avg_price"),
+                    local_present=local_present,
+                    broker_present=broker_present,
+                    status=status,
+                    message_cn=message_cn,
+                )
+            )
+
+        mismatch_count = missing_in_broker_count + broker_only_count + qty_mismatch_count
+        if not local_by_ticker and not broker_positive:
+            status = "empty"
+        else:
+            status = "matched" if mismatch_count == 0 else "mismatch"
+        report = PositionReconciliationReport(
+            reconciliation_id=uuid4().hex[:16],
+            broker=request.broker.strip() or "manual",
+            account_id=request.account_id,
+            checked_at=checked_at,
+            as_of=as_of,
+            status=status,
+            blocks_auto_execution=mismatch_count > 0,
+            local_position_count=len(local_by_ticker),
+            broker_position_count=len(broker_positive),
+            matched_count=matched_count,
+            mismatch_count=mismatch_count,
+            missing_in_broker_count=missing_in_broker_count,
+            broker_only_count=broker_only_count,
+            qty_tolerance=qty_tolerance,
+            note=request.note,
+            items=items,
+        )
+        self.position_reconciliation_repo.add(report)
+        self.metrics_store.inc("position_reconciliations")
+        self.metrics_store.set_gauge(
+            "position_reconciliation_blocks_auto_execution",
+            1.0 if report.blocks_auto_execution else 0.0,
+        )
+        self.publish_event(
+            EventType.POSITION_RECONCILIATION,
+            {
+                "reconciliation_id": report.reconciliation_id,
+                "broker": report.broker,
+                "account_id": report.account_id,
+                "status": report.status,
+                "blocks_auto_execution": report.blocks_auto_execution,
+                "mismatch_count": report.mismatch_count,
+                "local_position_count": report.local_position_count,
+                "broker_position_count": report.broker_position_count,
+            },
+        )
+        return report
+
+    def list_position_reconciliations(
+        self,
+        limit: int = 100,
+        broker: str | None = None,
+        status: str | None = None,
+    ) -> list[PositionReconciliationReport]:
+        return self.position_reconciliation_repo.list_recent(limit=limit, broker=broker, status=status)
+
     def get_portfolio_summary(self, as_of: datetime | None = None) -> PortfolioSummary:
         now = as_of or datetime.now(timezone.utc)
         open_holdings = self.list_open_holdings()
@@ -2609,6 +2760,7 @@ class AppState:
         self.autopilot_policy_repo.clear_all()
         self.system_cycle_run_repo.clear_all()
         self.system_event_repo.clear_all()
+        self.position_reconciliation_repo.clear_all()
         self.kill_switch = self.execution_control_repo.set_kill_switch(
             enabled=False,
             reason="state_reset",

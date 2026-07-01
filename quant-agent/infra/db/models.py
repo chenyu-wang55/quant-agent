@@ -190,6 +190,27 @@ class HoldingControlAuditRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
+class PositionReconciliationRecord(Base):
+    __tablename__ = "position_reconciliations"
+
+    reconciliation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    broker: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    account_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    blocks_auto_execution: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    local_position_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    broker_position_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    matched_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    mismatch_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    missing_in_broker_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    broker_only_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    qty_tolerance: Mapped[float] = mapped_column(Float, nullable=False, default=1e-6)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    items_json: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
 class TradeLedgerRecord(Base):
     __tablename__ = "trade_ledger"
 

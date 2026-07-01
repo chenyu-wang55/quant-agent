@@ -785,6 +785,55 @@ class PortfolioSummary(BaseModel):
     last_closed_at: datetime | None = None
 
 
+class BrokerPositionSnapshot(BaseModel):
+    ticker: str
+    qty: float = Field(ge=0.0)
+    avg_price: float | None = Field(default=None, gt=0.0)
+    market_price: float | None = Field(default=None, gt=0.0)
+    broker_position_id: str | None = None
+
+
+class PositionReconciliationRequest(BaseModel):
+    broker: str = "manual"
+    account_id: str | None = None
+    as_of: datetime | None = None
+    qty_tolerance: float = Field(default=1e-6, ge=0.0)
+    positions: list[BrokerPositionSnapshot] = Field(default_factory=list)
+    note: str | None = None
+
+
+class PositionReconciliationItem(BaseModel):
+    ticker: str
+    local_qty: float
+    broker_qty: float
+    qty_diff: float
+    local_avg_price: float | None = None
+    broker_avg_price: float | None = None
+    local_present: bool
+    broker_present: bool
+    status: str
+    message_cn: str
+
+
+class PositionReconciliationReport(BaseModel):
+    reconciliation_id: str
+    broker: str
+    account_id: str | None = None
+    checked_at: datetime = Field(default_factory=utc_now)
+    as_of: datetime
+    status: str
+    blocks_auto_execution: bool
+    local_position_count: int
+    broker_position_count: int
+    matched_count: int
+    mismatch_count: int
+    missing_in_broker_count: int
+    broker_only_count: int
+    qty_tolerance: float
+    note: str | None = None
+    items: list[PositionReconciliationItem] = Field(default_factory=list)
+
+
 class TickerPerformance(BaseModel):
     ticker: str
     trade_count: int

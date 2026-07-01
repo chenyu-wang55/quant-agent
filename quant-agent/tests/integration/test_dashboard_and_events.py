@@ -85,6 +85,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "autopilotMaxSnapshotBarAge" in dashboard_home.text
     assert "autopilotMaxOpenRiskPct" in dashboard_home.text
     assert "autopilotMaxDailyLossPct" in dashboard_home.text
+    assert "autopilotMaxBuyDriftPct" in dashboard_home.text
     assert "saveAutopilotPolicy" in dashboard_home.text
     assert "/execution/autopilot-policy" in dashboard_home.text
     assert "runSystemCycle" in dashboard_home.text
@@ -92,6 +93,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "交易流水" in dashboard_home.text
     assert "持仓风控审计" in dashboard_home.text
     assert "卖出执行审计" in dashboard_home.text
+    assert "仓位核对" in dashboard_home.text
     assert "卖出提醒历史" in dashboard_home.text
     assert "纸单记录" in dashboard_home.text
     assert "交易复盘" in dashboard_home.text
@@ -100,6 +102,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "renderTrades" in dashboard_home.text
     assert "renderHoldingControlAudits" in dashboard_home.text
     assert "renderSellExecutions" in dashboard_home.text
+    assert "renderPositionReconciliations" in dashboard_home.text
     assert "renderAlertHistory" in dashboard_home.text
     assert "renderPerformance" in dashboard_home.text
     assert "renderAttribution" in dashboard_home.text
@@ -130,6 +133,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "adapter_message" in dashboard_home.text
     assert "holdingControlAuditCount" in dashboard_home.text
     assert "sellExecutionCount" in dashboard_home.text
+    assert "positionReconciliationCount" in dashboard_home.text
     assert "alertHistoryCount" in dashboard_home.text
     assert "systemRunCount" in dashboard_home.text
     assert "autoApprovalCount" in dashboard_home.text
@@ -149,6 +153,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "recent_paper_orders" in payload
     assert "recent_holding_control_audits" in payload
     assert "recent_sell_executions" in payload
+    assert "recent_position_reconciliations" in payload
     assert "recent_system_runs" in payload
     assert "recent_alert_history" in payload
     assert "recommendation_attribution" in payload
@@ -162,6 +167,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert payload["autopilot_policy"]["max_snapshot_bar_age_minutes"] == 4320
     assert payload["autopilot_policy"]["max_open_risk_pct"] == 0.06
     assert payload["autopilot_policy"]["max_daily_realized_loss_pct"] == 0.03
+    assert payload["autopilot_policy"]["max_auto_buy_price_drift_pct"] == 0.03
     assert payload["autopilot_preflight"]["status"] == "off"
     assert "daily_usage" in payload["autopilot_preflight"]
     assert payload["market_session"]["timezone"] == "America/New_York"
@@ -171,6 +177,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert payload["source_snapshots"][0]["data_quality"]["bar_coverage"] >= 0
     assert payload["source_snapshots"][0]["data_quality"]["fundamental_coverage"] >= 0
     assert "holding_control_audit_count" in payload["summary"]
+    assert "position_reconciliation_count" in payload["summary"]
     assert "latest_auto_approval_count" in payload["summary"]
     assert "latest_auto_action_count" in payload["summary"]
     assert payload["strategy_configs"][0]["strategy_config_id"]

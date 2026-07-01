@@ -17,6 +17,8 @@ from domain.entities.models import (
     ManualSellRequest,
     PortfolioPerformance,
     PortfolioSummary,
+    PositionReconciliationReport,
+    PositionReconciliationRequest,
     RecommendationAttributionReport,
     SellAlert,
     SellAlertAudit,
@@ -124,6 +126,27 @@ def list_sell_execution_audits(
         dry_run=dry_run,
         applied_to_ledger=applied_to_ledger,
     )
+
+
+@router.post("/portfolio/reconciliation", response_model=PositionReconciliationReport)
+def reconcile_broker_positions(
+    request: PositionReconciliationRequest,
+    state: AppState = Depends(get_app_state),
+) -> PositionReconciliationReport:
+    try:
+        return state.reconcile_broker_positions(request)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/portfolio/reconciliations", response_model=list[PositionReconciliationReport])
+def list_position_reconciliations(
+    limit: int = Query(default=100, ge=1, le=500),
+    broker: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    state: AppState = Depends(get_app_state),
+) -> list[PositionReconciliationReport]:
+    return state.list_position_reconciliations(limit=limit, broker=broker, status=status)
 
 
 @router.get("/portfolio/alert-history", response_model=list[SellAlertAudit])

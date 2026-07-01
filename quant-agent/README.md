@@ -301,6 +301,10 @@ keeps fast unattended loops from duplicating broker submissions.
 has drifted beyond the allowed entry-zone tolerance, reducing stale-snapshot chasing.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
+Before moving beyond paper or live dry-run, reconcile broker positions against the
+local open-holding ledger with `POST /portfolio/reconciliation`. The response is
+persisted in `position_reconciliations`, emits a `position_reconciliation` event, and
+sets `blocks_auto_execution=true` whenever local and broker quantities disagree.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

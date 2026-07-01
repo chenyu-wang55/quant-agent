@@ -125,6 +125,8 @@ def dashboard_realtime_data(
     holding_control_audit_count = len(state.list_holding_control_audits(limit=10_000))
     recent_sell_executions = state.list_sell_execution_audits(limit=10)
     sell_execution_count = len(state.list_sell_execution_audits(limit=10_000))
+    recent_position_reconciliations = state.list_position_reconciliations(limit=10)
+    position_reconciliation_count = len(state.list_position_reconciliations(limit=10_000))
     recent_system_runs = state.list_system_cycle_runs(limit=10)
     system_run_count = len(state.list_system_cycle_runs(limit=10_000))
     latest_auto_execution = (
@@ -172,6 +174,7 @@ def dashboard_realtime_data(
             "paper_order_count": paper_order_count,
             "holding_control_audit_count": holding_control_audit_count,
             "sell_execution_count": sell_execution_count,
+            "position_reconciliation_count": position_reconciliation_count,
             "source_snapshot_count": source_snapshot_count,
             "strategy_config_count": strategy_config_count,
             "strategy_tuning_count": strategy_tuning.recommendation_count,
@@ -212,6 +215,9 @@ def dashboard_realtime_data(
             audit.model_dump(mode="json") for audit in recent_holding_control_audits
         ],
         "recent_sell_executions": [execution.model_dump(mode="json") for execution in recent_sell_executions],
+        "recent_position_reconciliations": [
+            item.model_dump(mode="json") for item in recent_position_reconciliations
+        ],
         "recent_system_runs": [run.model_dump(mode="json") for run in recent_system_runs],
         "recent_alert_history": [item.model_dump(mode="json") for item in recent_alert_history],
         "alerts": [
@@ -662,6 +668,7 @@ def dashboard_home() -> str:
       <div class="stat"><div class="k">纸单</div><div class="v" id="paperOrderCount">0</div></div>
       <div class="stat"><div class="k">风控审计</div><div class="v" id="holdingControlAuditCount">0</div></div>
       <div class="stat"><div class="k">卖出审计</div><div class="v" id="sellExecutionCount">0</div></div>
+      <div class="stat"><div class="k">仓位核对</div><div class="v" id="positionReconciliationCount">0</div></div>
       <div class="stat"><div class="k">已实现盈亏</div><div class="v" id="realizedPnl">0.00</div></div>
       <div class="stat"><div class="k">开放风险</div><div class="v" id="openRisk">0.00</div></div>
       <div class="stat"><div class="k">交易笔数</div><div class="v" id="tradeCount">0</div></div>
@@ -856,6 +863,17 @@ def dashboard_home() -> str:
       <table>
         <thead><tr><th>时间</th><th>Exec</th><th>股票</th><th>数量</th><th>价格</th><th>状态</th><th>Ledger</th><th>预计/实际盈亏</th><th>原因</th><th>Adapter</th></tr></thead>
         <tbody id="sellExecutionBody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h3>仓位核对</h3>
+        <span class="small">券商持仓快照与本地 open holdings 的一致性审计</span>
+      </div>
+      <table>
+        <thead><tr><th>时间</th><th>Broker</th><th>状态</th><th>阻断</th><th>本地/券商</th><th>差异</th><th>备注</th></tr></thead>
+        <tbody id="positionReconciliationBody"></tbody>
       </table>
     </div>
 
@@ -1848,6 +1866,30 @@ def dashboard_home() -> str:
       }).join("");
     }
 
+    function renderPositionReconciliations(items) {
+      const body = document.getElementById("positionReconciliationBody");
+      if (!items || items.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="small">暂无仓位核对记录。</td></tr>';
+        return;
+      }
+      body.innerHTML = items.map((item) => {
+        const cls = item.status === 'matched' || item.status === 'empty'
+          ? 'b-ok'
+          : 'b-danger';
+        return `
+          <tr>
+            <td class="small">${fmtTime(item.checked_at)}</td>
+            <td>${esc(item.broker || '-')}</td>
+            <td><span class="badge ${cls}">${esc(item.status || '-')}</span></td>
+            <td>${item.blocks_auto_execution ? '<span class="badge b-danger">yes</span>' : '<span class="badge b-ok">no</span>'}</td>
+            <td>${esc(item.local_position_count ?? 0)} / ${esc(item.broker_position_count ?? 0)}</td>
+            <td>${esc(item.mismatch_count ?? 0)}</td>
+            <td class="small">${esc(item.note || '')}</td>
+          </tr>
+        `;
+      }).join("");
+    }
+
     function fmtPct(v) {
       const n = Number(v);
       if (!Number.isFinite(n)) return '-';
@@ -1967,6 +2009,9 @@ def dashboard_home() -> str:
       document.getElementById('paperOrderCount').textContent = String(data.summary?.paper_order_count ?? 0);
       document.getElementById('holdingControlAuditCount').textContent = String(data.summary?.holding_control_audit_count ?? 0);
       document.getElementById('sellExecutionCount').textContent = String(data.summary?.sell_execution_count ?? 0);
+      document.getElementById('positionReconciliationCount').textContent = String(
+        data.summary?.position_reconciliation_count ?? 0
+      );
       document.getElementById('realizedPnl').textContent = fmtNum(data.portfolio_summary?.total_realized_pnl, 2);
       document.getElementById('openRisk').textContent = fmtNum(data.portfolio_summary?.open_risk_to_stop, 2);
       document.getElementById('tradeCount').textContent = String(data.portfolio_summary?.trade_count ?? 0);
@@ -2004,6 +2049,7 @@ def dashboard_home() -> str:
       renderTrades(data.recent_trades || []);
       renderHoldingControlAudits(data.recent_holding_control_audits || []);
       renderSellExecutions(data.recent_sell_executions || []);
+      renderPositionReconciliations(data.recent_position_reconciliations || []);
       renderPerformance(data.portfolio_performance || {});
       renderAttribution(data.recommendation_attribution || {});
       renderAlerts(data.alerts || []);

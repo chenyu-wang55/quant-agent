@@ -21,6 +21,7 @@ class EventType(str, Enum):
     SELL_ROUTED = "sell_routed"
     PORTFOLIO_SELL = "portfolio_sell"
     HOLDING_CONTROLS_UPDATED = "holding_controls_updated"
+    POSITION_RECONCILIATION = "position_reconciliation"
 
 
 class EventStatus(str, Enum):

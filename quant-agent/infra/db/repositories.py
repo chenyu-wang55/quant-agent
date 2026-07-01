@@ -22,6 +22,8 @@ from domain.entities.models import (
     PaperOrder,
     PaperOrderStatus,
     PatternType,
+    PositionReconciliationItem,
+    PositionReconciliationReport,
     PositionState,
     Recommendation,
     RecommendationAnalysis,
@@ -48,6 +50,7 @@ from infra.db.models import (
     HoldingWatchRecord,
     HoldingControlAuditRecord,
     PaperOrderRecord,
+    PositionReconciliationRecord,
     PositionStateRecord,
     RecommendationRecord,
     SellAlertAuditRecord,
@@ -563,6 +566,74 @@ class HoldingControlAuditRepository:
             reason=record.reason,
             updated_by=record.updated_by,
             updated_at=_ensure_utc(record.updated_at),
+        )
+
+
+class PositionReconciliationRepository:
+    def add(self, report: PositionReconciliationReport) -> None:
+        with SessionLocal() as session:
+            session.merge(
+                PositionReconciliationRecord(
+                    reconciliation_id=report.reconciliation_id,
+                    broker=report.broker,
+                    account_id=report.account_id,
+                    checked_at=report.checked_at,
+                    as_of=report.as_of,
+                    status=report.status,
+                    blocks_auto_execution=1 if report.blocks_auto_execution else 0,
+                    local_position_count=report.local_position_count,
+                    broker_position_count=report.broker_position_count,
+                    matched_count=report.matched_count,
+                    mismatch_count=report.mismatch_count,
+                    missing_in_broker_count=report.missing_in_broker_count,
+                    broker_only_count=report.broker_only_count,
+                    qty_tolerance=report.qty_tolerance,
+                    note=report.note,
+                    items_json=[item.model_dump(mode="json") for item in report.items],
+                )
+            )
+            session.commit()
+
+    def list_recent(
+        self,
+        limit: int = 100,
+        broker: str | None = None,
+        status: str | None = None,
+    ) -> list[PositionReconciliationReport]:
+        with SessionLocal() as session:
+            stmt = select(PositionReconciliationRecord)
+            if broker is not None:
+                stmt = stmt.where(PositionReconciliationRecord.broker == broker)
+            if status is not None:
+                stmt = stmt.where(PositionReconciliationRecord.status == status)
+            stmt = stmt.order_by(PositionReconciliationRecord.checked_at.desc()).limit(limit)
+            records = list(session.execute(stmt).scalars())
+        return [self._to_domain(record) for record in records]
+
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(PositionReconciliationRecord))
+            session.commit()
+
+    @staticmethod
+    def _to_domain(record: PositionReconciliationRecord) -> PositionReconciliationReport:
+        return PositionReconciliationReport(
+            reconciliation_id=record.reconciliation_id,
+            broker=record.broker,
+            account_id=record.account_id,
+            checked_at=_ensure_utc(record.checked_at),
+            as_of=_ensure_utc(record.as_of),
+            status=record.status,
+            blocks_auto_execution=bool(record.blocks_auto_execution),
+            local_position_count=record.local_position_count,
+            broker_position_count=record.broker_position_count,
+            matched_count=record.matched_count,
+            mismatch_count=record.mismatch_count,
+            missing_in_broker_count=record.missing_in_broker_count,
+            broker_only_count=record.broker_only_count,
+            qty_tolerance=record.qty_tolerance,
+            note=record.note,
+            items=[PositionReconciliationItem(**item) for item in list(record.items_json or [])],
         )
 
 
