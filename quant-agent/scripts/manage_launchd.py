@@ -62,6 +62,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.account_equity),
         "--max-open-risk-pct",
         str(args.max_open_risk_pct),
+        "--max-daily-realized-loss-pct",
+        str(args.max_daily_realized_loss_pct),
         "--risk-per-trade-pct",
         str(args.risk_per_trade_pct),
         "--max-position-pct",
@@ -172,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-snapshot-bar-age-minutes", type=int, default=4320)
     parser.add_argument("--account-equity", type=float, default=100_000.0)
     parser.add_argument("--max-open-risk-pct", type=float, default=0.06)
+    parser.add_argument("--max-daily-realized-loss-pct", type=float, default=0.03)
     parser.add_argument("--risk-per-trade-pct", type=float, default=0.01)
     parser.add_argument("--max-position-pct", type=float, default=0.10)
     parser.add_argument("--max-gross-exposure-pct", type=float, default=1.0)

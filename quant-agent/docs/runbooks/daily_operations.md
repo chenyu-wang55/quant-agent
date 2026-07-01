@@ -324,6 +324,7 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "max_daily_auto_approvals": 3,
     "max_daily_auto_buys": 3,
     "max_daily_auto_sells": 10,
+    "max_daily_realized_loss_pct": 0.03,
     "updated_by": "ops",
     "reason": "paper autopilot"
   }'
@@ -333,6 +334,9 @@ When `restrict_auto_execution_to_regular_hours` is true, preflight blocks automa
 buys and sells outside the approximate US equity regular session
 `09:30-16:00 America/New_York`. Recommendations, monitoring, and alert recording still
 run so the next open session has fresh context.
+When `daily_realized_loss` exceeds `max_daily_realized_loss_pct`, preflight blocks
+automatic approvals and the worker skips automatic buys; sell-alert execution can still
+run so existing risk can be reduced.
 
 Run one full audited system cycle from the API or dashboard:
 

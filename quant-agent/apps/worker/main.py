@@ -270,6 +270,7 @@ def _auto_execute_cycle(
     as_of: datetime,
     account_equity: float,
     max_open_risk_pct: float,
+    max_daily_realized_loss_pct: float,
     risk_per_trade_pct: float,
     max_position_pct: float,
     max_gross_exposure_pct: float,
@@ -369,6 +370,11 @@ def _auto_execute_cycle(
         "account_equity": account_equity,
         "open_holding_count": portfolio_summary.open_holding_count,
     }
+    daily_loss_gate = state.get_autopilot_daily_loss_gate(
+        as_of=as_of,
+        account_equity=account_equity,
+        max_daily_realized_loss_pct=max_daily_realized_loss_pct,
+    )
 
     open_tickers = {holding.ticker.upper() for holding in state.list_open_holdings()}
     buy_count = 0
@@ -382,6 +388,18 @@ def _auto_execute_cycle(
                     "ticker": recommendation.ticker,
                     "recommendation_id": recommendation.id,
                     "reason": "max_auto_buys_reached",
+                }
+            )
+            continue
+        if not daily_loss_gate["passed"]:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "daily_loss_gate_failed",
+                    "daily_loss_gate": daily_loss_gate,
                 }
             )
             continue
@@ -547,6 +565,7 @@ def _auto_execute_cycle(
         mode=execution_mode,
         actions=actions,
         portfolio_risk_gate=portfolio_risk_gate,
+        daily_loss_gate=daily_loss_gate,
     )
 
 
@@ -556,11 +575,13 @@ def _auto_execution_report(
     mode: str,
     actions: list[dict[str, Any]],
     portfolio_risk_gate: dict[str, Any] | None = None,
+    daily_loss_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "enabled": enabled,
         "mode": mode,
         "portfolio_risk_gate": portfolio_risk_gate,
+        "daily_loss_gate": daily_loss_gate,
         "action_count": len(actions),
         "buy_order_count": sum(
             1
@@ -668,6 +689,7 @@ def _apply_autopilot_policy(
             "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
             "max_snapshot_bar_age_minutes": policy.max_snapshot_bar_age_minutes,
             "max_open_risk_pct": policy.max_open_risk_pct,
+            "max_daily_realized_loss_pct": policy.max_daily_realized_loss_pct,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,
@@ -698,6 +720,7 @@ def system_cycle(
     max_snapshot_bar_age_minutes: int = 4320,
     account_equity: float = 100_000.0,
     max_open_risk_pct: float = 0.06,
+    max_daily_realized_loss_pct: float = 0.03,
     risk_per_trade_pct: float = 0.01,
     max_position_pct: float = 0.10,
     max_gross_exposure_pct: float = 1.0,
@@ -728,6 +751,7 @@ def system_cycle(
                 "max_snapshot_bar_age_minutes": max_snapshot_bar_age_minutes,
                 "account_equity": account_equity,
                 "max_open_risk_pct": max_open_risk_pct,
+                "max_daily_realized_loss_pct": max_daily_realized_loss_pct,
                 "risk_per_trade_pct": risk_per_trade_pct,
                 "max_position_pct": max_position_pct,
                 "max_gross_exposure_pct": max_gross_exposure_pct,
@@ -750,6 +774,7 @@ def system_cycle(
         max_snapshot_bar_age_minutes = policy_values["max_snapshot_bar_age_minutes"]
         account_equity = policy_values["account_equity"]
         max_open_risk_pct = policy_values["max_open_risk_pct"]
+        max_daily_realized_loss_pct = policy_values["max_daily_realized_loss_pct"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
         max_position_pct = policy_values["max_position_pct"]
         max_gross_exposure_pct = policy_values["max_gross_exposure_pct"]
@@ -773,6 +798,27 @@ def system_cycle(
         max_bar_age_minutes=max_snapshot_bar_age_minutes,
     )
     snapshot_quality_passed = bool(snapshot_quality_gate.get("passed"))
+    daily_loss_gate = state.get_autopilot_daily_loss_gate(
+        as_of=started_at,
+        account_equity=account_equity,
+        max_daily_realized_loss_pct=max_daily_realized_loss_pct,
+    )
+    daily_loss_passed = bool(daily_loss_gate.get("passed"))
+    auto_approval_block: dict[str, Any] | None = None
+    if not snapshot_quality_passed:
+        auto_approval_block = {
+            "action": "approve_recommendation",
+            "status": "skipped",
+            "reason": "snapshot_quality_gate_failed",
+            "snapshot_quality_gate": snapshot_quality_gate,
+        }
+    elif not daily_loss_passed:
+        auto_approval_block = {
+            "action": "approve_recommendation",
+            "status": "skipped",
+            "reason": "daily_loss_gate_failed",
+            "daily_loss_gate": daily_loss_gate,
+        }
     auto_approval = (
         _auto_approve_cycle(
             recommendations=output.result.recommendations[:top_n],
@@ -780,19 +826,12 @@ def system_cycle(
             min_confidence=auto_approve_min_confidence,
             min_composite=auto_approve_min_composite,
         )
-        if auto_approve_recommendations and snapshot_quality_passed
+        if auto_approve_recommendations and auto_approval_block is None
         else _auto_approval_report(
             enabled=False,
-            actions=[
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "reason": "snapshot_quality_gate_failed",
-                    "snapshot_quality_gate": snapshot_quality_gate,
-                }
-            ],
+            actions=[auto_approval_block],
         )
-        if auto_approve_recommendations
+        if auto_approve_recommendations and auto_approval_block is not None
         else _auto_approval_report(enabled=False, actions=[])
     )
     alerts = state.monitor_sell_alerts(as_of=started_at)
@@ -809,6 +848,7 @@ def system_cycle(
             as_of=started_at,
             account_equity=account_equity,
             max_open_risk_pct=max_open_risk_pct,
+            max_daily_realized_loss_pct=max_daily_realized_loss_pct,
             risk_per_trade_pct=risk_per_trade_pct,
             max_position_pct=max_position_pct,
             max_gross_exposure_pct=max_gross_exposure_pct,
@@ -864,6 +904,7 @@ def system_cycle(
     metrics["autopilot_policy"] = autopilot_policy
     metrics["autopilot_preflight"] = autopilot_preflight
     metrics["snapshot_quality_gate"] = snapshot_quality_gate
+    metrics["daily_loss_gate"] = daily_loss_gate
     run = SystemCycleRun(
         id=run_id,
         started_at=started_at,
@@ -899,6 +940,7 @@ def system_cycle(
         "autopilot_policy": autopilot_policy,
         "autopilot_preflight": autopilot_preflight,
         "snapshot_quality_gate": snapshot_quality_gate,
+        "daily_loss_gate": daily_loss_gate,
         "auto_approval": auto_approval,
         "auto_execution": auto_execution,
         "consumed_event_count": len(consumed_events),
@@ -1081,6 +1123,12 @@ def main() -> None:
         help="maximum current open risk to stop as a fraction of account equity before auto buys are blocked",
     )
     parser.add_argument(
+        "--max-daily-realized-loss-pct",
+        type=float,
+        default=0.03,
+        help="maximum same-day realized loss as a fraction of account equity before auto approvals/buys are blocked",
+    )
+    parser.add_argument(
         "--risk-per-trade-pct",
         type=float,
         default=0.01,
@@ -1154,6 +1202,7 @@ def main() -> None:
             max_snapshot_bar_age_minutes=args.max_snapshot_bar_age_minutes,
             account_equity=args.account_equity,
             max_open_risk_pct=args.max_open_risk_pct,
+            max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,
@@ -1182,6 +1231,7 @@ def main() -> None:
             max_snapshot_bar_age_minutes=args.max_snapshot_bar_age_minutes,
             account_equity=args.account_equity,
             max_open_risk_pct=args.max_open_risk_pct,
+            max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,

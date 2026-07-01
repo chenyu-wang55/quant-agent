@@ -736,6 +736,7 @@ def dashboard_home() -> str:
         <div class="field"><label for="autopilotMaxSnapshotBarAge">Max Bar Age</label><input id="autopilotMaxSnapshotBarAge" type="number" min="0" step="60" value="4320" /></div>
         <div class="field"><label for="autopilotAccountEquity">Policy Equity</label><input id="autopilotAccountEquity" type="number" min="1" step="1000" value="100000" /></div>
         <div class="field"><label for="autopilotMaxOpenRiskPct">Policy Open Risk %</label><input id="autopilotMaxOpenRiskPct" type="number" min="0" max="100" step="0.5" value="6" /></div>
+        <div class="field"><label for="autopilotMaxDailyLossPct">Daily Loss %</label><input id="autopilotMaxDailyLossPct" type="number" min="0" max="100" step="0.5" value="3" /></div>
         <div class="field"><label for="autopilotRiskPct">Policy Risk %</label><input id="autopilotRiskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
         <div class="field"><label for="autopilotMaxPositionPct">Policy Position %</label><input id="autopilotMaxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
         <div class="field"><label for="autopilotMaxGrossPct">Policy Gross %</label><input id="autopilotMaxGrossPct" type="number" min="0.01" max="500" step="1" value="100" /></div>
@@ -1065,6 +1066,7 @@ def dashboard_home() -> str:
       setFieldValue('autopilotMaxSnapshotBarAge', currentAutopilotPolicy.max_snapshot_bar_age_minutes ?? 4320);
       setFieldValue('autopilotAccountEquity', currentAutopilotPolicy.account_equity ?? 100000);
       setFieldValue('autopilotMaxOpenRiskPct', pctInputValue(currentAutopilotPolicy.max_open_risk_pct, 0.06));
+      setFieldValue('autopilotMaxDailyLossPct', pctInputValue(currentAutopilotPolicy.max_daily_realized_loss_pct, 0.03));
       setFieldValue('autopilotRiskPct', pctInputValue(currentAutopilotPolicy.risk_per_trade_pct, 0.01));
       setFieldValue('autopilotMaxPositionPct', pctInputValue(currentAutopilotPolicy.max_position_pct, 0.10));
       setFieldValue('autopilotMaxGrossPct', pctInputValue(currentAutopilotPolicy.max_gross_exposure_pct, 1.0));
@@ -1094,6 +1096,7 @@ def dashboard_home() -> str:
         max_snapshot_bar_age_minutes: Math.max(0, Math.floor(numberValue('autopilotMaxSnapshotBarAge') ?? 4320)),
         account_equity: numberValue('autopilotAccountEquity') ?? 100000,
         max_open_risk_pct: Math.max(0, Math.min(100, numberValue('autopilotMaxOpenRiskPct') ?? 6)) / 100,
+        max_daily_realized_loss_pct: Math.max(0, Math.min(100, numberValue('autopilotMaxDailyLossPct') ?? 3)) / 100,
         risk_per_trade_pct: (numberValue('autopilotRiskPct') ?? 1) / 100,
         max_position_pct: (numberValue('autopilotMaxPositionPct') ?? 10) / 100,
         max_gross_exposure_pct: (numberValue('autopilotMaxGrossPct') ?? 100) / 100,

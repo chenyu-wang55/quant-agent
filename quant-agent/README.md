@@ -289,7 +289,10 @@ sells should be blocked outside the approximate US equity regular session
 session status used by preflight. Daily automatic action budgets
 (`max_daily_auto_approvals`, `max_daily_auto_buys`, `max_daily_auto_sells`) are also
 checked from persisted `system_cycle` history so a fast loop cannot keep spending the
-same per-cycle budget all day.
+same per-cycle budget all day. The same preflight also evaluates
+`max_daily_realized_loss_pct` against the trade ledger for the current US trading day;
+when the loss gate trips, automatic approvals and automatic buys stop while sell-alert
+execution can still reduce risk.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

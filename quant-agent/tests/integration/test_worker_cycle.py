@@ -362,6 +362,93 @@ def test_system_cycle_blocks_auto_buy_when_open_risk_exceeds_policy_limit() -> N
     assert current_order_ids == existing_order_ids
 
 
+def test_system_cycle_blocks_auto_buy_when_daily_realized_loss_exceeds_policy_limit() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
+        state.close_holding(holding.ticker)
+
+    seed_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    ticker = seed_result["top_recommendations"][0]["ticker"]
+    loss_ticker = "MSFT" if ticker != "MSFT" else "AAPL"
+    state.close_holding(ticker)
+    state.close_holding(loss_ticker)
+    baseline_gate = state.get_autopilot_daily_loss_gate(
+        as_of=seed_at,
+        account_equity=100_000,
+        max_daily_realized_loss_pct=1.0,
+    )
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker=loss_ticker,
+            qty=10,
+            buy_price=100,
+            bought_at=seed_at,
+            stop_loss=1,
+            note="daily loss gate setup buy",
+        )
+    )
+    state.sell_holding(
+        loss_ticker,
+        ManualSellRequest(
+            sell_price=50,
+            sold_at=seed_at,
+            reason="daily loss gate setup sell",
+        ),
+    )
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="approval should still be blocked by daily loss gate",
+        )
+    )
+    existing_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        rebuy_cooldown_minutes=0,
+        account_equity=100_000,
+        max_daily_realized_loss_pct=0.001,
+    )
+
+    gate = result["auto_execution"]["daily_loss_gate"]
+    assert gate["passed"] is False
+    assert gate["reason"] == "daily_realized_loss_above_policy_limit"
+    assert gate["daily_realized_pnl"] == baseline_gate["daily_realized_pnl"] - 500
+    assert gate["sell_trade_count"] == baseline_gate["sell_trade_count"] + 1
+    assert gate["daily_realized_loss_pct"] > gate["max_daily_realized_loss_pct"]
+    assert result["daily_loss_gate"]["passed"] is False
+    assert result["auto_execution"]["buy_order_count"] == 0
+    buy_action = next(
+        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert buy_action["status"] == "skipped"
+    assert buy_action["reason"] == "daily_loss_gate_failed"
+    current_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+    assert current_order_ids == existing_order_ids
+
+
 def test_system_cycle_uses_persisted_autopilot_policy() -> None:
     state = get_app_state()
     state.reset()

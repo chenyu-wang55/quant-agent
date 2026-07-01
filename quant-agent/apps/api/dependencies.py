@@ -894,6 +894,7 @@ class AppState:
         reasons: list[str] = []
         market_session = self.get_market_session_status(as_of=as_of)
         daily_usage = self.get_autopilot_daily_usage(policy=policy, as_of=as_of)
+        daily_loss_gate = self.get_autopilot_daily_loss_gate(policy=policy, as_of=as_of)
 
         if not policy.enabled:
             checks.append(
@@ -937,10 +938,26 @@ class AppState:
                 )
             )
 
+        if not daily_loss_gate["passed"]:
+            reasons.append("daily_realized_loss_limit_exceeded")
+        checks.append(
+            AutopilotPreflightCheck(
+                name="daily_realized_loss",
+                status="pass" if daily_loss_gate["passed"] else "warn",
+                message_cn=(
+                    "今日已实现亏损在 policy 阈值内。"
+                    if daily_loss_gate["passed"]
+                    else "今日已实现亏损达到熔断线；自动审批和自动买入会被跳过，自动卖出仍可运行。"
+                ),
+                details=daily_loss_gate,
+            )
+        )
+
         can_auto_approve = (
             policy.auto_approve_recommendations
             and policy.max_auto_approvals > 0
             and daily_usage["remaining_approvals"] > 0
+            and daily_loss_gate["passed"]
             and not self.kill_switch.enabled
         )
         if not policy.auto_approve_recommendations:
@@ -970,6 +987,15 @@ class AppState:
                     details=daily_usage,
                 )
             )
+        elif not daily_loss_gate["passed"]:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_approval",
+                    status="fail",
+                    message_cn="自动审批已启用，但今日已实现亏损达到 policy 熔断线。",
+                    details=daily_loss_gate,
+                )
+            )
         else:
             checks.append(
                 AutopilotPreflightCheck(
@@ -987,10 +1013,12 @@ class AppState:
                 )
             )
 
+        buy_slots_remaining = min(policy.max_auto_buys, daily_usage["remaining_buys"])
+        sell_slots_remaining = min(policy.max_auto_sells, daily_usage["remaining_sells"])
         execution_capacity = policy.max_auto_buys > 0 or policy.max_auto_sells > 0
         execution_daily_budget = (
-            (policy.max_auto_buys > 0 and daily_usage["remaining_buys"] > 0)
-            or (policy.max_auto_sells > 0 and daily_usage["remaining_sells"] > 0)
+            (buy_slots_remaining > 0 and daily_loss_gate["passed"])
+            or sell_slots_remaining > 0
         )
         market_hours_allowed = (
             not policy.restrict_auto_execution_to_regular_hours
@@ -1021,13 +1049,20 @@ class AppState:
                 )
             )
         elif not execution_daily_budget:
-            reasons.append("daily_auto_execution_budget_exhausted")
+            if not daily_loss_gate["passed"] and sell_slots_remaining <= 0:
+                reason = "daily_realized_loss_limit_exceeded"
+                message_cn = "今日已实现亏损达到熔断线，且当前没有可用自动卖出预算。"
+            else:
+                reason = "daily_auto_execution_budget_exhausted"
+                message_cn = "今日自动买入/卖出预算已用完。"
+            if reason not in reasons:
+                reasons.append(reason)
             checks.append(
                 AutopilotPreflightCheck(
                     name="daily_auto_execution_budget",
                     status="fail",
-                    message_cn="今日自动买入/卖出预算已用完。",
-                    details=daily_usage,
+                    message_cn=message_cn,
+                    details={**daily_usage, "daily_loss_gate": daily_loss_gate},
                 )
             )
         elif not market_hours_allowed:
@@ -1047,10 +1082,14 @@ class AppState:
                     status="pass",
                     message_cn=(
                         f"自动执行可用，本轮最多买入 "
-                        f"{min(policy.max_auto_buys, daily_usage['remaining_buys'])} 条、"
-                        f"卖出 {min(policy.max_auto_sells, daily_usage['remaining_sells'])} 条。"
+                        f"{buy_slots_remaining if daily_loss_gate['passed'] else 0} 条、"
+                        f"卖出 {sell_slots_remaining} 条。"
                     ),
-                    details={"execution_mode": policy.auto_execution_mode.value, **daily_usage},
+                    details={
+                        "execution_mode": policy.auto_execution_mode.value,
+                        **daily_usage,
+                        "daily_loss_gate": daily_loss_gate,
+                    },
                 )
             )
             checks.append(
@@ -1140,7 +1179,7 @@ class AppState:
         self,
         policy: AutopilotPolicy | None = None,
         as_of: datetime | None = None,
-    ) -> dict[str, int | str]:
+    ) -> dict[str, Any]:
         timestamp = as_of or datetime.now(timezone.utc)
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
@@ -1172,6 +1211,54 @@ class AppState:
             "remaining_approvals": max(0, policy.max_daily_auto_approvals - used_approvals),
             "remaining_buys": max(0, policy.max_daily_auto_buys - used_buys),
             "remaining_sells": max(0, policy.max_daily_auto_sells - used_sells),
+        }
+
+    def get_autopilot_daily_loss_gate(
+        self,
+        policy: AutopilotPolicy | None = None,
+        as_of: datetime | None = None,
+        account_equity: float | None = None,
+        max_daily_realized_loss_pct: float | None = None,
+    ) -> dict[str, Any]:
+        timestamp = as_of or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        eastern = timestamp.astimezone(ZoneInfo("America/New_York"))
+        trading_day = eastern.date().isoformat()
+        policy = policy or self.get_autopilot_policy()
+        equity = float(account_equity if account_equity is not None else policy.account_equity)
+        loss_limit = float(
+            max_daily_realized_loss_pct
+            if max_daily_realized_loss_pct is not None
+            else policy.max_daily_realized_loss_pct
+        )
+        sell_trades = self.list_trade_ledger(limit=10000, side=TradeSide.SELL)
+        daily_sell_trades = []
+        daily_realized_pnl = 0.0
+        for trade in sell_trades:
+            executed_at = trade.executed_at
+            if executed_at.tzinfo is None:
+                executed_at = executed_at.replace(tzinfo=timezone.utc)
+            trade_day = executed_at.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+            if trade_day != trading_day:
+                continue
+            daily_sell_trades.append(trade)
+            daily_realized_pnl += trade.realized_pnl_delta
+
+        daily_realized_pnl = round(daily_realized_pnl, 6)
+        daily_realized_loss = round(max(0.0, -daily_realized_pnl), 6)
+        daily_realized_loss_pct = round(daily_realized_loss / equity, 6) if equity > 0 else 1.0
+        passed = daily_realized_loss_pct <= loss_limit
+        return {
+            "passed": passed,
+            "reason": None if passed else "daily_realized_loss_above_policy_limit",
+            "trading_day": trading_day,
+            "daily_realized_pnl": daily_realized_pnl,
+            "daily_realized_loss": daily_realized_loss,
+            "daily_realized_loss_pct": daily_realized_loss_pct,
+            "max_daily_realized_loss_pct": loss_limit,
+            "account_equity": equity,
+            "sell_trade_count": len(daily_sell_trades),
         }
 
     def get_market_session_status(self, as_of: datetime | None = None) -> MarketSessionStatus:

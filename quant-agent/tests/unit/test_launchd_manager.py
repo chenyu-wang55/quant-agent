@@ -44,6 +44,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "720",
         "--max-open-risk-pct",
         "0.04",
+        "--max-daily-realized-loss-pct",
+        "0.02",
     )
 
     plist = manage_launchd.build_plist(args, home=tmp_path)
@@ -77,6 +79,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "720" in round_trip["ProgramArguments"]
     assert "--max-open-risk-pct" in round_trip["ProgramArguments"]
     assert "0.04" in round_trip["ProgramArguments"]
+    assert "--max-daily-realized-loss-pct" in round_trip["ProgramArguments"]
+    assert "0.02" in round_trip["ProgramArguments"]
     assert str(tmp_path / "Library" / "Logs") in round_trip["StandardOutPath"]
 
 

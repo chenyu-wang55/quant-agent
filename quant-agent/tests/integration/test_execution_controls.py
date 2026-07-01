@@ -30,6 +30,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["min_snapshot_fundamental_coverage"] == 1.0
     assert default_policy["max_snapshot_bar_age_minutes"] == 4320
     assert default_policy["max_open_risk_pct"] == 0.06
+    assert default_policy["max_daily_realized_loss_pct"] == 0.03
 
     update_response = client.post(
         "/execution/autopilot-policy",
@@ -51,7 +52,8 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
             "min_snapshot_fundamental_coverage": 0.9,
             "max_snapshot_bar_age_minutes": 720,
             "max_open_risk_pct": 0.04,
-            "account_equity": 250000,
+            "max_daily_realized_loss_pct": 0.025,
+            "account_equity": 10000000,
             "risk_per_trade_pct": 0.005,
             "max_position_pct": 0.08,
             "max_gross_exposure_pct": 0.75,
@@ -78,6 +80,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert updated_policy["min_snapshot_fundamental_coverage"] == 0.9
     assert updated_policy["max_snapshot_bar_age_minutes"] == 720
     assert updated_policy["max_open_risk_pct"] == 0.04
+    assert updated_policy["max_daily_realized_loss_pct"] == 0.025
     assert updated_policy["updated_by"] == "qa"
 
     latest_response = client.get("/execution/autopilot-policy", headers=AUTH_HEADERS)
@@ -96,6 +99,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     }
     assert "snapshot_quality_policy" in preflight_check_names
     assert "portfolio_open_risk" in preflight_check_names
+    assert "daily_realized_loss" in preflight_check_names
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200
