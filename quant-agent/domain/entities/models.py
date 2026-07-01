@@ -569,6 +569,7 @@ class AutopilotPolicy(BaseModel):
     max_daily_auto_approvals: int = Field(default=3, ge=0)
     max_daily_auto_buys: int = Field(default=3, ge=0)
     max_daily_auto_sells: int = Field(default=10, ge=0)
+    rebuy_cooldown_minutes: int = Field(default=240, ge=0)
     account_equity: float = Field(default=100_000.0, gt=0)
     risk_per_trade_pct: float = Field(default=0.01, gt=0, le=1.0)
     max_position_pct: float = Field(default=0.10, gt=0, le=1.0)

@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from apps.worker.main import system_cycle, system_cycle_loop
-from domain.entities.models import HoldingStatus, ManualBuyRequest, SystemCycleRun
+from domain.entities.models import HoldingStatus, ManualBuyRequest, ManualSellRequest, SystemCycleRun
 from domain.policies.approval import ApprovalDecisionRequest
 
 
@@ -121,6 +121,7 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
         auto_execution_mode="paper",
         max_auto_buys=1,
         max_auto_sells=0,
+        rebuy_cooldown_minutes=0,
     )
 
     assert result["auto_execution_enabled"] is True
@@ -164,6 +165,7 @@ def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
         auto_execution_mode="paper",
         max_auto_buys=1,
         max_auto_sells=0,
+        rebuy_cooldown_minutes=0,
     )
 
     assert result["auto_approval"]["enabled"] is True
@@ -199,6 +201,7 @@ def test_system_cycle_uses_persisted_autopilot_policy() -> None:
             "max_auto_approvals": 1,
             "max_auto_buys": 1,
             "max_auto_sells": 0,
+            "rebuy_cooldown_minutes": 0,
             "updated_by": "worker-test",
             "reason": "policy-driven-cycle",
         }
@@ -401,6 +404,84 @@ def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> N
     assert holding is not None
     assert holding.status == HoldingStatus.CLOSED
     assert state.list_sell_execution_audits(limit=1, ticker="AAPL")[0].id == sell_action["sell_execution_id"]
+
+
+def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    seed_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    recommendation = state.recommendations_by_id[recommendation_id]
+    ticker = recommendation.ticker
+    state.close_holding(ticker)
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker=ticker,
+            qty=1,
+            buy_price=recommendation.entry_zone_high,
+            bought_at=datetime(2026, 4, 10, 8, 0, tzinfo=timezone.utc),
+            source_recommendation_id=recommendation_id,
+            note="cooldown setup buy",
+        )
+    )
+    sold_at = datetime(2026, 4, 10, 8, 30, tzinfo=timezone.utc)
+    sell_result = state.sell_holding(
+        ticker,
+        ManualSellRequest(
+            sell_price=recommendation.entry_zone_high,
+            sold_at=sold_at,
+            reason="cooldown setup sell",
+        ),
+    )
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="approval should still be blocked by rebuy cooldown",
+        )
+    )
+    existing_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        rebuy_cooldown_minutes=240,
+    )
+
+    assert sell_result.holding.status == HoldingStatus.CLOSED
+    assert result["auto_execution"]["enabled"] is True
+    assert result["auto_execution"]["buy_order_count"] == 0
+    buy_action = next(
+        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert buy_action["status"] == "skipped"
+    assert buy_action["ticker"] == ticker
+    assert buy_action["recommendation_id"] == recommendation_id
+    assert buy_action["reason"] == "rebuy_cooldown_active"
+    assert buy_action["cooldown"]["last_sell_trade_id"]
+    assert buy_action["cooldown"]["cooldown_until"] == "2026-04-10T12:30:00+00:00"
+    assert buy_action["cooldown"]["minutes_remaining"] == 180
+    current_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+    assert current_order_ids == existing_order_ids
 
 
 def test_system_cycle_loop_runs_bounded_cycles_without_sleeping() -> None:

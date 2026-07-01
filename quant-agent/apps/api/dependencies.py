@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from functools import lru_cache
 import math
 from typing import Any
@@ -1066,6 +1066,19 @@ class AppState:
                 )
             )
 
+        checks.append(
+            AutopilotPreflightCheck(
+                name="rebuy_cooldown",
+                status="pass" if policy.rebuy_cooldown_minutes > 0 else "warn",
+                message_cn=(
+                    f"卖出后 {policy.rebuy_cooldown_minutes} 分钟内禁止自动买回同一股票。"
+                    if policy.rebuy_cooldown_minutes > 0
+                    else "未启用卖出后买回冷却期。"
+                ),
+                details={"rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes},
+            )
+        )
+
         if can_auto_approve or can_auto_execute:
             status = "ready"
         else:
@@ -1138,6 +1151,48 @@ class AppState:
             is_regular_session=is_regular_session,
             status="regular" if is_regular_session else "closed",
         )
+
+    def get_rebuy_cooldown(
+        self,
+        ticker: str,
+        cooldown_minutes: int,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        if cooldown_minutes <= 0:
+            return {"active": False, "ticker": ticker.upper(), "cooldown_minutes": cooldown_minutes}
+        now = as_of or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone(timezone.utc)
+        recent_sells = self.list_trade_ledger(
+            limit=100,
+            ticker=ticker.upper(),
+            side=TradeSide.SELL,
+        )
+        last_sell = None
+        sold_at = None
+        for candidate in recent_sells:
+            candidate_sold_at = candidate.executed_at
+            if candidate_sold_at.tzinfo is None:
+                candidate_sold_at = candidate_sold_at.replace(tzinfo=timezone.utc)
+            candidate_sold_at = candidate_sold_at.astimezone(timezone.utc)
+            if candidate_sold_at <= now:
+                last_sell = candidate
+                sold_at = candidate_sold_at
+                break
+        if last_sell is None or sold_at is None:
+            return {"active": False, "ticker": ticker.upper(), "cooldown_minutes": cooldown_minutes}
+        cooldown_until = sold_at + timedelta(minutes=cooldown_minutes)
+        active = now < cooldown_until
+        return {
+            "active": active,
+            "ticker": ticker.upper(),
+            "cooldown_minutes": cooldown_minutes,
+            "last_sell_trade_id": last_sell.trade_id,
+            "last_sell_at": sold_at.isoformat(),
+            "cooldown_until": cooldown_until.isoformat(),
+            "minutes_remaining": max(0, int((cooldown_until - now).total_seconds() // 60)),
+        }
 
     def update_autopilot_policy(self, updates: dict[str, Any]) -> AutopilotPolicy:
         current = self.get_autopilot_policy()

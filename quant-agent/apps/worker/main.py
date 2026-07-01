@@ -266,6 +266,8 @@ def _auto_execute_cycle(
     execution_mode: str,
     max_auto_buys: int,
     max_auto_sells: int,
+    rebuy_cooldown_minutes: int,
+    as_of: datetime,
     account_equity: float,
     risk_per_trade_pct: float,
     max_position_pct: float,
@@ -385,6 +387,23 @@ def _auto_execute_cycle(
                     "ticker": recommendation.ticker,
                     "recommendation_id": recommendation.id,
                     "reason": "already_open_holding",
+                }
+            )
+            continue
+        cooldown = state.get_rebuy_cooldown(
+            ticker=recommendation.ticker,
+            cooldown_minutes=rebuy_cooldown_minutes,
+            as_of=as_of,
+        )
+        if cooldown.get("active"):
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "rebuy_cooldown_active",
+                    "cooldown": cooldown,
                 }
             )
             continue
@@ -553,6 +572,7 @@ def _apply_autopilot_policy(
                 policy.max_auto_sells,
                 int(daily_usage.get("remaining_sells", policy.max_auto_sells)),
             ),
+            "rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,
@@ -577,6 +597,7 @@ def system_cycle(
     auto_execution_mode: str = "paper",
     max_auto_buys: int = 1,
     max_auto_sells: int = 10,
+    rebuy_cooldown_minutes: int = 240,
     account_equity: float = 100_000.0,
     risk_per_trade_pct: float = 0.01,
     max_position_pct: float = 0.10,
@@ -602,6 +623,7 @@ def system_cycle(
                 "auto_execution_mode": auto_execution_mode,
                 "max_auto_buys": max_auto_buys,
                 "max_auto_sells": max_auto_sells,
+                "rebuy_cooldown_minutes": rebuy_cooldown_minutes,
                 "account_equity": account_equity,
                 "risk_per_trade_pct": risk_per_trade_pct,
                 "max_position_pct": max_position_pct,
@@ -619,6 +641,7 @@ def system_cycle(
         auto_execution_mode = policy_values["auto_execution_mode"]
         max_auto_buys = policy_values["max_auto_buys"]
         max_auto_sells = policy_values["max_auto_sells"]
+        rebuy_cooldown_minutes = policy_values["rebuy_cooldown_minutes"]
         account_equity = policy_values["account_equity"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
         max_position_pct = policy_values["max_position_pct"]
@@ -656,6 +679,8 @@ def system_cycle(
             execution_mode=auto_execution_mode,
             max_auto_buys=max_auto_buys,
             max_auto_sells=max_auto_sells,
+            rebuy_cooldown_minutes=rebuy_cooldown_minutes,
+            as_of=started_at,
             account_equity=account_equity,
             risk_per_trade_pct=risk_per_trade_pct,
             max_position_pct=max_position_pct,
@@ -881,6 +906,12 @@ def main() -> None:
     )
     parser.add_argument("--max-auto-buys", type=int, default=1, help="maximum approved buys per cycle")
     parser.add_argument("--max-auto-sells", type=int, default=10, help="maximum sell alerts to execute per cycle")
+    parser.add_argument(
+        "--rebuy-cooldown-minutes",
+        type=int,
+        default=240,
+        help="minutes to block automatic rebuy after the latest sell for the same ticker; set 0 to disable",
+    )
     parser.add_argument("--account-equity", type=float, default=100_000.0, help="account equity for auto buy risk sizing")
     parser.add_argument(
         "--risk-per-trade-pct",
@@ -950,6 +981,7 @@ def main() -> None:
             auto_execution_mode=args.auto_execution_mode,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
+            rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             account_equity=args.account_equity,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
@@ -973,6 +1005,7 @@ def main() -> None:
             auto_execution_mode=args.auto_execution_mode,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
+            rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
             account_equity=args.account_equity,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,

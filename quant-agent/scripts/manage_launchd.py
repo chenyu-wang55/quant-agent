@@ -50,6 +50,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.max_auto_buys),
         "--max-auto-sells",
         str(args.max_auto_sells),
+        "--rebuy-cooldown-minutes",
+        str(args.rebuy_cooldown_minutes),
         "--account-equity",
         str(args.account_equity),
         "--risk-per-trade-pct",
@@ -156,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-execution-mode", choices=["paper", "live_dry_run"], default="paper")
     parser.add_argument("--max-auto-buys", type=int, default=1)
     parser.add_argument("--max-auto-sells", type=int, default=10)
+    parser.add_argument("--rebuy-cooldown-minutes", type=int, default=240)
     parser.add_argument("--account-equity", type=float, default=100_000.0)
     parser.add_argument("--risk-per-trade-pct", type=float, default=0.01)
     parser.add_argument("--max-position-pct", type=float, default=0.10)

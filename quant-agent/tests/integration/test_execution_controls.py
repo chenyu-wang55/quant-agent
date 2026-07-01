@@ -25,6 +25,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["max_daily_auto_approvals"] == 3
     assert default_policy["max_daily_auto_buys"] == 3
     assert default_policy["max_daily_auto_sells"] == 10
+    assert default_policy["rebuy_cooldown_minutes"] == 240
 
     update_response = client.post(
         "/execution/autopilot-policy",
@@ -41,6 +42,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
             "max_daily_auto_approvals": 4,
             "max_daily_auto_buys": 5,
             "max_daily_auto_sells": 6,
+            "rebuy_cooldown_minutes": 120,
             "account_equity": 250000,
             "risk_per_trade_pct": 0.005,
             "max_position_pct": 0.08,
@@ -63,6 +65,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert updated_policy["max_daily_auto_approvals"] == 4
     assert updated_policy["max_daily_auto_buys"] == 5
     assert updated_policy["max_daily_auto_sells"] == 6
+    assert updated_policy["rebuy_cooldown_minutes"] == 120
     assert updated_policy["updated_by"] == "qa"
 
     latest_response = client.get("/execution/autopilot-policy", headers=AUTH_HEADERS)
