@@ -6,3 +6,4 @@ import os
 # Keep tests deterministic and offline-friendly.
 os.environ.setdefault("DATA_PROVIDER", "mock")
 os.environ.setdefault("QUANT_AGENT_ACCESS_PASSWORD", "test-access-password")
+os.environ.pop("QUANT_BROKER_ADAPTER", None)

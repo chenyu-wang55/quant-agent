@@ -9,9 +9,34 @@ from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from domain.entities.models import Direction, OrderExecutionMode, PaperOrder, PaperOrderStatus
 from infra.queue.events import EventType
+from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate
+from services.execution.router import ExecutionRouter
 
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
+
+
+class FakeBrokerAdapter:
+    name = "fake-broker"
+
+    def __init__(self, *, raw_status: str, fill_price: float | None = None) -> None:
+        self.raw_status = raw_status
+        self.fill_price = fill_price
+        self.placements: list[BrokerOrderPlacement] = []
+
+    def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
+        self.placements.append(placement)
+        return BrokerOrderUpdate(
+            broker_order_id="fake_broker_order_123",
+            raw_status=self.raw_status,
+            client_order_id=placement.client_order_id,
+            submitted_at=datetime.now(timezone.utc),
+            filled_at=datetime.now(timezone.utc) if self.raw_status == "filled" else None,
+            filled_avg_price=self.fill_price,
+        )
+
+    def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
+        raise AssertionError("not used in this test")
 
 
 def test_autopilot_policy_api_persists_latest_policy() -> None:
@@ -379,6 +404,22 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert blocked_live_order.status_code == 409
     assert "Live execution requires" in blocked_live_order.json()["detail"]
 
+    unconfigured_live_order = client.post(
+        "/paper-orders",
+        json={
+            "recommendation_id": recommendation_id,
+            "side": "BUY",
+            "qty": 10,
+            "limit_price": None,
+            "execution_mode": "live",
+            "dry_run": False,
+            "confirm_live": True,
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert unconfigured_live_order.status_code == 501
+    assert "Live broker execution adapter is not configured" in unconfigured_live_order.json()["detail"]
+
     live_dry_run = client.post(
         "/paper-orders",
         json={
@@ -580,6 +621,108 @@ def test_submitted_paper_order_fill_can_apply_to_ledger() -> None:
         item["source_recommendation_id"] == recommendation_id
         and item["price"] == fill_price
         and (item["reason"] or "").startswith(f"paper_order_fill:{order.id}")
+        for item in trades.json()
+    )
+
+
+def test_confirmed_live_buy_uses_configured_broker_adapter_and_records_fill() -> None:
+    state = get_app_state()
+    state.reset()
+    original_router = state.execution_router
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "configured-live-broker-test",
+            "as_of": "2026-04-10T09:30:00Z",
+            "snapshot_mode": "point_in_time",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "max_name_weight": 0.10,
+                "max_sector_weight": 0.30,
+                "max_gross_exposure": 1.0,
+                "max_correlated_cluster_weight": 0.35,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1000000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100000000,
+                "allowed_sectors": [],
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    recommendation_id = recommendation["id"]
+    state.close_holding(recommendation["ticker"])
+
+    approval_response = client.post(
+        f"/recommendations/{recommendation_id}/approval",
+        json={"decision": "approved", "approver": "qa", "notes": "ok"},
+        headers=AUTH_HEADERS,
+    )
+    assert approval_response.status_code == 200
+
+    fake_adapter = FakeBrokerAdapter(raw_status="filled", fill_price=recommendation["entry_zone_high"])
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        order_response = client.post(
+            "/paper-orders",
+            json={
+                "recommendation_id": recommendation_id,
+                "side": "BUY",
+                "qty": 1,
+                "limit_price": recommendation["entry_zone_high"],
+                "execution_mode": "live",
+                "dry_run": False,
+                "confirm_live": True,
+            },
+            headers=AUTH_HEADERS,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert order_response.status_code == 200
+    order = order_response.json()
+    assert order["execution_mode"] == "live"
+    assert order["dry_run"] is False
+    assert order["status"] == "filled"
+    assert order["broker_order_id"] == "fake_broker_order_123"
+    assert order["simulated_fill_price"] == recommendation["entry_zone_high"]
+    assert "fake-broker: status=filled" in order["adapter_message"]
+    assert len(fake_adapter.placements) == 1
+    placement = fake_adapter.placements[0]
+    assert placement.symbol == recommendation["ticker"]
+    assert placement.side == "BUY"
+    assert placement.qty == 1
+    assert placement.limit_price == recommendation["entry_zone_high"]
+    assert placement.client_order_id.startswith("quant_")
+
+    holdings = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings.status_code == 200
+    holding = next(item for item in holdings.json() if item["ticker"] == recommendation["ticker"])
+    assert holding["qty"] == 1
+    assert holding["avg_buy_price"] == recommendation["entry_zone_high"]
+    assert holding["source_recommendation_id"] == recommendation_id
+
+    trades = client.get(
+        f"/portfolio/trades?ticker={recommendation['ticker']}&side=buy",
+        headers=AUTH_HEADERS,
+    )
+    assert trades.status_code == 200
+    assert any(
+        item["source_recommendation_id"] == recommendation_id
+        and item["price"] == recommendation["entry_zone_high"]
+        and (item["reason"] or "").startswith(f"paper_order_fill:{order['id']}")
         for item in trades.json()
     )
 

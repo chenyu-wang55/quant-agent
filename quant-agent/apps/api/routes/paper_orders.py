@@ -15,6 +15,7 @@ from domain.entities.models import (
     PaperOrderStatus,
     Recommendation,
 )
+from services.execution.broker_adapter import BrokerAdapterError
 
 
 router = APIRouter(tags=["paper-orders"])
@@ -121,6 +122,8 @@ def submit_paper_order(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except NotImplementedError as exc:
         raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except BrokerAdapterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     state.positions = updated_positions
     state.record_paper_order(order, recommendation=recommendation)
     return order

@@ -289,6 +289,15 @@ curl -X POST http://localhost:8000/paper-orders \
   -H "Content-Type: application/json" \
   -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":null,"execution_mode":"live","dry_run":true,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10,"max_gross_exposure_pct":1.0,"max_sector_exposure_pct":0.30}'
 
+# Export these before starting the API process that will route confirmed live orders:
+# export QUANT_BROKER_ADAPTER=alpaca
+# export ALPACA_BASE_URL=https://paper-api.alpaca.markets
+# export ALPACA_API_KEY=<paper-key>
+# export ALPACA_SECRET_KEY=<paper-secret>
+curl -X POST http://localhost:8000/paper-orders \
+  -H "Content-Type: application/json" \
+  -d '{"recommendation_id":"<id>","side":"BUY","qty":10,"limit_price":123.45,"execution_mode":"live","dry_run":false,"confirm_live":true,"account_equity":100000,"risk_per_trade_pct":0.01,"max_position_pct":0.10,"max_gross_exposure_pct":1.0,"max_sector_exposure_pct":0.30}'
+
 curl -X POST http://localhost:8000/paper-orders/<order_id>/fill \
   -H "Content-Type: application/json" \
   -d '{"fill_price":123.45,"filled_by":"broker-webhook","apply_to_ledger":true,"note":"broker fill"}'
@@ -312,9 +321,10 @@ gross exposure, sector exposure, and any violations. `/paper-orders` enforces th
 limits unless `enforce_risk_limits` is explicitly set to `false`.
 On the dashboard, use each recommendation row's `建议股数` button to calculate and fill
 the current risk-adjusted buy quantity before pressing `买入`.
-Set `Exec Mode` to `Live Dry Run` only for broker-adapter rehearsals. It records a
-submitted audit order but does not send anything to a broker or create a monitored
-holding.
+Set `Exec Mode` to `Live Dry Run` for broker-adapter rehearsals. Confirmed live BUY
+orders require `QUANT_BROKER_ADAPTER=alpaca`, Alpaca credentials, `confirm_live=true`,
+an approved recommendation, and passing risk limits. Use Alpaca paper trading first;
+filled broker responses create monitored holdings and trade-ledger rows.
 
 Sell controls use the same execution gate:
 

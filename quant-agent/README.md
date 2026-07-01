@@ -167,13 +167,25 @@ from account equity, per-trade risk, max position size, max gross exposure, max
 sector exposure, entry price, and stop-loss distance. `POST /paper-orders` enforces
 the same plan by default before filling a paper order.
 Order requests now carry `execution_mode`: `paper` fills through the simulator, while
-`live` is accepted only as `dry_run=true` unless a future broker adapter is explicitly
+`live` supports either `dry_run=true` rehearsals or `confirm_live=true` confirmed
+broker submissions when `QUANT_BROKER_ADAPTER=alpaca` and Alpaca credentials are
 configured. Live dry-runs return a submitted audit order with `broker_order_id` and
 `adapter_message`, but do not create holdings or send anything to a broker.
+Confirmed live BUY orders still require approval and risk-plan checks; filled broker
+responses create monitored holdings and trade-ledger rows through the same fill path.
 Sell requests and alert execution use the same gate. `execution_mode=live` with
 `dry_run=true` validates the exit, emits a `sell_routed` event, and returns adapter
 metadata without closing the holding or writing a sell trade. Confirmed live sells return
 `501` until a real broker adapter is configured.
+
+Alpaca BUY adapter environment:
+
+```bash
+export QUANT_BROKER_ADAPTER=alpaca
+export ALPACA_BASE_URL=https://paper-api.alpaca.markets
+export ALPACA_API_KEY=<paper-key>
+export ALPACA_SECRET_KEY=<paper-secret>
+```
 
 Default risk guardrails:
 - `min_confidence=0.72`
