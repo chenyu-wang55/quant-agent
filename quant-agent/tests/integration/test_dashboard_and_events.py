@@ -80,6 +80,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "autopilotCooldownMinutes" in dashboard_home.text
     assert "autopilotMinSnapshotBars" in dashboard_home.text
     assert "autopilotMinSnapshotFundamentals" in dashboard_home.text
+    assert "autopilotMaxOpenRiskPct" in dashboard_home.text
     assert "saveAutopilotPolicy" in dashboard_home.text
     assert "/execution/autopilot-policy" in dashboard_home.text
     assert "runSystemCycle" in dashboard_home.text
@@ -152,6 +153,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert payload["autopilot_policy"]["rebuy_cooldown_minutes"] == 240
     assert payload["autopilot_policy"]["min_snapshot_bar_coverage"] == 1.0
     assert payload["autopilot_policy"]["min_snapshot_fundamental_coverage"] == 1.0
+    assert payload["autopilot_policy"]["max_open_risk_pct"] == 0.06
     assert payload["autopilot_preflight"]["status"] == "off"
     assert "daily_usage" in payload["autopilot_preflight"]
     assert payload["market_session"]["timezone"] == "America/New_York"

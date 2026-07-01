@@ -1093,6 +1093,30 @@ class AppState:
                 },
             )
         )
+        portfolio_summary = self.get_portfolio_summary(as_of=as_of)
+        open_risk_pct = (
+            round(portfolio_summary.open_risk_to_stop / policy.account_equity, 6)
+            if policy.account_equity > 0
+            else 1.0
+        )
+        checks.append(
+            AutopilotPreflightCheck(
+                name="portfolio_open_risk",
+                status="pass" if open_risk_pct <= policy.max_open_risk_pct else "warn",
+                message_cn=(
+                    "组合 open risk 在自动买入阈值内。"
+                    if open_risk_pct <= policy.max_open_risk_pct
+                    else "组合 open risk 已超过阈值；自动卖出仍可运行，但自动买入会被跳过。"
+                ),
+                details={
+                    "open_risk_to_stop": portfolio_summary.open_risk_to_stop,
+                    "open_risk_pct": open_risk_pct,
+                    "max_open_risk_pct": policy.max_open_risk_pct,
+                    "account_equity": policy.account_equity,
+                    "open_holding_count": portfolio_summary.open_holding_count,
+                },
+            )
+        )
 
         if can_auto_approve or can_auto_execute:
             status = "ready"

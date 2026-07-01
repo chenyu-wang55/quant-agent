@@ -40,6 +40,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "0.95",
         "--min-snapshot-fundamental-coverage",
         "0.9",
+        "--max-open-risk-pct",
+        "0.04",
     )
 
     plist = manage_launchd.build_plist(args, home=tmp_path)
@@ -69,6 +71,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "0.95" in round_trip["ProgramArguments"]
     assert "--min-snapshot-fundamental-coverage" in round_trip["ProgramArguments"]
     assert "0.9" in round_trip["ProgramArguments"]
+    assert "--max-open-risk-pct" in round_trip["ProgramArguments"]
+    assert "0.04" in round_trip["ProgramArguments"]
     assert str(tmp_path / "Library" / "Logs") in round_trip["StandardOutPath"]
 
 

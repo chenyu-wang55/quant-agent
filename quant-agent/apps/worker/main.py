@@ -269,6 +269,7 @@ def _auto_execute_cycle(
     rebuy_cooldown_minutes: int,
     as_of: datetime,
     account_equity: float,
+    max_open_risk_pct: float,
     risk_per_trade_pct: float,
     max_position_pct: float,
     max_gross_exposure_pct: float,
@@ -353,6 +354,22 @@ def _auto_execute_cycle(
                 }
             )
 
+    portfolio_summary = state.get_portfolio_summary(as_of=as_of)
+    open_risk_pct = (
+        round(portfolio_summary.open_risk_to_stop / account_equity, 6)
+        if account_equity > 0
+        else 1.0
+    )
+    portfolio_risk_gate = {
+        "passed": open_risk_pct <= max_open_risk_pct,
+        "reason": None if open_risk_pct <= max_open_risk_pct else "open_risk_above_policy_limit",
+        "open_risk_to_stop": portfolio_summary.open_risk_to_stop,
+        "open_risk_pct": open_risk_pct,
+        "max_open_risk_pct": max_open_risk_pct,
+        "account_equity": account_equity,
+        "open_holding_count": portfolio_summary.open_holding_count,
+    }
+
     open_tickers = {holding.ticker.upper() for holding in state.list_open_holdings()}
     buy_count = 0
     for recommendation in recommendations:
@@ -365,6 +382,18 @@ def _auto_execute_cycle(
                     "ticker": recommendation.ticker,
                     "recommendation_id": recommendation.id,
                     "reason": "max_auto_buys_reached",
+                }
+            )
+            continue
+        if not portfolio_risk_gate["passed"]:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "portfolio_open_risk_gate_failed",
+                    "portfolio_risk_gate": portfolio_risk_gate,
                 }
             )
             continue
@@ -513,13 +542,25 @@ def _auto_execute_cycle(
                 }
             )
 
-    return _auto_execution_report(enabled=True, mode=execution_mode, actions=actions)
+    return _auto_execution_report(
+        enabled=True,
+        mode=execution_mode,
+        actions=actions,
+        portfolio_risk_gate=portfolio_risk_gate,
+    )
 
 
-def _auto_execution_report(*, enabled: bool, mode: str, actions: list[dict[str, Any]]) -> dict[str, Any]:
+def _auto_execution_report(
+    *,
+    enabled: bool,
+    mode: str,
+    actions: list[dict[str, Any]],
+    portfolio_risk_gate: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "enabled": enabled,
         "mode": mode,
+        "portfolio_risk_gate": portfolio_risk_gate,
         "action_count": len(actions),
         "buy_order_count": sum(
             1
@@ -616,6 +657,7 @@ def _apply_autopilot_policy(
             "rebuy_cooldown_minutes": policy.rebuy_cooldown_minutes,
             "min_snapshot_bar_coverage": policy.min_snapshot_bar_coverage,
             "min_snapshot_fundamental_coverage": policy.min_snapshot_fundamental_coverage,
+            "max_open_risk_pct": policy.max_open_risk_pct,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,
@@ -644,6 +686,7 @@ def system_cycle(
     min_snapshot_bar_coverage: float = 1.0,
     min_snapshot_fundamental_coverage: float = 1.0,
     account_equity: float = 100_000.0,
+    max_open_risk_pct: float = 0.06,
     risk_per_trade_pct: float = 0.01,
     max_position_pct: float = 0.10,
     max_gross_exposure_pct: float = 1.0,
@@ -672,6 +715,7 @@ def system_cycle(
                 "min_snapshot_bar_coverage": min_snapshot_bar_coverage,
                 "min_snapshot_fundamental_coverage": min_snapshot_fundamental_coverage,
                 "account_equity": account_equity,
+                "max_open_risk_pct": max_open_risk_pct,
                 "risk_per_trade_pct": risk_per_trade_pct,
                 "max_position_pct": max_position_pct,
                 "max_gross_exposure_pct": max_gross_exposure_pct,
@@ -692,6 +736,7 @@ def system_cycle(
         min_snapshot_bar_coverage = policy_values["min_snapshot_bar_coverage"]
         min_snapshot_fundamental_coverage = policy_values["min_snapshot_fundamental_coverage"]
         account_equity = policy_values["account_equity"]
+        max_open_risk_pct = policy_values["max_open_risk_pct"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
         max_position_pct = policy_values["max_position_pct"]
         max_gross_exposure_pct = policy_values["max_gross_exposure_pct"]
@@ -749,6 +794,7 @@ def system_cycle(
             rebuy_cooldown_minutes=rebuy_cooldown_minutes,
             as_of=started_at,
             account_equity=account_equity,
+            max_open_risk_pct=max_open_risk_pct,
             risk_per_trade_pct=risk_per_trade_pct,
             max_position_pct=max_position_pct,
             max_gross_exposure_pct=max_gross_exposure_pct,
@@ -1009,6 +1055,12 @@ def main() -> None:
     )
     parser.add_argument("--account-equity", type=float, default=100_000.0, help="account equity for auto buy risk sizing")
     parser.add_argument(
+        "--max-open-risk-pct",
+        type=float,
+        default=0.06,
+        help="maximum current open risk to stop as a fraction of account equity before auto buys are blocked",
+    )
+    parser.add_argument(
         "--risk-per-trade-pct",
         type=float,
         default=0.01,
@@ -1080,6 +1132,7 @@ def main() -> None:
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
             account_equity=args.account_equity,
+            max_open_risk_pct=args.max_open_risk_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,
@@ -1106,6 +1159,7 @@ def main() -> None:
             min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
             min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
             account_equity=args.account_equity,
+            max_open_risk_pct=args.max_open_risk_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,

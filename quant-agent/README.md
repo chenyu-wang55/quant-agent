@@ -230,11 +230,13 @@ python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
 Automatic execution is conservative: sell alerts are handled first, buys only route
 recommendations that already have an `approved` decision, and all actions still pass
 through the existing kill switch, risk sizing, paper-order, live-dry-run, sell audit,
-trade-ledger, event, and source-snapshot quality gates. Use `--auto-execution-mode live_dry_run` to validate
+trade-ledger, event, source-snapshot quality, and portfolio open-risk gates. Use `--auto-execution-mode live_dry_run` to validate
 broker-shaped orders without mutating holdings. Use `--max-auto-buys`,
 `--max-auto-sells`, `--account-equity`, `--risk-per-trade-pct`,
 `--max-position-pct`, `--max-gross-exposure-pct`, and
 `--max-sector-exposure-pct` to tune the automatic sizing envelope. Use
+`--max-open-risk-pct` to stop new automatic buys when current portfolio risk to stop
+is already too high while still allowing automatic sell alerts to run. Use
 `--min-snapshot-bar-coverage` and `--min-snapshot-fundamental-coverage` to tune the
 minimum data completeness required before automatic actions can run.
 

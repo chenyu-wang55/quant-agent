@@ -58,6 +58,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.min_snapshot_fundamental_coverage),
         "--account-equity",
         str(args.account_equity),
+        "--max-open-risk-pct",
+        str(args.max_open_risk_pct),
         "--risk-per-trade-pct",
         str(args.risk_per_trade_pct),
         "--max-position-pct",
@@ -166,6 +168,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-snapshot-bar-coverage", type=float, default=1.0)
     parser.add_argument("--min-snapshot-fundamental-coverage", type=float, default=1.0)
     parser.add_argument("--account-equity", type=float, default=100_000.0)
+    parser.add_argument("--max-open-risk-pct", type=float, default=0.06)
     parser.add_argument("--risk-per-trade-pct", type=float, default=0.01)
     parser.add_argument("--max-position-pct", type=float, default=0.10)
     parser.add_argument("--max-gross-exposure-pct", type=float, default=1.0)

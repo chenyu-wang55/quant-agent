@@ -33,6 +33,7 @@ class AutopilotPolicyUpdateBody(BaseModel):
     rebuy_cooldown_minutes: int | None = Field(default=None, ge=0)
     min_snapshot_bar_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
     min_snapshot_fundamental_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_open_risk_pct: float | None = Field(default=None, ge=0.0, le=1.0)
     account_equity: float | None = Field(default=None, gt=0)
     risk_per_trade_pct: float | None = Field(default=None, gt=0, le=1.0)
     max_position_pct: float | None = Field(default=None, gt=0, le=1.0)
