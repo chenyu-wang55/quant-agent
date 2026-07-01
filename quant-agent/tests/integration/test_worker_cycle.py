@@ -134,6 +134,7 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
         rebuy_cooldown_minutes=0,
         account_equity=100_000_000,
         max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
     )
 
     assert result["auto_execution_enabled"] is True
@@ -162,6 +163,76 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
     assert run_history[0].metrics["auto_execution"]["buy_order_count"] == 1
 
 
+def test_system_cycle_blocks_auto_buy_when_latest_price_drifts_from_entry_zone(monkeypatch) -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    seed_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    ticker = seed_result["top_recommendations"][0]["ticker"]
+    entry_high = seed_result["top_recommendations"][0]["entry_zone"][1]
+    state.close_holding(ticker)
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="approval should be blocked by price drift gate",
+        )
+    )
+    existing_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+    original_get_latest_price = state.provider.get_latest_price
+
+    def drifted_latest_price(candidate_ticker: str, as_of: datetime):
+        if candidate_ticker.upper() == ticker.upper():
+            return entry_high * 1.10
+        return original_get_latest_price(candidate_ticker, as_of)
+
+    monkeypatch.setattr(state.provider, "get_latest_price", drifted_latest_price)
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        rebuy_cooldown_minutes=0,
+        max_auto_buy_price_drift_pct=0.03,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
+    )
+
+    assert result["auto_execution"]["buy_order_count"] == 0
+    buy_action = next(
+        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert buy_action["status"] == "skipped"
+    assert buy_action["reason"] == "price_drift_gate_failed"
+    price_gate = buy_action["price_drift_gate"]
+    assert price_gate["passed"] is False
+    assert price_gate["reason"] == "latest_price_above_entry_zone"
+    assert price_gate["latest_price"] > price_gate["entry_zone_high"]
+    assert price_gate["drift_pct"] > price_gate["max_drift_pct"]
+    current_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+    assert current_order_ids == existing_order_ids
+    holding = state.holding_watch_repo.get(ticker)
+    assert holding is None or holding.status != HoldingStatus.OPEN
+
+
 def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
     state = get_app_state()
     state.reset()
@@ -185,6 +256,7 @@ def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
         rebuy_cooldown_minutes=0,
         account_equity=100_000_000,
         max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
     )
 
     assert result["auto_approval"]["enabled"] is True
@@ -495,6 +567,7 @@ def test_system_cycle_skips_recent_duplicate_buy_order() -> None:
         max_snapshot_bar_age_minutes=999999,
         account_equity=100_000_000,
         max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
     )
 
     assert first["auto_approval"]["approved_count"] == 1
@@ -558,6 +631,7 @@ def test_system_cycle_uses_persisted_autopilot_policy() -> None:
             "max_auto_sells": 0,
             "account_equity": 100_000_000,
             "max_daily_realized_loss_pct": 1.0,
+            "max_auto_buy_price_drift_pct": 1.0,
             "rebuy_cooldown_minutes": 0,
             "updated_by": "worker-test",
             "reason": "policy-driven-cycle",

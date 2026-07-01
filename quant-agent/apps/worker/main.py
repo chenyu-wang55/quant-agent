@@ -294,6 +294,7 @@ def _auto_execute_cycle(
     account_equity: float,
     max_open_risk_pct: float,
     max_daily_realized_loss_pct: float,
+    max_auto_buy_price_drift_pct: float,
     risk_per_trade_pct: float,
     max_position_pct: float,
     max_gross_exposure_pct: float,
@@ -545,6 +546,23 @@ def _auto_execute_cycle(
                 }
             )
             continue
+        price_drift_gate = _auto_buy_price_drift_gate(
+            recommendation=recommendation,
+            max_drift_pct=max_auto_buy_price_drift_pct,
+            as_of=as_of,
+        )
+        if not price_drift_gate["passed"]:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "price_drift_gate_failed",
+                    "price_drift_gate": price_drift_gate,
+                }
+            )
+            continue
 
         try:
             probe_request = PaperOrderRequest(
@@ -637,6 +655,85 @@ def _auto_execute_cycle(
         portfolio_risk_gate=portfolio_risk_gate,
         daily_loss_gate=daily_loss_gate,
     )
+
+
+def _auto_buy_price_drift_gate(
+    *,
+    recommendation: Recommendation,
+    max_drift_pct: float,
+    as_of: datetime,
+) -> dict[str, Any]:
+    ticker = recommendation.ticker.upper()
+    if max_drift_pct <= 0:
+        return {
+            "passed": True,
+            "ticker": ticker,
+            "recommendation_id": recommendation.id,
+            "max_drift_pct": max_drift_pct,
+            "reason": "disabled",
+        }
+
+    state = get_app_state()
+    try:
+        latest_price = state.provider.get_latest_price(ticker, as_of)
+    except Exception as exc:
+        return {
+            "passed": False,
+            "ticker": ticker,
+            "recommendation_id": recommendation.id,
+            "reason": "latest_price_unavailable",
+            "error": str(exc),
+            "max_drift_pct": max_drift_pct,
+        }
+    if latest_price is None or latest_price <= 0:
+        return {
+            "passed": False,
+            "ticker": ticker,
+            "recommendation_id": recommendation.id,
+            "reason": "latest_price_missing",
+            "latest_price": latest_price,
+            "max_drift_pct": max_drift_pct,
+        }
+
+    latest = float(latest_price)
+    entry_low = float(recommendation.entry_zone_low)
+    entry_high = float(recommendation.entry_zone_high)
+    if entry_low <= 0 or entry_high <= 0 or entry_low > entry_high:
+        return {
+            "passed": False,
+            "ticker": ticker,
+            "recommendation_id": recommendation.id,
+            "reason": "invalid_entry_zone",
+            "entry_zone_low": entry_low,
+            "entry_zone_high": entry_high,
+            "latest_price": latest,
+            "max_drift_pct": max_drift_pct,
+        }
+
+    if entry_low <= latest <= entry_high:
+        drift_pct = 0.0
+        reason = None
+        passed = True
+    elif latest > entry_high:
+        drift_pct = round((latest - entry_high) / entry_high, 6)
+        reason = "latest_price_above_entry_zone"
+        passed = drift_pct <= max_drift_pct
+    else:
+        drift_pct = round((entry_low - latest) / entry_low, 6)
+        reason = "latest_price_below_entry_zone"
+        passed = drift_pct <= max_drift_pct
+
+    return {
+        "passed": passed,
+        "ticker": ticker,
+        "recommendation_id": recommendation.id,
+        "reason": None if passed else reason,
+        "latest_price": round(latest, 6),
+        "entry_zone_low": entry_low,
+        "entry_zone_high": entry_high,
+        "drift_pct": drift_pct,
+        "max_drift_pct": max_drift_pct,
+    }
 
 
 def _post_sell_control_adjustment(
@@ -786,11 +883,6 @@ def _apply_autopilot_policy(
     updates = dict(current)
     updates["autopilot_policy"] = policy.model_dump(mode="json")
     updates["autopilot_preflight"] = preflight.model_dump(mode="json")
-    if not policy.enabled:
-        updates["auto_approve_recommendations"] = False
-        updates["auto_execute_approved"] = False
-        updates["auto_execution_mode"] = policy.auto_execution_mode.value
-        return updates
 
     daily_usage = preflight.daily_usage or {}
     updates.update(
@@ -820,6 +912,7 @@ def _apply_autopilot_policy(
             "max_snapshot_bar_age_minutes": policy.max_snapshot_bar_age_minutes,
             "max_open_risk_pct": policy.max_open_risk_pct,
             "max_daily_realized_loss_pct": policy.max_daily_realized_loss_pct,
+            "max_auto_buy_price_drift_pct": policy.max_auto_buy_price_drift_pct,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,
@@ -853,6 +946,7 @@ def system_cycle(
     account_equity: float = 100_000.0,
     max_open_risk_pct: float = 0.06,
     max_daily_realized_loss_pct: float = 0.03,
+    max_auto_buy_price_drift_pct: float = 0.03,
     risk_per_trade_pct: float = 0.01,
     max_position_pct: float = 0.10,
     max_gross_exposure_pct: float = 1.0,
@@ -886,6 +980,7 @@ def system_cycle(
                 "account_equity": account_equity,
                 "max_open_risk_pct": max_open_risk_pct,
                 "max_daily_realized_loss_pct": max_daily_realized_loss_pct,
+                "max_auto_buy_price_drift_pct": max_auto_buy_price_drift_pct,
                 "risk_per_trade_pct": risk_per_trade_pct,
                 "max_position_pct": max_position_pct,
                 "max_gross_exposure_pct": max_gross_exposure_pct,
@@ -911,6 +1006,7 @@ def system_cycle(
         account_equity = policy_values["account_equity"]
         max_open_risk_pct = policy_values["max_open_risk_pct"]
         max_daily_realized_loss_pct = policy_values["max_daily_realized_loss_pct"]
+        max_auto_buy_price_drift_pct = policy_values["max_auto_buy_price_drift_pct"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
         max_position_pct = policy_values["max_position_pct"]
         max_gross_exposure_pct = policy_values["max_gross_exposure_pct"]
@@ -989,6 +1085,7 @@ def system_cycle(
             account_equity=account_equity,
             max_open_risk_pct=max_open_risk_pct,
             max_daily_realized_loss_pct=max_daily_realized_loss_pct,
+            max_auto_buy_price_drift_pct=max_auto_buy_price_drift_pct,
             risk_per_trade_pct=risk_per_trade_pct,
             max_position_pct=max_position_pct,
             max_gross_exposure_pct=max_gross_exposure_pct,
@@ -1328,6 +1425,12 @@ def main() -> None:
         help="maximum same-day realized loss as a fraction of account equity before auto approvals/buys are blocked",
     )
     parser.add_argument(
+        "--max-auto-buy-price-drift-pct",
+        type=float,
+        default=0.03,
+        help="maximum latest-price drift from the recommendation entry zone before auto buys are blocked",
+    )
+    parser.add_argument(
         "--risk-per-trade-pct",
         type=float,
         default=0.01,
@@ -1410,6 +1513,7 @@ def main() -> None:
             account_equity=args.account_equity,
             max_open_risk_pct=args.max_open_risk_pct,
             max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
+            max_auto_buy_price_drift_pct=args.max_auto_buy_price_drift_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,
@@ -1442,6 +1546,7 @@ def main() -> None:
             account_equity=args.account_equity,
             max_open_risk_pct=args.max_open_risk_pct,
             max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
+            max_auto_buy_price_drift_pct=args.max_auto_buy_price_drift_pct,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,

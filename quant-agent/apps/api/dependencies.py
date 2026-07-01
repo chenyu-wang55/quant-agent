@@ -1168,6 +1168,19 @@ class AppState:
         )
         checks.append(
             AutopilotPreflightCheck(
+                name="auto_buy_price_drift",
+                status="pass" if policy.max_auto_buy_price_drift_pct > 0 else "warn",
+                message_cn=(
+                    "自动买入前会重新检查最新价，若偏离推荐入场区间超过 "
+                    f"{policy.max_auto_buy_price_drift_pct:.1%} 则跳过买入。"
+                    if policy.max_auto_buy_price_drift_pct > 0
+                    else "未启用自动买入价格漂移门禁。"
+                ),
+                details={"max_auto_buy_price_drift_pct": policy.max_auto_buy_price_drift_pct},
+            )
+        )
+        checks.append(
+            AutopilotPreflightCheck(
                 name="snapshot_quality_policy",
                 status="pass",
                 message_cn=(

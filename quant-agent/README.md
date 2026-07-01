@@ -237,6 +237,8 @@ broker-shaped orders without mutating holdings. Use `--max-auto-buys`,
 `--max-sector-exposure-pct` to tune the automatic sizing envelope. Use
 `--max-open-risk-pct` to stop new automatic buys when current portfolio risk to stop
 is already too high while still allowing automatic sell alerts to run. Use
+`--max-auto-buy-price-drift-pct` to skip automatic buys when the latest price has
+moved too far away from the recommendation entry zone. Use
 `--min-snapshot-bar-coverage` and `--min-snapshot-fundamental-coverage` to tune the
 minimum data completeness required before automatic actions can run. Use
 `--max-snapshot-bar-age-minutes` to tune how old the latest captured bar may be
@@ -295,6 +297,8 @@ when the loss gate trips, automatic approvals and automatic buys stop while sell
 execution can still reduce risk. `order_dedupe_minutes` blocks repeat automatic buy
 orders for the same recommendation or ticker after a recent routed buy order, which
 keeps fast unattended loops from duplicating broker submissions.
+`max_auto_buy_price_drift_pct` blocks automatic buys when the current market price
+has drifted beyond the allowed entry-zone tolerance, reducing stale-snapshot chasing.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
 

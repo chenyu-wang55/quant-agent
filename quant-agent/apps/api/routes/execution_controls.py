@@ -38,6 +38,7 @@ class AutopilotPolicyUpdateBody(BaseModel):
     max_snapshot_bar_age_minutes: int | None = Field(default=None, ge=0)
     max_open_risk_pct: float | None = Field(default=None, ge=0.0, le=1.0)
     max_daily_realized_loss_pct: float | None = Field(default=None, ge=0.0, le=1.0)
+    max_auto_buy_price_drift_pct: float | None = Field(default=None, ge=0.0, le=1.0)
     account_equity: float | None = Field(default=None, gt=0)
     risk_per_trade_pct: float | None = Field(default=None, gt=0, le=1.0)
     max_position_pct: float | None = Field(default=None, gt=0, le=1.0)

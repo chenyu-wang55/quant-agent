@@ -33,6 +33,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["max_snapshot_bar_age_minutes"] == 4320
     assert default_policy["max_open_risk_pct"] == 0.06
     assert default_policy["max_daily_realized_loss_pct"] == 0.03
+    assert default_policy["max_auto_buy_price_drift_pct"] == 0.03
 
     update_response = client.post(
         "/execution/autopilot-policy",
@@ -57,6 +58,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
             "max_snapshot_bar_age_minutes": 720,
             "max_open_risk_pct": 0.04,
             "max_daily_realized_loss_pct": 0.025,
+            "max_auto_buy_price_drift_pct": 0.015,
             "account_equity": 10000000,
             "risk_per_trade_pct": 0.005,
             "max_position_pct": 0.08,
@@ -87,6 +89,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert updated_policy["max_snapshot_bar_age_minutes"] == 720
     assert updated_policy["max_open_risk_pct"] == 0.04
     assert updated_policy["max_daily_realized_loss_pct"] == 0.025
+    assert updated_policy["max_auto_buy_price_drift_pct"] == 0.015
     assert updated_policy["updated_by"] == "qa"
 
     latest_response = client.get("/execution/autopilot-policy", headers=AUTH_HEADERS)
@@ -108,6 +111,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert "daily_realized_loss" in preflight_check_names
     assert "order_dedupe" in preflight_check_names
     assert "sell_alert_cooldown" in preflight_check_names
+    assert "auto_buy_price_drift" in preflight_check_names
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200
