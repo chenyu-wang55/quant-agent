@@ -160,6 +160,25 @@ class AppState:
         self.sell_execution_audit_repo.add(item)
         self.metrics_store.inc("sell_execution_audits")
 
+    def _get_recommendation_by_id(self, recommendation_id: str | None) -> Recommendation | None:
+        if not recommendation_id:
+            return None
+        recommendation = self.recommendations_by_id.get(recommendation_id)
+        if recommendation is None:
+            recommendation = self.recommendation_repo.get(recommendation_id)
+        return recommendation
+
+    def _recommendation_provenance(
+        self,
+        recommendation_id: str | None,
+        recommendation: Recommendation | None = None,
+    ) -> dict[str, str | None]:
+        recommendation = recommendation or self._get_recommendation_by_id(recommendation_id)
+        return {
+            "source_snapshot_id": recommendation.source_snapshot_id if recommendation is not None else None,
+            "strategy_config_id": recommendation.strategy_config_id if recommendation is not None else None,
+        }
+
     def record_system_cycle_run(self, item: SystemCycleRun) -> None:
         self.system_cycle_run_repo.add(item)
         self.metrics_store.inc("system_cycle_runs")
@@ -207,10 +226,12 @@ class AppState:
                     method="POST",
                     ticker=alert.ticker,
                     recommendation_id=alert.source_recommendation_id,
+                    source_snapshot_id=alert.source_snapshot_id,
                     details={
                         "reason_code": alert.reason_code,
                         "suggested_action_cn": alert.suggested_action_cn,
                         "current_price": alert.current_price,
+                        "strategy_config_id": alert.strategy_config_id,
                     },
                 )
             )
@@ -328,6 +349,8 @@ class AppState:
                 take_profit1=alert.take_profit1,
                 take_profit2=alert.take_profit2,
                 source_recommendation_id=alert.source_recommendation_id,
+                source_snapshot_id=alert.source_snapshot_id,
+                strategy_config_id=alert.strategy_config_id,
                 message_cn=alert.message_cn,
                 suggested_action_cn=alert.suggested_action_cn,
                 generated_at=alert.generated_at,
@@ -396,6 +419,8 @@ class AppState:
             {
                 "order_id": order.id,
                 "recommendation_id": order.recommendation_id,
+                "source_snapshot_id": order.source_snapshot_id,
+                "strategy_config_id": order.strategy_config_id,
                 "execution_mode": order.execution_mode.value,
                 "dry_run": order.dry_run,
                 "status": order.status.value,
@@ -1496,9 +1521,11 @@ class AppState:
         ticker = request.ticker.upper()
         recommendation = None
         if request.source_recommendation_id:
-            recommendation = self.recommendations_by_id.get(request.source_recommendation_id)
-            if recommendation is None:
-                recommendation = self.recommendation_repo.get(request.source_recommendation_id)
+            recommendation = self._get_recommendation_by_id(request.source_recommendation_id)
+        provenance = self._recommendation_provenance(
+            request.source_recommendation_id,
+            recommendation=recommendation,
+        )
 
         stop_loss = (
             request.stop_loss
@@ -1571,6 +1598,8 @@ class AppState:
                 price=round(request.buy_price, 6),
                 executed_at=bought_at,
                 source_recommendation_id=request.source_recommendation_id,
+                source_snapshot_id=provenance["source_snapshot_id"],
+                strategy_config_id=provenance["strategy_config_id"],
                 reason=request.note,
                 holding_status_after=HoldingStatus.OPEN,
             )
@@ -1598,6 +1627,7 @@ class AppState:
             and request.note is None
         ):
             raise ValueError("at least one control field must be provided")
+        provenance = self._recommendation_provenance(holding.source_recommendation_id)
 
         new_stop = float(request.stop_loss if request.stop_loss is not None else holding.stop_loss)
         new_tp1 = float(request.take_profit1 if request.take_profit1 is not None else holding.take_profit1)
@@ -1628,6 +1658,8 @@ class AppState:
             id=uuid4().hex[:16],
             ticker=ticker_upper,
             source_recommendation_id=holding.source_recommendation_id,
+            source_snapshot_id=provenance["source_snapshot_id"],
+            strategy_config_id=provenance["strategy_config_id"],
             old_stop_loss=holding.stop_loss,
             new_stop_loss=updated.stop_loss,
             old_take_profit1=holding.take_profit1,
@@ -1650,6 +1682,8 @@ class AppState:
                 "audit_id": audit.id,
                 "ticker": ticker_upper,
                 "source_recommendation_id": holding.source_recommendation_id,
+                "source_snapshot_id": provenance["source_snapshot_id"],
+                "strategy_config_id": provenance["strategy_config_id"],
                 "old_stop_loss": holding.stop_loss,
                 "new_stop_loss": updated.stop_loss,
                 "old_take_profit1": holding.take_profit1,
@@ -1683,6 +1717,7 @@ class AppState:
             holding = self.holding_watch_repo.get(ticker_upper)
         if holding is None or holding.status != HoldingStatus.OPEN:
             raise KeyError("open holding not found")
+        provenance = self._recommendation_provenance(holding.source_recommendation_id)
 
         sell_qty = request.qty if request.qty is not None else holding.qty
         if sell_qty <= 0:
@@ -1716,6 +1751,8 @@ class AppState:
                 status="dry_run",
                 reason=request.reason,
                 source_recommendation_id=holding.source_recommendation_id,
+                source_snapshot_id=provenance["source_snapshot_id"],
+                strategy_config_id=provenance["strategy_config_id"],
                 realized_pnl_delta=0.0,
                 estimated_realized_pnl_delta=round(estimated_delta, 6),
                 remaining_qty=holding.qty,
@@ -1736,6 +1773,9 @@ class AppState:
                     "adapter_message": adapter_message,
                     "applied_to_ledger": False,
                     "reason": request.reason,
+                    "source_recommendation_id": holding.source_recommendation_id,
+                    "source_snapshot_id": provenance["source_snapshot_id"],
+                    "strategy_config_id": provenance["strategy_config_id"],
                 },
             )
             return SellExecutionResult(
@@ -1796,6 +1836,8 @@ class AppState:
                 price=round(request.sell_price, 6),
                 executed_at=sold_at,
                 source_recommendation_id=holding.source_recommendation_id,
+                source_snapshot_id=provenance["source_snapshot_id"],
+                strategy_config_id=provenance["strategy_config_id"],
                 reason=request.reason,
                 realized_pnl_delta=round(realized_delta, 6),
                 holding_status_after=updated.status,
@@ -1815,6 +1857,8 @@ class AppState:
             status="filled",
             reason=request.reason,
             source_recommendation_id=holding.source_recommendation_id,
+            source_snapshot_id=provenance["source_snapshot_id"],
+            strategy_config_id=provenance["strategy_config_id"],
             realized_pnl_delta=round(realized_delta, 6),
             estimated_realized_pnl_delta=round(realized_delta, 6),
             remaining_qty=updated.qty,
@@ -1839,6 +1883,9 @@ class AppState:
                 "broker_order_id": broker_order_id,
                 "adapter_message": adapter_message,
                 "applied_to_ledger": True,
+                "source_recommendation_id": holding.source_recommendation_id,
+                "source_snapshot_id": provenance["source_snapshot_id"],
+                "strategy_config_id": provenance["strategy_config_id"],
             },
         )
 
@@ -2440,6 +2487,10 @@ class AppState:
             as_of=as_of,
             signal_lookup=lambda ticker: self.signals_by_ticker.get(ticker) or self.signal_repo.get_latest_by_ticker(ticker),
         )
+        for alert in alerts:
+            provenance = self._recommendation_provenance(alert.source_recommendation_id)
+            alert.source_snapshot_id = provenance["source_snapshot_id"]
+            alert.strategy_config_id = provenance["strategy_config_id"]
         self.recent_sell_alerts = alerts
         self.metrics_store.set_gauge("sell_alert_count", len(alerts))
         for alert in alerts:
@@ -2450,6 +2501,9 @@ class AppState:
                     "reason_code": alert.reason_code,
                     "level": alert.level.value,
                     "message_cn": alert.message_cn,
+                    "source_recommendation_id": alert.source_recommendation_id,
+                    "source_snapshot_id": alert.source_snapshot_id,
+                    "strategy_config_id": alert.strategy_config_id,
                 },
             )
         return alerts

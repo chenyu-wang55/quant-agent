@@ -110,6 +110,8 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
     )
     recommendation_id = seed_result["top_recommendations"][0]["id"]
     ticker = seed_result["top_recommendations"][0]["ticker"]
+    source_snapshot_id = seed_result["top_recommendations"][0]["source_snapshot_id"]
+    strategy_config_id = seed_result["top_recommendations"][0]["strategy_config_id"]
     state.close_holding(ticker)
     state.decide_recommendation(
         ApprovalDecisionRequest(
@@ -144,8 +146,13 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
     assert buy_action["status"] == "executed"
     assert buy_action["recommendation_id"] == recommendation_id
     assert buy_action["ticker"] == ticker
+    assert buy_action["source_snapshot_id"] == source_snapshot_id
+    assert buy_action["strategy_config_id"] == strategy_config_id
     assert buy_action["qty"] > 0
-    assert state.list_paper_orders(limit=1, recommendation_id=recommendation_id)[0].id == buy_action["order_id"]
+    order = state.list_paper_orders(limit=1, recommendation_id=recommendation_id)[0]
+    assert order.id == buy_action["order_id"]
+    assert order.source_snapshot_id == source_snapshot_id
+    assert order.strategy_config_id == strategy_config_id
     holding = state.holding_watch_repo.get(ticker)
     assert holding is not None
     assert holding.status == HoldingStatus.OPEN
@@ -190,6 +197,8 @@ def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
         item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
     )
     assert approved_action["recommendation_id"] == buy_action["recommendation_id"]
+    assert buy_action["source_snapshot_id"] == result["source_snapshot_id"]
+    assert buy_action["strategy_config_id"] == result["strategy_config_id"]
     approval = state.get_latest_approval(approved_action["recommendation_id"])
     assert approval is not None
     assert approval.approver == "system_cycle:auto_approval"
@@ -753,6 +762,8 @@ def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> N
     sell_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "sell_alert")
     assert sell_action["status"] == "executed"
     assert sell_action["ticker"] == "AAPL"
+    assert sell_action["source_snapshot_id"] is None
+    assert sell_action["strategy_config_id"] is None
     assert sell_action["sold_qty"] == 5
     buy_actions = [item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"]
     assert any(item["reason"] == "sell_alert_same_cycle" for item in buy_actions)
@@ -797,6 +808,8 @@ def test_system_cycle_skips_repeated_sell_alert_during_cooldown() -> None:
     first_sell = next(item for item in first["auto_execution"]["actions"] if item["action"] == "sell_alert")
     assert first_sell["status"] == "executed"
     assert first_sell["reason_code"] == "take_profit1_hit"
+    assert first_sell["source_snapshot_id"] is None
+    assert first_sell["strategy_config_id"] is None
     assert first_sell["sold_qty"] == 4
     assert first_sell["control_adjustment"]["status"] == "updated"
     assert first_sell["control_adjustment"]["old_stop_loss"] == 1

@@ -346,6 +346,8 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert live_dry_run_data["execution_mode"] == "live"
     assert live_dry_run_data["dry_run"] is True
     assert live_dry_run_data["status"] == "submitted"
+    assert live_dry_run_data["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert live_dry_run_data["strategy_config_id"] == recommendation["strategy_config_id"]
     assert live_dry_run_data["broker_order_id"].startswith("live_dryrun_")
     assert "not sent to a broker" in live_dry_run_data["adapter_message"]
     holdings_after_dry_run = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
@@ -361,3 +363,5 @@ def test_kill_switch_blocks_paper_orders() -> None:
     assert order_response.json()["status"] == "filled"
     assert order_response.json()["execution_mode"] == "paper"
     assert order_response.json()["dry_run"] is False
+    assert order_response.json()["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert order_response.json()["strategy_config_id"] == recommendation["strategy_config_id"]

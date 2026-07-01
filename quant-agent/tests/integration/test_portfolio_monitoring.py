@@ -89,6 +89,8 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     assert len(buy_trades) >= 1
     assert buy_trades[0]["side"] == "buy"
     assert buy_trades[0]["qty"] == 100
+    assert buy_trades[0]["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert buy_trades[0]["strategy_config_id"] == recommendation["strategy_config_id"]
 
     holdings_response = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
     assert holdings_response.status_code == 200
@@ -100,6 +102,8 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     assert len(alerts) >= 1
     assert alerts[0]["ticker"] == recommendation["ticker"]
     assert alerts[0]["reason_code"] == "stop_loss_breach"
+    assert alerts[0]["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert alerts[0]["strategy_config_id"] == recommendation["strategy_config_id"]
     assert "止损" in alerts[0]["message_cn"]
 
     first_sell_price = recommendation["entry_zone_high"] + 5
@@ -155,6 +159,8 @@ def test_manual_buy_record_and_sell_alerts() -> None:
     assert len(sell_rows) >= 2
     assert sell_rows[0]["holding_status_after"] == "closed"
     assert sell_rows[0]["realized_pnl_delta"] == pytest.approx(60 * -2)
+    assert sell_rows[0]["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert sell_rows[0]["strategy_config_id"] == recommendation["strategy_config_id"]
 
     final_summary = client.get("/portfolio/summary", headers=AUTH_HEADERS)
     assert final_summary.status_code == 200
@@ -369,6 +375,8 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     assert dry_run_audit_rows[0]["execution_mode"] == "live"
     assert dry_run_audit_rows[0]["dry_run"] is True
     assert dry_run_audit_rows[0]["applied_to_ledger"] is False
+    assert dry_run_audit_rows[0]["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert dry_run_audit_rows[0]["strategy_config_id"] == recommendation["strategy_config_id"]
 
     dry_run_events = client.post("/events/consume?limit=100", headers=AUTH_HEADERS)
     assert dry_run_events.status_code == 200
@@ -404,12 +412,16 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
     assert paper_audit_rows[0]["id"] == execution["sell_execution_id"]
     assert paper_audit_rows[0]["status"] == "filled"
     assert paper_audit_rows[0]["holding_status_after"] == "closed"
+    assert paper_audit_rows[0]["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert paper_audit_rows[0]["strategy_config_id"] == recommendation["strategy_config_id"]
 
     sell_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
     assert sell_trades.status_code == 200
     sell_rows = sell_trades.json()
     assert sell_rows
     assert sell_rows[0]["source_recommendation_id"] == recommendation["id"]
+    assert sell_rows[0]["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert sell_rows[0]["strategy_config_id"] == recommendation["strategy_config_id"]
     assert sell_rows[0]["reason"] == "alert:stop_loss_breach"
 
 
@@ -494,6 +506,8 @@ def test_update_holding_controls_records_audit_and_drives_alerts() -> None:
     assert updated["holding"]["take_profit1"] == 100000000
     assert updated["audit"]["old_stop_loss"] == original["stop_loss"]
     assert updated["audit"]["new_stop_loss"] == 99999999
+    assert updated["audit"]["source_snapshot_id"] == recommendation["source_snapshot_id"]
+    assert updated["audit"]["strategy_config_id"] == recommendation["strategy_config_id"]
     assert updated["audit"]["reason"] == "force alert in test"
     assert updated["audit"]["updated_by"] == "qa"
 

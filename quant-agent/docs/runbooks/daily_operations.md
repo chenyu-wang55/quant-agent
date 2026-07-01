@@ -223,6 +223,9 @@ curl "http://localhost:8000/portfolio/alert-history?ticker=MSFT"
 `/portfolio/recommendation-attribution` shows realized P&L grouped by both
 `recommendation_id` and `source_snapshot_id`, which is the daily check for whether
 a replayable market/news snapshot produced useful recommendations after exits.
+Paper orders, trade rows, alert history, sell executions, and holding-control audits
+also expose `source_snapshot_id` and `strategy_config_id` when the action came from a
+recommendation, so each buy, monitor, control-change, and sell step can be replayed.
 Use each snapshot row's `performance_score`, `quality_grade`, `expectancy_per_sell`,
 `win_rate`, and `profit_factor` to decide whether a signal configuration should be
 kept, relaxed, or tightened before the next research batch.

@@ -380,6 +380,9 @@ first target and risk-off reduce half unless `qty`, `sell_price`, or `sell_all` 
 Scheduled `system_cycle` runs persist every generated sell alert into alert history with
 `monitor_run_id`, so the monitoring trail survives process restarts. Dashboard refreshes
 still compute current alerts without writing new history rows.
+Paper orders, trade-ledger rows, sell alerts, sell executions, and holding-control
+audits persist `source_snapshot_id` and `strategy_config_id` directly when they can be
+derived from the originating recommendation.
 Sell controls record sell price, quantity, reason, realized P&L, and whether the holding remains open.
 Holding controls can be tightened or relaxed while a position is open; every stop-loss,
 target, or note change writes a durable holding-control audit row and emits a

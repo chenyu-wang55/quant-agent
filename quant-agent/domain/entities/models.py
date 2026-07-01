@@ -495,6 +495,8 @@ class PaperOrderRiskPlan(BaseModel):
 class PaperOrder(BaseModel):
     id: str
     recommendation_id: str
+    source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
     side: Direction
     qty: float
     limit_price: float | None
@@ -680,6 +682,8 @@ class HoldingControlAudit(BaseModel):
     id: str
     ticker: str
     source_recommendation_id: str | None = None
+    source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
     old_stop_loss: float
     new_stop_loss: float
     old_take_profit1: float
@@ -730,6 +734,8 @@ class SellExecutionAudit(BaseModel):
     status: str = "recorded"
     reason: str | None = None
     source_recommendation_id: str | None = None
+    source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
     realized_pnl_delta: float = 0.0
     estimated_realized_pnl_delta: float | None = None
     remaining_qty: float
@@ -755,6 +761,8 @@ class TradeLedgerEntry(BaseModel):
     price: float
     executed_at: datetime
     source_recommendation_id: str | None = None
+    source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
     reason: str | None = None
     realized_pnl_delta: float = 0.0
     holding_status_after: HoldingStatus | None = None
@@ -923,6 +931,8 @@ class SellAlert(BaseModel):
     take_profit1: float
     take_profit2: float
     source_recommendation_id: str | None = None
+    source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
     message_cn: str
     suggested_action_cn: str
     generated_at: datetime = Field(default_factory=utc_now)
@@ -938,6 +948,8 @@ class SellAlertAudit(BaseModel):
     take_profit1: float
     take_profit2: float
     source_recommendation_id: str | None = None
+    source_snapshot_id: str | None = None
+    strategy_config_id: str | None = None
     message_cn: str
     suggested_action_cn: str
     generated_at: datetime

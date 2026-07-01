@@ -56,6 +56,8 @@ class ExecutionRouter:
         order = PaperOrder(
             id=uuid4().hex[:16],
             recommendation_id=request.recommendation_id,
+            source_snapshot_id=recommendation.source_snapshot_id,
+            strategy_config_id=recommendation.strategy_config_id,
             side=request.side,
             qty=request.qty,
             limit_price=request.limit_price,
