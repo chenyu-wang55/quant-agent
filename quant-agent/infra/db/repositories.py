@@ -749,6 +749,26 @@ class SellExecutionAuditRepository:
             )
             session.commit()
 
+    def get(self, execution_id: str) -> SellExecutionAudit | None:
+        with SessionLocal() as session:
+            record = session.get(SellExecutionAuditRecord, execution_id)
+            if record is None:
+                return None
+            return self._to_domain(record)
+
+    def get_by_broker_order_id(self, broker_order_id: str) -> SellExecutionAudit | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(SellExecutionAuditRecord)
+                .where(SellExecutionAuditRecord.broker_order_id == broker_order_id)
+                .order_by(SellExecutionAuditRecord.submitted_at.desc())
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+            if record is None:
+                return None
+            return self._to_domain(record)
+
     def list_recent(
         self,
         limit: int = 100,

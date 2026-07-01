@@ -63,6 +63,7 @@ class PaperOrderStatus(str, Enum):
 
 class BrokerOrderSyncStatus(str, Enum):
     SUBMITTED = "submitted"
+    PARTIALLY_FILLED = "partially_filled"
     FILLED = "filled"
     CANCELED = "canceled"
     REJECTED = "rejected"
@@ -481,6 +482,7 @@ class BrokerOrderStatusSnapshot(BaseModel):
     broker_order_id: str | None = None
     status: BrokerOrderSyncStatus
     fill_price: float | None = Field(default=None, gt=0)
+    filled_qty: float | None = Field(default=None, gt=0)
     filled_at: datetime | None = None
     reason: str | None = None
     broker_message: str | None = None
@@ -490,7 +492,10 @@ class BrokerOrderStatusSnapshot(BaseModel):
     def validate_sync_payload(self) -> "BrokerOrderStatusSnapshot":
         if not self.order_id and not self.broker_order_id:
             raise ValueError("order_id or broker_order_id is required")
-        if self.status == BrokerOrderSyncStatus.FILLED and self.fill_price is None:
+        if self.status in {
+            BrokerOrderSyncStatus.FILLED,
+            BrokerOrderSyncStatus.PARTIALLY_FILLED,
+        } and self.fill_price is None:
             raise ValueError("fill_price is required for filled broker statuses")
         return self
 
@@ -508,8 +513,8 @@ class BrokerOrderSyncItemResult(BaseModel):
     broker_order_id: str | None = None
     broker_status: BrokerOrderSyncStatus
     action: str
-    before_status: PaperOrderStatus | None = None
-    after_status: PaperOrderStatus | None = None
+    before_status: str | None = None
+    after_status: str | None = None
     apply_to_ledger: bool | None = None
     message_cn: str
 

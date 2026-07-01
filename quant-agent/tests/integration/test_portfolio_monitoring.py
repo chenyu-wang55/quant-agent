@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -584,6 +585,171 @@ def test_confirmed_live_sell_uses_configured_broker_adapter_and_records_fill() -
     assert audit["status"] == "filled"
     assert audit["broker_order_id"] == "fake_sell_broker_order"
     assert audit["remaining_qty"] == 6
+
+
+def test_broker_sell_sync_applies_delayed_fill_once() -> None:
+    state = get_app_state()
+    state.reset()
+    original_router = state.execution_router
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "broker-sell-sync-test",
+            "as_of": "2026-04-10T09:30:00Z",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "max_name_weight": 0.10,
+                "max_sector_weight": 0.30,
+                "max_gross_exposure": 1.0,
+                "max_correlated_cluster_weight": 0.35,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1000000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100000000,
+                "allowed_sectors": [],
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    ticker = recommendation["ticker"]
+    state.close_holding(ticker)
+
+    buy_price = recommendation["entry_zone_high"]
+    buy_response = client.post(
+        "/portfolio/buys",
+        json={
+            "ticker": ticker,
+            "qty": 10,
+            "buy_price": buy_price,
+            "source_recommendation_id": recommendation["id"],
+            "note": "delayed live sell setup",
+            "stop_loss": recommendation["stop_loss"],
+            "take_profit1": recommendation["tp1"],
+            "take_profit2": recommendation["tp2"],
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert buy_response.status_code == 200
+
+    sell_price = round(buy_price + 4.0, 6)
+    broker_order_id = f"fake_delayed_sell_{uuid4().hex[:8]}"
+    sell_reason = f"delayed broker sell {uuid4().hex[:8]}"
+    fake_adapter = FakeBrokerAdapter(
+        raw_status="accepted",
+        broker_order_id=broker_order_id,
+    )
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        submitted_sell = client.post(
+            f"/portfolio/holdings/{ticker}/sell",
+            json={
+                "qty": 4,
+                "sell_price": sell_price,
+                "execution_mode": "live",
+                "dry_run": False,
+                "confirm_live": True,
+                "reason": sell_reason,
+            },
+            headers=AUTH_HEADERS,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert submitted_sell.status_code == 200
+    submitted_execution = submitted_sell.json()
+    assert submitted_execution["applied_to_ledger"] is False
+    assert submitted_execution["broker_order_id"] == broker_order_id
+    assert submitted_execution["remaining_qty"] == 10
+
+    holdings_before_sync = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings_before_sync.status_code == 200
+    assert next(item for item in holdings_before_sync.json() if item["ticker"] == ticker)["qty"] == 10
+
+    sync_response = client.post(
+        "/portfolio/sell-executions/broker-sync",
+        json={
+            "broker": "integration-broker",
+            "updated_by": "qa",
+            "statuses": [
+                {
+                    "broker_order_id": broker_order_id,
+                    "status": "filled",
+                    "fill_price": sell_price,
+                    "filled_qty": 4,
+                    "broker_message": "sell filled later",
+                }
+            ],
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert sync_response.status_code == 200
+    sync_result = sync_response.json()
+    assert sync_result["filled_count"] == 1
+    assert sync_result["items"][0]["action"] == "filled"
+    assert sync_result["items"][0]["order_id"] == submitted_execution["sell_execution_id"]
+
+    holdings_after_sync = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings_after_sync.status_code == 200
+    holding = next(item for item in holdings_after_sync.json() if item["ticker"] == ticker)
+    assert holding["qty"] == 6
+    assert holding["last_sell_price"] == sell_price
+
+    sell_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
+    assert sell_trades.status_code == 200
+    sell_rows = [
+        row for row in sell_trades.json()
+        if row["reason"] == sell_reason and row["price"] == sell_price
+    ]
+    assert len(sell_rows) == 1
+    assert sell_rows[0]["qty"] == 4
+
+    sell_audits = client.get(
+        f"/portfolio/sell-executions?ticker={ticker}&applied_to_ledger=true",
+        headers=AUTH_HEADERS,
+    )
+    assert sell_audits.status_code == 200
+    audit = next(item for item in sell_audits.json() if item["id"] == submitted_execution["sell_execution_id"])
+    assert audit["status"] == "filled"
+    assert audit["applied_to_ledger"] is True
+    assert audit["remaining_qty"] == 6
+
+    repeat_sync = client.post(
+        "/portfolio/sell-executions/broker-sync",
+        json={
+            "broker": "integration-broker",
+            "updated_by": "qa",
+            "statuses": [
+                {
+                    "broker_order_id": broker_order_id,
+                    "status": "filled",
+                    "fill_price": sell_price,
+                    "filled_qty": 4,
+                }
+            ],
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert repeat_sync.status_code == 200
+    assert repeat_sync.json()["unchanged_count"] == 1
+    trades_after_repeat = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
+    assert trades_after_repeat.status_code == 200
+    repeated_rows = [
+        row for row in trades_after_repeat.json()
+        if row["reason"] == sell_reason and row["price"] == sell_price
+    ]
+    assert len(repeated_rows) == 1
 
 
 def test_update_holding_controls_records_audit_and_drives_alerts() -> None:

@@ -8,6 +8,8 @@ from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import (
     AlertExecutionResult,
     AlertSellRequest,
+    BrokerOrderSyncRequest,
+    BrokerOrderSyncResult,
     HoldingControlAudit,
     HoldingControlUpdateRequest,
     HoldingControlUpdateResult,
@@ -127,6 +129,14 @@ def list_sell_execution_audits(
         dry_run=dry_run,
         applied_to_ledger=applied_to_ledger,
     )
+
+
+@router.post("/portfolio/sell-executions/broker-sync", response_model=BrokerOrderSyncResult)
+def sync_broker_sell_statuses(
+    request: BrokerOrderSyncRequest,
+    state: AppState = Depends(get_app_state),
+) -> BrokerOrderSyncResult:
+    return state.sync_broker_sell_statuses(request)
 
 
 @router.post("/portfolio/reconciliation", response_model=PositionReconciliationReport)

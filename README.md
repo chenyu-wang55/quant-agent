@@ -107,6 +107,7 @@ execution_mode: "research_only"
 - `/paper-orders/broker-sync`
 - `/paper-orders/{order_id}/fill`
 - `/paper-orders/{order_id}/cancel`
+- `/portfolio/sell-executions/broker-sync`
 - `/metrics`
 
 新增持仓监控与卖出提醒能力：

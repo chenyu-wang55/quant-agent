@@ -147,6 +147,7 @@ Endpoints:
 - `POST /paper-orders/broker-sync`
 - `POST /paper-orders/{order_id}/fill`
 - `POST /paper-orders/{order_id}/cancel`
+- `POST /portfolio/sell-executions/broker-sync`
 - `GET /execution/kill-switch`
 - `POST /execution/kill-switch`
 - `GET /execution/autopilot-policy`

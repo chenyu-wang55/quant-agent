@@ -340,13 +340,19 @@ curl -X POST http://localhost:8000/portfolio/holdings/<ticker>/sell \
 curl -X POST http://localhost:8000/portfolio/alerts/<ticker>/execute \
   -H "Content-Type: application/json" \
   -d '{"reason_code":"stop_loss_breach","execution_mode":"live","dry_run":true}'
+
+curl -X POST http://localhost:8000/portfolio/sell-executions/broker-sync \
+  -H "Content-Type: application/json" \
+  -d '{"broker":"example-broker","updated_by":"broker-poller","statuses":[{"broker_order_id":"<sell_broker_order_id>","status":"filled","fill_price":125.50,"filled_qty":10,"broker_message":"sell filled later"}]}'
 ```
 
 Live sell dry-runs emit `sell_routed` with `applied_to_ledger=false`; they do not close
 holdings or create sell trades. Confirmed live sells require the same Alpaca adapter
 environment as confirmed live buys. Immediate broker fills update the holding and
 trade ledger; submitted, rejected, canceled, or expired broker responses are recorded
-as sell execution audits without mutating local holdings.
+as sell execution audits without mutating local holdings. If a live sell is accepted
+first and fills later, use `/portfolio/sell-executions/broker-sync` to apply the fill
+once; repeated syncs with the same cumulative `filled_qty` are idempotent.
 Use `GET /portfolio/sell-executions?dry_run=true` to audit rehearsed sell routes that
 were validated but not sent to a broker or ledger.
 
