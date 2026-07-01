@@ -581,6 +581,8 @@ class AutopilotPolicy(BaseModel):
     max_open_risk_pct: float = Field(default=0.06, ge=0.0, le=1.0)
     max_daily_realized_loss_pct: float = Field(default=0.03, ge=0.0, le=1.0)
     max_auto_buy_price_drift_pct: float = Field(default=0.03, ge=0.0, le=1.0)
+    require_position_reconciliation: bool = False
+    max_position_reconciliation_age_minutes: int = Field(default=1440, ge=0)
     account_equity: float = Field(default=100_000.0, gt=0)
     risk_per_trade_pct: float = Field(default=0.01, gt=0, le=1.0)
     max_position_pct: float = Field(default=0.10, gt=0, le=1.0)

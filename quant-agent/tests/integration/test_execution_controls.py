@@ -34,6 +34,8 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["max_open_risk_pct"] == 0.06
     assert default_policy["max_daily_realized_loss_pct"] == 0.03
     assert default_policy["max_auto_buy_price_drift_pct"] == 0.03
+    assert default_policy["require_position_reconciliation"] is False
+    assert default_policy["max_position_reconciliation_age_minutes"] == 1440
 
     update_response = client.post(
         "/execution/autopilot-policy",
@@ -59,6 +61,8 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
             "max_open_risk_pct": 0.04,
             "max_daily_realized_loss_pct": 0.025,
             "max_auto_buy_price_drift_pct": 0.015,
+            "require_position_reconciliation": False,
+            "max_position_reconciliation_age_minutes": 720,
             "account_equity": 10000000,
             "risk_per_trade_pct": 0.005,
             "max_position_pct": 0.08,
@@ -90,6 +94,8 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert updated_policy["max_open_risk_pct"] == 0.04
     assert updated_policy["max_daily_realized_loss_pct"] == 0.025
     assert updated_policy["max_auto_buy_price_drift_pct"] == 0.015
+    assert updated_policy["require_position_reconciliation"] is False
+    assert updated_policy["max_position_reconciliation_age_minutes"] == 720
     assert updated_policy["updated_by"] == "qa"
 
     latest_response = client.get("/execution/autopilot-policy", headers=AUTH_HEADERS)
@@ -112,11 +118,46 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert "order_dedupe" in preflight_check_names
     assert "sell_alert_cooldown" in preflight_check_names
     assert "auto_buy_price_drift" in preflight_check_names
+    assert "position_reconciliation" in preflight_check_names
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200
     assert realtime.json()["autopilot_policy"]["policy_id"] == updated_policy["policy_id"]
     assert realtime.json()["autopilot_preflight"]["status"] == "ready"
+
+
+def test_autopilot_preflight_blocks_auto_execute_without_required_reconciliation() -> None:
+    state = get_app_state()
+    state.reset()
+    client = TestClient(app)
+
+    response = client.post(
+        "/execution/autopilot-policy",
+        json={
+            "enabled": True,
+            "auto_execute_approved": True,
+            "max_auto_buys": 1,
+            "max_auto_sells": 1,
+            "require_position_reconciliation": True,
+            "max_position_reconciliation_age_minutes": 1440,
+            "reason": "require-reconciliation-test",
+            "updated_by": "qa",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+
+    control_center = client.get("/operations/control-center?refresh_alerts=false", headers=AUTH_HEADERS)
+    assert control_center.status_code == 200
+    preflight = control_center.json()["autopilot_preflight"]
+    assert preflight["status"] == "blocked"
+    assert preflight["can_auto_execute"] is False
+    assert "position_reconciliation_missing" in preflight["reasons"]
+    reconciliation_check = next(
+        item for item in preflight["checks"] if item["name"] == "position_reconciliation"
+    )
+    assert reconciliation_check["status"] == "fail"
+    assert reconciliation_check["details"]["reason"] == "position_reconciliation_missing"
 
 
 def test_market_session_endpoint_reports_regular_hours() -> None:

@@ -913,6 +913,8 @@ def _apply_autopilot_policy(
             "max_open_risk_pct": policy.max_open_risk_pct,
             "max_daily_realized_loss_pct": policy.max_daily_realized_loss_pct,
             "max_auto_buy_price_drift_pct": policy.max_auto_buy_price_drift_pct,
+            "require_position_reconciliation": policy.require_position_reconciliation,
+            "max_position_reconciliation_age_minutes": policy.max_position_reconciliation_age_minutes,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,
@@ -947,6 +949,8 @@ def system_cycle(
     max_open_risk_pct: float = 0.06,
     max_daily_realized_loss_pct: float = 0.03,
     max_auto_buy_price_drift_pct: float = 0.03,
+    require_position_reconciliation: bool = False,
+    max_position_reconciliation_age_minutes: int = 1440,
     risk_per_trade_pct: float = 0.01,
     max_position_pct: float = 0.10,
     max_gross_exposure_pct: float = 1.0,
@@ -981,6 +985,8 @@ def system_cycle(
                 "max_open_risk_pct": max_open_risk_pct,
                 "max_daily_realized_loss_pct": max_daily_realized_loss_pct,
                 "max_auto_buy_price_drift_pct": max_auto_buy_price_drift_pct,
+                "require_position_reconciliation": require_position_reconciliation,
+                "max_position_reconciliation_age_minutes": max_position_reconciliation_age_minutes,
                 "risk_per_trade_pct": risk_per_trade_pct,
                 "max_position_pct": max_position_pct,
                 "max_gross_exposure_pct": max_gross_exposure_pct,
@@ -1007,6 +1013,8 @@ def system_cycle(
         max_open_risk_pct = policy_values["max_open_risk_pct"]
         max_daily_realized_loss_pct = policy_values["max_daily_realized_loss_pct"]
         max_auto_buy_price_drift_pct = policy_values["max_auto_buy_price_drift_pct"]
+        require_position_reconciliation = policy_values["require_position_reconciliation"]
+        max_position_reconciliation_age_minutes = policy_values["max_position_reconciliation_age_minutes"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
         max_position_pct = policy_values["max_position_pct"]
         max_gross_exposure_pct = policy_values["max_gross_exposure_pct"]
@@ -1036,6 +1044,12 @@ def system_cycle(
         max_daily_realized_loss_pct=max_daily_realized_loss_pct,
     )
     daily_loss_passed = bool(daily_loss_gate.get("passed"))
+    position_reconciliation_gate = state.get_position_reconciliation_gate(
+        require_position_reconciliation=require_position_reconciliation,
+        max_age_minutes=max_position_reconciliation_age_minutes,
+        as_of=started_at,
+    )
+    position_reconciliation_passed = bool(position_reconciliation_gate.get("passed"))
     auto_approval_block: dict[str, Any] | None = None
     if not snapshot_quality_passed:
         auto_approval_block = {
@@ -1070,6 +1084,21 @@ def system_cycle(
     )
     alerts = state.monitor_sell_alerts(as_of=started_at)
     state.record_sell_alert_audits(alerts, monitor_run_id=run_id)
+    auto_execution_block: dict[str, Any] | None = None
+    if not snapshot_quality_passed:
+        auto_execution_block = {
+            "action": "auto_execution",
+            "status": "skipped",
+            "reason": "snapshot_quality_gate_failed",
+            "snapshot_quality_gate": snapshot_quality_gate,
+        }
+    elif not position_reconciliation_passed:
+        auto_execution_block = {
+            "action": "auto_execution",
+            "status": "skipped",
+            "reason": "position_reconciliation_gate_failed",
+            "position_reconciliation_gate": position_reconciliation_gate,
+        }
     auto_execution = (
         _auto_execute_cycle(
             recommendations=output.result.recommendations[:top_n],
@@ -1091,23 +1120,18 @@ def system_cycle(
             max_gross_exposure_pct=max_gross_exposure_pct,
             max_sector_exposure_pct=max_sector_exposure_pct,
         )
-        if auto_execute_approved and snapshot_quality_passed
+        if auto_execute_approved and auto_execution_block is None
         else _auto_execution_report(
             enabled=False,
             mode=auto_execution_mode,
-            actions=[
-                {
-                    "action": "auto_execution",
-                    "status": "skipped",
-                    "reason": "snapshot_quality_gate_failed",
-                    "snapshot_quality_gate": snapshot_quality_gate,
-                }
-            ],
+            actions=[auto_execution_block],
         )
-        if auto_execute_approved
+        if auto_execute_approved and auto_execution_block is not None
         else _auto_execution_report(enabled=False, mode=auto_execution_mode, actions=[])
     )
-    effective_auto_execute_approved = auto_execute_approved and snapshot_quality_passed
+    effective_auto_execute_approved = (
+        auto_execute_approved and snapshot_quality_passed and position_reconciliation_passed
+    )
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()
     finished_at = datetime.now(timezone.utc)
@@ -1144,6 +1168,7 @@ def system_cycle(
     metrics["autopilot_preflight"] = autopilot_preflight
     metrics["snapshot_quality_gate"] = snapshot_quality_gate
     metrics["daily_loss_gate"] = daily_loss_gate
+    metrics["position_reconciliation_gate"] = position_reconciliation_gate
     run = SystemCycleRun(
         id=run_id,
         started_at=started_at,
@@ -1180,6 +1205,7 @@ def system_cycle(
         "autopilot_preflight": autopilot_preflight,
         "snapshot_quality_gate": snapshot_quality_gate,
         "daily_loss_gate": daily_loss_gate,
+        "position_reconciliation_gate": position_reconciliation_gate,
         "auto_approval": auto_approval,
         "auto_execution": auto_execution,
         "consumed_event_count": len(consumed_events),
@@ -1431,6 +1457,17 @@ def main() -> None:
         help="maximum latest-price drift from the recommendation entry zone before auto buys are blocked",
     )
     parser.add_argument(
+        "--require-position-reconciliation",
+        action="store_true",
+        help="require the latest position reconciliation report to pass before automatic execution",
+    )
+    parser.add_argument(
+        "--max-position-reconciliation-age-minutes",
+        type=int,
+        default=1440,
+        help="maximum age of the latest position reconciliation report before automatic execution is blocked",
+    )
+    parser.add_argument(
         "--risk-per-trade-pct",
         type=float,
         default=0.01,
@@ -1514,6 +1551,8 @@ def main() -> None:
             max_open_risk_pct=args.max_open_risk_pct,
             max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
             max_auto_buy_price_drift_pct=args.max_auto_buy_price_drift_pct,
+            require_position_reconciliation=args.require_position_reconciliation,
+            max_position_reconciliation_age_minutes=args.max_position_reconciliation_age_minutes,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,
@@ -1547,6 +1586,8 @@ def main() -> None:
             max_open_risk_pct=args.max_open_risk_pct,
             max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
             max_auto_buy_price_drift_pct=args.max_auto_buy_price_drift_pct,
+            require_position_reconciliation=args.require_position_reconciliation,
+            max_position_reconciliation_age_minutes=args.max_position_reconciliation_age_minutes,
             risk_per_trade_pct=args.risk_per_trade_pct,
             max_position_pct=args.max_position_pct,
             max_gross_exposure_pct=args.max_gross_exposure_pct,

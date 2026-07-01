@@ -747,6 +747,8 @@ def dashboard_home() -> str:
         <div class="field"><label for="autopilotMaxOpenRiskPct">Policy Open Risk %</label><input id="autopilotMaxOpenRiskPct" type="number" min="0" max="100" step="0.5" value="6" /></div>
         <div class="field"><label for="autopilotMaxDailyLossPct">Daily Loss %</label><input id="autopilotMaxDailyLossPct" type="number" min="0" max="100" step="0.5" value="3" /></div>
         <div class="field"><label for="autopilotMaxBuyDriftPct">Buy Drift %</label><input id="autopilotMaxBuyDriftPct" type="number" min="0" max="100" step="0.5" value="3" /></div>
+        <label class="check-field"><input id="autopilotRequireReconciliation" type="checkbox" /><span>Require Reconcile</span></label>
+        <div class="field"><label for="autopilotMaxReconciliationAge">Reconcile Age</label><input id="autopilotMaxReconciliationAge" type="number" min="0" step="60" value="1440" /></div>
         <div class="field"><label for="autopilotRiskPct">Policy Risk %</label><input id="autopilotRiskPct" type="number" min="0.01" max="100" step="0.1" value="1" /></div>
         <div class="field"><label for="autopilotMaxPositionPct">Policy Position %</label><input id="autopilotMaxPositionPct" type="number" min="0.01" max="100" step="0.5" value="10" /></div>
         <div class="field"><label for="autopilotMaxGrossPct">Policy Gross %</label><input id="autopilotMaxGrossPct" type="number" min="0.01" max="500" step="1" value="100" /></div>
@@ -1091,6 +1093,8 @@ def dashboard_home() -> str:
       setFieldValue('autopilotMaxOpenRiskPct', pctInputValue(currentAutopilotPolicy.max_open_risk_pct, 0.06));
       setFieldValue('autopilotMaxDailyLossPct', pctInputValue(currentAutopilotPolicy.max_daily_realized_loss_pct, 0.03));
       setFieldValue('autopilotMaxBuyDriftPct', pctInputValue(currentAutopilotPolicy.max_auto_buy_price_drift_pct, 0.03));
+      setChecked('autopilotRequireReconciliation', currentAutopilotPolicy.require_position_reconciliation);
+      setFieldValue('autopilotMaxReconciliationAge', currentAutopilotPolicy.max_position_reconciliation_age_minutes ?? 1440);
       setFieldValue('autopilotRiskPct', pctInputValue(currentAutopilotPolicy.risk_per_trade_pct, 0.01));
       setFieldValue('autopilotMaxPositionPct', pctInputValue(currentAutopilotPolicy.max_position_pct, 0.10));
       setFieldValue('autopilotMaxGrossPct', pctInputValue(currentAutopilotPolicy.max_gross_exposure_pct, 1.0));
@@ -1124,6 +1128,8 @@ def dashboard_home() -> str:
         max_open_risk_pct: Math.max(0, Math.min(100, numberValue('autopilotMaxOpenRiskPct') ?? 6)) / 100,
         max_daily_realized_loss_pct: Math.max(0, Math.min(100, numberValue('autopilotMaxDailyLossPct') ?? 3)) / 100,
         max_auto_buy_price_drift_pct: Math.max(0, Math.min(100, numberValue('autopilotMaxBuyDriftPct') ?? 3)) / 100,
+        require_position_reconciliation: checkedValue('autopilotRequireReconciliation'),
+        max_position_reconciliation_age_minutes: Math.max(0, Math.floor(numberValue('autopilotMaxReconciliationAge') ?? 1440)),
         risk_per_trade_pct: (numberValue('autopilotRiskPct') ?? 1) / 100,
         max_position_pct: (numberValue('autopilotMaxPositionPct') ?? 10) / 100,
         max_gross_exposure_pct: (numberValue('autopilotMaxGrossPct') ?? 100) / 100,

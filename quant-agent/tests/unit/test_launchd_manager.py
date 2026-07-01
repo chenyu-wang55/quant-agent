@@ -54,6 +54,9 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "0.02",
         "--max-auto-buy-price-drift-pct",
         "0.015",
+        "--require-position-reconciliation",
+        "--max-position-reconciliation-age-minutes",
+        "120",
     )
 
     plist = manage_launchd.build_plist(args, home=tmp_path)
@@ -97,6 +100,9 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "0.02" in round_trip["ProgramArguments"]
     assert "--max-auto-buy-price-drift-pct" in round_trip["ProgramArguments"]
     assert "0.015" in round_trip["ProgramArguments"]
+    assert "--require-position-reconciliation" in round_trip["ProgramArguments"]
+    assert "--max-position-reconciliation-age-minutes" in round_trip["ProgramArguments"]
+    assert "120" in round_trip["ProgramArguments"]
     assert str(tmp_path / "Library" / "Logs") in round_trip["StandardOutPath"]
 
 

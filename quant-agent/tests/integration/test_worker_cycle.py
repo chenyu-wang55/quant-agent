@@ -233,6 +233,64 @@ def test_system_cycle_blocks_auto_buy_when_latest_price_drifts_from_entry_zone(m
     assert holding is None or holding.status != HoldingStatus.OPEN
 
 
+def test_system_cycle_blocks_auto_execution_when_required_reconciliation_is_missing() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    seed_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    ticker = seed_result["top_recommendations"][0]["ticker"]
+    state.close_holding(ticker)
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="approval should be blocked by missing reconciliation",
+        )
+    )
+    existing_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=seed_at,
+        auto_execute_approved=True,
+        auto_execution_mode="paper",
+        max_auto_buys=1,
+        max_auto_sells=0,
+        rebuy_cooldown_minutes=0,
+        require_position_reconciliation=True,
+        account_equity=100_000_000,
+        max_daily_realized_loss_pct=1.0,
+    )
+
+    assert result["auto_execution_enabled"] is False
+    assert result["auto_execution"]["enabled"] is False
+    assert result["auto_execution"]["buy_order_count"] == 0
+    action = result["auto_execution"]["actions"][0]
+    assert action["status"] == "skipped"
+    assert action["reason"] == "position_reconciliation_gate_failed"
+    gate = action["position_reconciliation_gate"]
+    assert gate["passed"] is False
+    assert gate["reason"] == "position_reconciliation_missing"
+    assert result["position_reconciliation_gate"] == gate
+    current_order_ids = {
+        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
+    }
+    assert current_order_ids == existing_order_ids
+
+
 def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
     state = get_app_state()
     state.reset()

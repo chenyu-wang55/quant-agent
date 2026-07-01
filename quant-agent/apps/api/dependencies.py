@@ -1056,11 +1056,17 @@ class AppState:
             not policy.restrict_auto_execution_to_regular_hours
             or market_session.is_regular_session
         )
+        position_reconciliation_gate = self.get_position_reconciliation_gate(
+            require_position_reconciliation=policy.require_position_reconciliation,
+            max_age_minutes=policy.max_position_reconciliation_age_minutes,
+            as_of=as_of,
+        )
         can_auto_execute = (
             policy.auto_execute_approved
             and execution_capacity
             and execution_daily_budget
             and market_hours_allowed
+            and position_reconciliation_gate["passed"]
             and not self.kill_switch.enabled
         )
         if not policy.auto_execute_approved:
@@ -1107,6 +1113,18 @@ class AppState:
                     details=market_session.model_dump(mode="json"),
                 )
             )
+        elif not position_reconciliation_gate["passed"]:
+            reason = str(position_reconciliation_gate["reason"])
+            if reason not in reasons:
+                reasons.append(reason)
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="position_reconciliation",
+                    status="fail",
+                    message_cn="自动执行要求最近一次仓位核对通过，但当前核对缺失、过期或存在差异。",
+                    details=position_reconciliation_gate,
+                )
+            )
         else:
             checks.append(
                 AutopilotPreflightCheck(
@@ -1121,6 +1139,7 @@ class AppState:
                         "execution_mode": policy.auto_execution_mode.value,
                         **daily_usage,
                         "daily_loss_gate": daily_loss_gate,
+                        "position_reconciliation_gate": position_reconciliation_gate,
                     },
                 )
             )
@@ -1134,6 +1153,26 @@ class AppState:
                         else "未强制美股常规交易时段门禁。"
                     ),
                     details=market_session.model_dump(mode="json"),
+                )
+            )
+
+        if not policy.auto_execute_approved or position_reconciliation_gate["passed"]:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="position_reconciliation",
+                    status=(
+                        "pass"
+                        if policy.require_position_reconciliation and position_reconciliation_gate["passed"]
+                        else "warn"
+                    ),
+                    message_cn=(
+                        "自动执行前要求最近一次仓位核对通过，当前门禁已通过。"
+                        if policy.require_position_reconciliation and position_reconciliation_gate["passed"]
+                        else "自动执行前要求最近一次仓位核对通过；当前未通过，但自动执行未启用。"
+                        if policy.require_position_reconciliation
+                        else "未强制要求自动执行前仓位核对。"
+                    ),
+                    details=position_reconciliation_gate,
                 )
             )
 
@@ -2107,6 +2146,69 @@ class AppState:
         status: str | None = None,
     ) -> list[PositionReconciliationReport]:
         return self.position_reconciliation_repo.list_recent(limit=limit, broker=broker, status=status)
+
+    def get_position_reconciliation_gate(
+        self,
+        *,
+        require_position_reconciliation: bool,
+        max_age_minutes: int,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        if not require_position_reconciliation:
+            return {
+                "passed": True,
+                "required": False,
+                "reason": "not_required",
+                "max_age_minutes": max_age_minutes,
+            }
+
+        reference_at = as_of or datetime.now(timezone.utc)
+        if reference_at.tzinfo is None:
+            reference_at = reference_at.replace(tzinfo=timezone.utc)
+        else:
+            reference_at = reference_at.astimezone(timezone.utc)
+        latest = self.list_position_reconciliations(limit=1)
+        if not latest:
+            return {
+                "passed": False,
+                "required": True,
+                "reason": "position_reconciliation_missing",
+                "max_age_minutes": max_age_minutes,
+            }
+
+        report = latest[0]
+        checked_at = report.checked_at.astimezone(timezone.utc)
+        age_seconds = max(0.0, (reference_at - checked_at).total_seconds())
+        age_minutes = round(age_seconds / 60.0, 3)
+        details = {
+            "required": True,
+            "reconciliation_id": report.reconciliation_id,
+            "broker": report.broker,
+            "account_id": report.account_id,
+            "status": report.status,
+            "blocks_auto_execution": report.blocks_auto_execution,
+            "mismatch_count": report.mismatch_count,
+            "checked_at": checked_at.isoformat(),
+            "age_minutes": age_minutes,
+            "max_age_minutes": max_age_minutes,
+        }
+        if max_age_minutes > 0 and age_minutes > max_age_minutes:
+            return {
+                "passed": False,
+                "reason": "position_reconciliation_stale",
+                **details,
+            }
+        if report.blocks_auto_execution or report.status not in {"matched", "empty"}:
+            return {
+                "passed": False,
+                "reason": "position_reconciliation_mismatch",
+                **details,
+            }
+        return {
+            "passed": True,
+            "reason": None,
+            **details,
+        }
 
     def get_portfolio_summary(self, as_of: datetime | None = None) -> PortfolioSummary:
         now = as_of or datetime.now(timezone.utc)

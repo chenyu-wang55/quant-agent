@@ -72,6 +72,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.max_daily_realized_loss_pct),
         "--max-auto-buy-price-drift-pct",
         str(args.max_auto_buy_price_drift_pct),
+        "--max-position-reconciliation-age-minutes",
+        str(args.max_position_reconciliation_age_minutes),
         "--risk-per-trade-pct",
         str(args.risk_per_trade_pct),
         "--max-position-pct",
@@ -89,6 +91,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         program_args.append("--auto-execute-approved")
     if args.auto_approve_recommendations:
         program_args.append("--auto-approve-recommendations")
+    if args.require_position_reconciliation:
+        program_args.append("--require-position-reconciliation")
     if args.consume_events:
         program_args.append("--consume-events")
     if args.stop_on_error:
@@ -187,6 +191,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-open-risk-pct", type=float, default=0.06)
     parser.add_argument("--max-daily-realized-loss-pct", type=float, default=0.03)
     parser.add_argument("--max-auto-buy-price-drift-pct", type=float, default=0.03)
+    parser.add_argument("--require-position-reconciliation", action="store_true")
+    parser.add_argument("--max-position-reconciliation-age-minutes", type=int, default=1440)
     parser.add_argument("--risk-per-trade-pct", type=float, default=0.01)
     parser.add_argument("--max-position-pct", type=float, default=0.10)
     parser.add_argument("--max-gross-exposure-pct", type=float, default=1.0)

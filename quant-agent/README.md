@@ -305,6 +305,10 @@ Before moving beyond paper or live dry-run, reconcile broker positions against t
 local open-holding ledger with `POST /portfolio/reconciliation`. The response is
 persisted in `position_reconciliations`, emits a `position_reconciliation` event, and
 sets `blocks_auto_execution=true` whenever local and broker quantities disagree.
+Set `require_position_reconciliation=true` in the autopilot policy, or run
+`system_cycle --require-position-reconciliation`, to block automatic execution unless
+the latest reconciliation is `matched` or `empty` and still within
+`max_position_reconciliation_age_minutes`.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

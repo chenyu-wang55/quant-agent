@@ -342,6 +342,8 @@ class AutopilotPolicyRecord(Base):
     max_open_risk_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.06)
     max_daily_realized_loss_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.03)
     max_auto_buy_price_drift_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.03)
+    require_position_reconciliation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_position_reconciliation_age_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=1440)
     account_equity: Mapped[float] = mapped_column(Float, nullable=False, default=100_000.0)
     risk_per_trade_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.01)
     max_position_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.10)
