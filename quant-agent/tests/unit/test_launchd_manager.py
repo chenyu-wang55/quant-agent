@@ -32,6 +32,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "paper",
         "--interval-seconds",
         "60",
+        "--max-consecutive-errors",
+        "4",
         "--max-auto-buys",
         "2",
         "--order-dedupe-minutes",
@@ -73,6 +75,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "0.8" in round_trip["ProgramArguments"]
     assert "--interval-seconds" in round_trip["ProgramArguments"]
     assert "60.0" in round_trip["ProgramArguments"]
+    assert "--max-consecutive-errors" in round_trip["ProgramArguments"]
+    assert "4" in round_trip["ProgramArguments"]
     assert "--rebuy-cooldown-minutes" in round_trip["ProgramArguments"]
     assert "--order-dedupe-minutes" in round_trip["ProgramArguments"]
     assert "720" in round_trip["ProgramArguments"]

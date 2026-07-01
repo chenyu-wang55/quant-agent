@@ -1027,18 +1027,25 @@ def system_cycle_loop(
     interval_seconds: float = 300.0,
     max_cycles: int | None = None,
     stop_on_error: bool = False,
+    max_consecutive_errors: int = 0,
     sleep_fn: Callable[[float], None] = time.sleep,
     **cycle_kwargs: Any,
 ) -> dict[str, Any]:
+    state = get_app_state()
     started_at = datetime.now(timezone.utc)
     cycles: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
     cycle_index = 0
+    consecutive_error_count = 0
+    kill_switch_activated = False
+    stopped_reason: str | None = None
 
     while max_cycles is None or cycle_index < max_cycles:
         cycle_index += 1
+        cycle_started_at = datetime.now(timezone.utc)
         try:
             summary = system_cycle(**cycle_kwargs)
+            consecutive_error_count = 0
             cycles.append(
                 {
                     "cycle": cycle_index,
@@ -1052,18 +1059,52 @@ def system_cycle_loop(
                 }
             )
         except Exception as exc:
+            cycle_finished_at = datetime.now(timezone.utc)
+            error_run_id = uuid4().hex[:16]
+            error_message = str(exc)
+            state.record_system_cycle_run(
+                SystemCycleRun(
+                    id=error_run_id,
+                    started_at=cycle_started_at,
+                    finished_at=cycle_finished_at,
+                    status="error",
+                    auto_execution_enabled=False,
+                    metrics={
+                        "loop_error": {
+                            "cycle": cycle_index,
+                            "error_type": type(exc).__name__,
+                            "error": error_message,
+                        }
+                    },
+                    error_message=error_message,
+                )
+            )
+            consecutive_error_count += 1
             error = {
                 "cycle": cycle_index,
                 "status": "error",
+                "system_cycle_run_id": error_run_id,
                 "error": str(exc),
                 "error_type": type(exc).__name__,
+                "consecutive_error_count": consecutive_error_count,
             }
             errors.append(error)
             cycles.append(error)
+            if max_consecutive_errors > 0 and consecutive_error_count >= max_consecutive_errors:
+                reason = (
+                    f"system_cycle_loop reached {consecutive_error_count} consecutive errors; "
+                    f"last_error={type(exc).__name__}: {error_message}"
+                )
+                state.set_kill_switch(True, reason, "system_cycle_loop")
+                kill_switch_activated = True
+                stopped_reason = "max_consecutive_errors"
+                break
             if stop_on_error:
+                stopped_reason = "stop_on_error"
                 break
 
         if max_cycles is not None and cycle_index >= max_cycles:
+            stopped_reason = "max_cycles"
             break
         sleep_fn(max(0.0, interval_seconds))
 
@@ -1074,9 +1115,13 @@ def system_cycle_loop(
         "finished_at": finished_at.isoformat(),
         "interval_seconds": interval_seconds,
         "max_cycles": max_cycles,
+        "max_consecutive_errors": max_consecutive_errors,
         "cycle_count": len(cycles),
         "success_count": sum(1 for item in cycles if item.get("status") == "success"),
         "error_count": len(errors),
+        "consecutive_error_count": consecutive_error_count,
+        "kill_switch_activated": kill_switch_activated,
+        "stopped_reason": stopped_reason,
         "last_system_cycle_run_id": next(
             (
                 item.get("system_cycle_run_id")
@@ -1251,6 +1296,12 @@ def main() -> None:
         action="store_true",
         help="system_cycle_loop should stop after the first cycle error",
     )
+    parser.add_argument(
+        "--max-consecutive-errors",
+        type=int,
+        default=0,
+        help="activate kill switch and stop system_cycle_loop after this many consecutive errors; set 0 to disable",
+    )
     args = parser.parse_args()
     as_of = datetime.fromisoformat(args.as_of) if args.as_of else None
     if as_of is not None and as_of.tzinfo is None:
@@ -1296,6 +1347,7 @@ def main() -> None:
             interval_seconds=args.interval_seconds,
             max_cycles=args.max_cycles,
             stop_on_error=args.stop_on_error,
+            max_consecutive_errors=args.max_consecutive_errors,
             top_n=args.top_n,
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,

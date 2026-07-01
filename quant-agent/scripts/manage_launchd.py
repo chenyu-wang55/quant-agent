@@ -38,6 +38,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.top_n),
         "--interval-seconds",
         str(args.interval_seconds),
+        "--max-consecutive-errors",
+        str(args.max_consecutive_errors),
         "--auto-execution-mode",
         args.auto_execution_mode,
         "--auto-approve-min-confidence",
@@ -163,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-n", type=int, default=8)
     parser.add_argument("--min-confidence", type=float, default=0.0)
     parser.add_argument("--interval-seconds", type=float, default=300.0)
+    parser.add_argument("--max-consecutive-errors", type=int, default=3)
     parser.add_argument("--use-autopilot-policy", action="store_true")
     parser.add_argument("--auto-approve-recommendations", action="store_true")
     parser.add_argument("--auto-approve-min-confidence", type=float, default=0.72)

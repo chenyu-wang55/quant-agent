@@ -314,7 +314,9 @@ python -m apps.worker.main system_cycle_loop --interval-seconds 300 \
 `system_cycle_loop` repeatedly calls the same audited `system_cycle` path. Add
 `--max-cycles 2` for smoke tests or launchd/cron probes; omit it for continuous
 operation. The loop prints a final JSON report with cycle counts, errors, and the
-last `system_cycle_run_id`.
+last `system_cycle_run_id`. Failed cycles are also persisted in `system_cycle_runs`
+with `status=error`. Set `--max-consecutive-errors N` to activate the kill switch and
+stop the loop after repeated failures.
 
 On macOS, render or install a user LaunchAgent for the same loop:
 

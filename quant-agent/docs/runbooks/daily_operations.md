@@ -70,7 +70,9 @@ Use `system_cycle_loop` when the machine should keep operating unattended. It ca
 the same `system_cycle` path every `--interval-seconds`, so every recommendation,
 alert, order, and sell remains visible in the normal run history and audit tables.
 Add `--max-cycles 1` or `--max-cycles 2` for smoke tests before installing it in
-launchd or another supervisor.
+launchd or another supervisor. Failed loop iterations are persisted with
+`status=error`; keep `--max-consecutive-errors 3` on unattended launchd jobs so
+repeated failures activate the kill switch and stop the loop.
 
 macOS launchd management:
 

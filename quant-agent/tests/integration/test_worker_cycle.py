@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from fastapi.testclient import TestClient
 
+from apps.worker import main as worker_main
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from apps.worker.main import system_cycle, system_cycle_loop
@@ -931,3 +932,36 @@ def test_system_cycle_loop_runs_bounded_cycles_without_sleeping() -> None:
     assert report["last_system_cycle_run_id"]
     assert all(item["system_cycle_run_id"] for item in report["cycles"])
     assert len(state.list_system_cycle_runs(limit=5)) >= 2
+
+
+def test_system_cycle_loop_records_errors_and_activates_kill_switch(monkeypatch) -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    def failing_cycle(**_kwargs):
+        raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(worker_main, "system_cycle", failing_cycle)
+
+    report = worker_main.system_cycle_loop(
+        interval_seconds=0,
+        max_cycles=5,
+        max_consecutive_errors=2,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    assert report["job"] == "system_cycle_loop"
+    assert report["cycle_count"] == 2
+    assert report["success_count"] == 0
+    assert report["error_count"] == 2
+    assert report["consecutive_error_count"] == 2
+    assert report["kill_switch_activated"] is True
+    assert report["stopped_reason"] == "max_consecutive_errors"
+    assert all(item["system_cycle_run_id"] for item in report["errors"])
+    assert state.kill_switch.enabled is True
+    assert "provider unavailable" in (state.kill_switch.reason or "")
+    error_runs = state.list_system_cycle_runs(limit=5, status="error")
+    assert len(error_runs) >= 2
+    assert error_runs[0].error_message == "provider unavailable"
+    assert error_runs[0].metrics["loop_error"]["error_type"] == "RuntimeError"
