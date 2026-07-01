@@ -559,6 +559,7 @@ class AutopilotPolicy(BaseModel):
     enabled: bool = False
     auto_approve_recommendations: bool = False
     auto_execute_approved: bool = False
+    restrict_auto_execution_to_regular_hours: bool = False
     auto_execution_mode: AutoExecutionMode = AutoExecutionMode.PAPER
     auto_approve_min_confidence: float = Field(default=0.72, ge=0.0, le=1.0)
     auto_approve_min_composite: float = Field(default=0.0, ge=0.0)
@@ -573,6 +574,18 @@ class AutopilotPolicy(BaseModel):
     reason: str | None = None
     updated_at: datetime = Field(default_factory=utc_now)
     updated_by: str = "system"
+
+
+class MarketSessionStatus(BaseModel):
+    as_of: datetime
+    generated_at: datetime = Field(default_factory=utc_now)
+    timezone: str = "America/New_York"
+    local_time: str
+    regular_open_time: str = "09:30"
+    regular_close_time: str = "16:00"
+    is_weekday: bool
+    is_regular_session: bool
+    status: str
 
 
 class AutopilotPreflightCheck(BaseModel):

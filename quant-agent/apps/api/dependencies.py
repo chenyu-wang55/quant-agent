@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from functools import lru_cache
 import math
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from domain.entities.models import (
     AlertExecutionResult,
@@ -25,6 +26,7 @@ from domain.entities.models import (
     KillSwitchState,
     ManualBuyRequest,
     ManualSellRequest,
+    MarketSessionStatus,
     OrderExecutionMode,
     OperationAction,
     OperationControlCenter,
@@ -885,10 +887,12 @@ class AppState:
     def build_autopilot_preflight(
         self,
         policy: AutopilotPolicy | None = None,
+        as_of: datetime | None = None,
     ) -> AutopilotPreflight:
         policy = policy or self.get_autopilot_policy()
         checks: list[AutopilotPreflightCheck] = []
         reasons: list[str] = []
+        market_session = self.get_market_session_status(as_of=as_of)
 
         if not policy.enabled:
             checks.append(
@@ -963,9 +967,14 @@ class AppState:
             )
 
         execution_capacity = policy.max_auto_buys > 0 or policy.max_auto_sells > 0
+        market_hours_allowed = (
+            not policy.restrict_auto_execution_to_regular_hours
+            or market_session.is_regular_session
+        )
         can_auto_execute = (
             policy.auto_execute_approved
             and execution_capacity
+            and market_hours_allowed
             and not self.kill_switch.enabled
         )
         if not policy.auto_execute_approved:
@@ -985,6 +994,16 @@ class AppState:
                     message_cn="自动执行已启用，但 max_auto_buys 和 max_auto_sells 都为 0。",
                 )
             )
+        elif not market_hours_allowed:
+            reasons.append("market_session_closed")
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="market_session",
+                    status="fail",
+                    message_cn="自动执行限制在美股常规交易时段，但当前不在 09:30-16:00 ET。",
+                    details=market_session.model_dump(mode="json"),
+                )
+            )
         else:
             checks.append(
                 AutopilotPreflightCheck(
@@ -995,6 +1014,18 @@ class AppState:
                         f"卖出 {policy.max_auto_sells} 条。"
                     ),
                     details={"execution_mode": policy.auto_execution_mode.value},
+                )
+            )
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="market_session",
+                    status="pass" if market_session.is_regular_session else "warn",
+                    message_cn=(
+                        "美股常规交易时段门禁已通过。"
+                        if policy.restrict_auto_execution_to_regular_hours
+                        else "未强制美股常规交易时段门禁。"
+                    ),
+                    details=market_session.model_dump(mode="json"),
                 )
             )
 
@@ -1011,6 +1042,25 @@ class AppState:
             can_auto_execute=can_auto_execute,
             reasons=reasons,
             checks=checks,
+        )
+
+    def get_market_session_status(self, as_of: datetime | None = None) -> MarketSessionStatus:
+        timestamp = as_of or datetime.now(timezone.utc)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp = timestamp.astimezone(timezone.utc)
+        eastern = timestamp.astimezone(ZoneInfo("America/New_York"))
+        regular_open = time(hour=9, minute=30)
+        regular_close = time(hour=16, minute=0)
+        local_time = eastern.time().replace(tzinfo=None)
+        is_weekday = eastern.weekday() < 5
+        is_regular_session = is_weekday and regular_open <= local_time < regular_close
+        return MarketSessionStatus(
+            as_of=timestamp,
+            local_time=eastern.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            is_weekday=is_weekday,
+            is_regular_session=is_regular_session,
+            status="regular" if is_regular_session else "closed",
         )
 
     def update_autopilot_policy(self, updates: dict[str, Any]) -> AutopilotPolicy:

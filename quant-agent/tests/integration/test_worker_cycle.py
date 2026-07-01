@@ -265,6 +265,49 @@ def test_system_cycle_autopilot_preflight_blocks_on_kill_switch() -> None:
     assert latest_run.metrics["autopilot_preflight"]["status"] == "blocked"
 
 
+def test_system_cycle_autopilot_market_hours_gate_blocks_auto_execution() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    policy = state.update_autopilot_policy(
+        {
+            "enabled": True,
+            "auto_approve_recommendations": False,
+            "auto_execute_approved": True,
+            "restrict_auto_execution_to_regular_hours": True,
+            "auto_execution_mode": "paper",
+            "max_auto_approvals": 0,
+            "max_auto_buys": 1,
+            "max_auto_sells": 1,
+            "updated_by": "worker-test",
+            "reason": "market hours gate",
+        }
+    )
+    open_preflight = state.build_autopilot_preflight(
+        policy,
+        as_of=datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc),
+    )
+    assert open_preflight.status == "ready"
+    assert open_preflight.can_auto_execute is True
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 11, 13, 30, tzinfo=timezone.utc),
+        use_autopilot_policy=True,
+    )
+
+    assert result["autopilot_policy"]["restrict_auto_execution_to_regular_hours"] is True
+    assert result["autopilot_preflight"]["status"] == "blocked"
+    assert result["autopilot_preflight"]["can_auto_execute"] is False
+    assert "market_session_closed" in result["autopilot_preflight"]["reasons"]
+    assert result["auto_execution"]["enabled"] is False
+    assert result["auto_execution_enabled"] is False
+    latest_run = state.list_system_cycle_runs(limit=1)[0]
+    assert latest_run.metrics["autopilot_preflight"]["reasons"] == ["market_session_closed"]
+
+
 def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> None:
     state = get_app_state()
     state.reset()

@@ -292,6 +292,7 @@ class AutopilotPolicyRecord(Base):
     enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     auto_approve_recommendations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     auto_execute_approved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    restrict_auto_execution_to_regular_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     auto_execution_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="paper")
     auto_approve_min_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.72)
     auto_approve_min_composite: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)

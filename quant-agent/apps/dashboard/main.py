@@ -149,6 +149,7 @@ def dashboard_realtime_data(
     strategy_config_count = len(state.list_strategy_configs(limit=10_000))
     autopilot_policy = state.get_autopilot_policy()
     autopilot_preflight = state.build_autopilot_preflight(autopilot_policy)
+    market_session = state.get_market_session_status(as_of=now)
     price_lookup = _build_price_lookup(state=state, recommendations=raw_recommendations, as_of=now)
     recommendations = _select_recommendations_for_dashboard(raw_recommendations, price_lookup)
     return {
@@ -162,6 +163,7 @@ def dashboard_realtime_data(
         },
         "autopilot_policy": autopilot_policy.model_dump(mode="json"),
         "autopilot_preflight": autopilot_preflight.model_dump(mode="json"),
+        "market_session": market_session.model_dump(mode="json"),
         "summary": {
             "recommendation_count": len(recommendations),
             "open_holding_count": len(holdings),
@@ -718,6 +720,7 @@ def dashboard_home() -> str:
         <label class="check-field"><input id="autopilotEnabled" type="checkbox" /><span>Enabled</span></label>
         <label class="check-field"><input id="autopilotAutoApprove" type="checkbox" /><span>Auto Approve</span></label>
         <label class="check-field"><input id="autopilotAutoExecute" type="checkbox" /><span>Auto Execute</span></label>
+        <label class="check-field"><input id="autopilotRegularHours" type="checkbox" /><span>Regular Hours</span></label>
         <div class="field"><label for="autopilotExecutionMode">Policy Exec</label><select id="autopilotExecutionMode"><option value="paper">Paper</option><option value="live_dry_run">Live Dry Run</option></select></div>
         <div class="field"><label for="autopilotMinConfidence">Auto Min Conf</label><input id="autopilotMinConfidence" type="number" min="0" max="1" step="0.01" value="0.72" /></div>
         <div class="field"><label for="autopilotMinComposite">Min Composite</label><input id="autopilotMinComposite" type="number" min="0" step="0.01" value="0" /></div>
@@ -1034,6 +1037,7 @@ def dashboard_home() -> str:
       setChecked('autopilotEnabled', enabled);
       setChecked('autopilotAutoApprove', currentAutopilotPolicy.auto_approve_recommendations);
       setChecked('autopilotAutoExecute', currentAutopilotPolicy.auto_execute_approved);
+      setChecked('autopilotRegularHours', currentAutopilotPolicy.restrict_auto_execution_to_regular_hours);
       setFieldValue('autopilotExecutionMode', currentAutopilotPolicy.auto_execution_mode || 'paper');
       setFieldValue('autopilotMinConfidence', currentAutopilotPolicy.auto_approve_min_confidence ?? 0.72);
       setFieldValue('autopilotMinComposite', currentAutopilotPolicy.auto_approve_min_composite ?? 0);
@@ -1054,6 +1058,7 @@ def dashboard_home() -> str:
         enabled,
         auto_approve_recommendations: checkedValue('autopilotAutoApprove'),
         auto_execute_approved: checkedValue('autopilotAutoExecute'),
+        restrict_auto_execution_to_regular_hours: checkedValue('autopilotRegularHours'),
         auto_execution_mode: document.getElementById('autopilotExecutionMode')?.value || 'paper',
         auto_approve_min_confidence: numberValue('autopilotMinConfidence') ?? 0.72,
         auto_approve_min_composite: numberValue('autopilotMinComposite') ?? 0,

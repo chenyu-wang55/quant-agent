@@ -96,6 +96,7 @@ curl http://localhost:8000/operations/system-runs
 curl -X POST http://localhost:8000/operations/system-cycle -H "Content-Type: application/json" -d '{"top_n":8,"min_confidence":0,"use_autopilot_policy":true}'
 curl http://localhost:8000/execution/kill-switch
 curl http://localhost:8000/execution/autopilot-policy
+curl http://localhost:8000/execution/market-session
 curl http://localhost:8000/events/pending
 curl http://localhost:8000/events/consumed
 curl http://localhost:8000/paper-orders
@@ -302,6 +303,7 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "enabled": true,
     "auto_approve_recommendations": true,
     "auto_execute_approved": true,
+    "restrict_auto_execution_to_regular_hours": true,
     "auto_execution_mode": "paper",
     "auto_approve_min_confidence": 0.72,
     "auto_approve_min_composite": 0,
@@ -312,6 +314,11 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "reason": "paper autopilot"
   }'
 ```
+
+When `restrict_auto_execution_to_regular_hours` is true, preflight blocks automatic
+buys and sells outside the approximate US equity regular session
+`09:30-16:00 America/New_York`. Recommendations, monitoring, and alert recording still
+run so the next open session has fresh context.
 
 Run one full audited system cycle from the API or dashboard:
 

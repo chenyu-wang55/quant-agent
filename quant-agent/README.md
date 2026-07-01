@@ -142,6 +142,7 @@ Endpoints:
 - `POST /execution/kill-switch`
 - `GET /execution/autopilot-policy`
 - `POST /execution/autopilot-policy`
+- `GET /execution/market-session`
 
 Filled BUY paper orders are automatically synchronized into portfolio monitoring and
 the trade ledger, so approved dashboard buys flow into stop/take-profit alerts and
@@ -270,7 +271,10 @@ forces automatic approval and execution off even if older CLI flags are present.
 When it is true, each cycle still runs an `autopilot_preflight` gate. Kill switch,
 zero-capacity approval/execution settings, or disabled action types make the cycle
 skip unsafe automatic actions while still recording the research run and monitoring
-results.
+results. Set `restrict_auto_execution_to_regular_hours=true` when automatic buys and
+sells should be blocked outside the approximate US equity regular session
+(`09:30-16:00 America/New_York`). `GET /execution/market-session` exposes the same
+session status used by preflight.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

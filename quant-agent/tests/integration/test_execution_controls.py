@@ -20,6 +20,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["enabled"] is False
     assert default_policy["auto_approve_recommendations"] is False
     assert default_policy["auto_execute_approved"] is False
+    assert default_policy["restrict_auto_execution_to_regular_hours"] is False
     assert default_policy["auto_execution_mode"] == "paper"
 
     update_response = client.post(
@@ -70,6 +71,31 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert realtime.status_code == 200
     assert realtime.json()["autopilot_policy"]["policy_id"] == updated_policy["policy_id"]
     assert realtime.json()["autopilot_preflight"]["status"] == "ready"
+
+
+def test_market_session_endpoint_reports_regular_hours() -> None:
+    state = get_app_state()
+    state.reset()
+    client = TestClient(app)
+
+    open_response = client.get(
+        "/execution/market-session?as_of=2026-04-10T13:30:00Z",
+        headers=AUTH_HEADERS,
+    )
+    assert open_response.status_code == 200
+    open_session = open_response.json()
+    assert open_session["status"] == "regular"
+    assert open_session["is_regular_session"] is True
+    assert open_session["timezone"] == "America/New_York"
+
+    closed_response = client.get(
+        "/execution/market-session?as_of=2026-04-11T13:30:00Z",
+        headers=AUTH_HEADERS,
+    )
+    assert closed_response.status_code == 200
+    closed_session = closed_response.json()
+    assert closed_session["status"] == "closed"
+    assert closed_session["is_regular_session"] is False
 
 
 def test_kill_switch_blocks_paper_orders() -> None:

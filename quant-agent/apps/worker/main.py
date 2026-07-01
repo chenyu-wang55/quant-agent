@@ -574,11 +574,12 @@ def system_cycle(
     max_sector_exposure_pct: float = 0.30,
 ) -> dict[str, Any]:
     state = get_app_state()
+    started_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
     autopilot_policy: dict[str, Any] | None = None
     autopilot_preflight: dict[str, Any] | None = None
     if use_autopilot_policy:
         policy = state.get_autopilot_policy()
-        preflight = state.build_autopilot_preflight(policy)
+        preflight = state.build_autopilot_preflight(policy, as_of=started_at)
         policy_values = _apply_autopilot_policy(
             policy=policy,
             preflight=preflight,
@@ -614,7 +615,6 @@ def system_cycle(
         max_gross_exposure_pct = policy_values["max_gross_exposure_pct"]
         max_sector_exposure_pct = policy_values["max_sector_exposure_pct"]
 
-    started_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
     run_id = uuid4().hex[:16]
     request = ResearchRunRequest(
         run_type=RunType.RESEARCH_BATCH,

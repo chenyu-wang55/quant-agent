@@ -976,6 +976,9 @@ class AutopilotPolicyRepository:
                 enabled=1 if policy.enabled else 0,
                 auto_approve_recommendations=1 if policy.auto_approve_recommendations else 0,
                 auto_execute_approved=1 if policy.auto_execute_approved else 0,
+                restrict_auto_execution_to_regular_hours=(
+                    1 if policy.restrict_auto_execution_to_regular_hours else 0
+                ),
                 auto_execution_mode=policy.auto_execution_mode.value,
                 auto_approve_min_confidence=policy.auto_approve_min_confidence,
                 auto_approve_min_composite=policy.auto_approve_min_composite,
@@ -1008,6 +1011,9 @@ class AutopilotPolicyRepository:
             enabled=bool(record.enabled),
             auto_approve_recommendations=bool(record.auto_approve_recommendations),
             auto_execute_approved=bool(record.auto_execute_approved),
+            restrict_auto_execution_to_regular_hours=bool(
+                getattr(record, "restrict_auto_execution_to_regular_hours", 0)
+            ),
             auto_execution_mode=AutoExecutionMode(record.auto_execution_mode),
             auto_approve_min_confidence=record.auto_approve_min_confidence,
             auto_approve_min_composite=record.auto_approve_min_composite,

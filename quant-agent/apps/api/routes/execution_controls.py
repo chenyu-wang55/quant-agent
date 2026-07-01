@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from apps.api.dependencies import AppState, get_app_state
-from domain.entities.models import AutoExecutionMode, AutopilotPolicy, KillSwitchState
+from domain.entities.models import AutoExecutionMode, AutopilotPolicy, KillSwitchState, MarketSessionStatus
 
 
 class KillSwitchUpdateBody(BaseModel):
@@ -18,6 +20,7 @@ class AutopilotPolicyUpdateBody(BaseModel):
     enabled: bool | None = None
     auto_approve_recommendations: bool | None = None
     auto_execute_approved: bool | None = None
+    restrict_auto_execution_to_regular_hours: bool | None = None
     auto_execution_mode: AutoExecutionMode | None = None
     auto_approve_min_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     auto_approve_min_composite: float | None = Field(default=None, ge=0.0)
@@ -62,3 +65,11 @@ def set_autopilot_policy(
     updates = body.model_dump(exclude_unset=True)
     updates.setdefault("updated_by", body.updated_by)
     return state.update_autopilot_policy(updates)
+
+
+@router.get("/execution/market-session", response_model=MarketSessionStatus)
+def get_market_session(
+    as_of: datetime | None = Query(default=None),
+    state: AppState = Depends(get_app_state),
+) -> MarketSessionStatus:
+    return state.get_market_session_status(as_of=as_of)
