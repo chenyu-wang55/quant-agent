@@ -214,14 +214,55 @@ def test_system_cycle_uses_persisted_autopilot_policy() -> None:
 
     assert result["use_autopilot_policy"] is True
     assert result["autopilot_policy"]["policy_id"] == policy.policy_id
+    assert result["autopilot_preflight"]["status"] == "ready"
+    assert result["autopilot_preflight"]["can_auto_approve"] is True
+    assert result["autopilot_preflight"]["can_auto_execute"] is True
     assert result["auto_approval"]["enabled"] is True
     assert result["auto_approval"]["approved_count"] == 1
     assert result["auto_execution"]["enabled"] is True
     assert result["auto_execution"]["buy_order_count"] == 1
     latest_run = state.list_system_cycle_runs(limit=1)[0]
     assert latest_run.metrics["autopilot_policy"]["policy_id"] == policy.policy_id
+    assert latest_run.metrics["autopilot_preflight"]["status"] == "ready"
     assert latest_run.metrics["auto_approval"]["approved_count"] == 1
     assert latest_run.metrics["auto_execution"]["buy_order_count"] == 1
+
+
+def test_system_cycle_autopilot_preflight_blocks_on_kill_switch() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    state.update_autopilot_policy(
+        {
+            "enabled": True,
+            "auto_approve_recommendations": True,
+            "auto_execute_approved": True,
+            "auto_execution_mode": "paper",
+            "auto_approve_min_confidence": 0.5,
+            "max_auto_approvals": 1,
+            "max_auto_buys": 1,
+            "max_auto_sells": 1,
+            "updated_by": "worker-test",
+            "reason": "kill switch preflight",
+        }
+    )
+    state.set_kill_switch(True, "maintenance", "worker-test")
+
+    result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        use_autopilot_policy=True,
+    )
+
+    assert result["autopilot_preflight"]["status"] == "blocked"
+    assert "kill_switch_enabled" in result["autopilot_preflight"]["reasons"]
+    assert result["auto_approval"]["enabled"] is False
+    assert result["auto_execution"]["enabled"] is False
+    assert result["auto_execution_enabled"] is False
+    latest_run = state.list_system_cycle_runs(limit=1)[0]
+    assert latest_run.metrics["autopilot_preflight"]["status"] == "blocked"
 
 
 def test_system_cycle_auto_executes_sell_alert_without_buying_same_ticker() -> None:

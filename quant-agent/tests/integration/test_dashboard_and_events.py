@@ -130,6 +130,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "recommendations" in payload
     assert "summary" in payload
     assert "autopilot_policy" in payload
+    assert "autopilot_preflight" in payload
     assert "source_snapshots" in payload
     assert "strategy_configs" in payload
     assert "strategy_tuning" in payload
@@ -141,6 +142,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "recommendation_attribution" in payload
     assert payload["summary"]["recommendation_count"] >= 1
     assert payload["autopilot_policy"]["enabled"] is False
+    assert payload["autopilot_preflight"]["status"] == "off"
     assert payload["summary"]["source_snapshot_count"] >= 1
     assert payload["summary"]["strategy_config_count"] >= 1
     assert payload["summary"]["strategy_tuning_count"] >= 1

@@ -62,10 +62,14 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     control_center = client.get("/operations/control-center?refresh_alerts=false", headers=AUTH_HEADERS)
     assert control_center.status_code == 200
     assert control_center.json()["autopilot_policy"]["policy_id"] == updated_policy["policy_id"]
+    assert control_center.json()["autopilot_preflight"]["status"] == "ready"
+    assert control_center.json()["autopilot_preflight"]["can_auto_approve"] is True
+    assert control_center.json()["autopilot_preflight"]["can_auto_execute"] is True
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200
     assert realtime.json()["autopilot_policy"]["policy_id"] == updated_policy["policy_id"]
+    assert realtime.json()["autopilot_preflight"]["status"] == "ready"
 
 
 def test_kill_switch_blocks_paper_orders() -> None:

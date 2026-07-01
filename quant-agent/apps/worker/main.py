@@ -11,6 +11,7 @@ from uuid import uuid4
 from apps.api.dependencies import get_app_state
 from domain.entities.models import (
     ApprovalDecision,
+    AutopilotPreflight,
     AutopilotPolicy,
     BacktestRunRequest,
     Direction,
@@ -520,10 +521,12 @@ def _auto_execution_report(*, enabled: bool, mode: str, actions: list[dict[str, 
 def _apply_autopilot_policy(
     *,
     policy: AutopilotPolicy,
+    preflight: AutopilotPreflight,
     current: dict[str, Any],
 ) -> dict[str, Any]:
     updates = dict(current)
     updates["autopilot_policy"] = policy.model_dump(mode="json")
+    updates["autopilot_preflight"] = preflight.model_dump(mode="json")
     if not policy.enabled:
         updates["auto_approve_recommendations"] = False
         updates["auto_execute_approved"] = False
@@ -532,8 +535,8 @@ def _apply_autopilot_policy(
 
     updates.update(
         {
-            "auto_approve_recommendations": policy.auto_approve_recommendations,
-            "auto_execute_approved": policy.auto_execute_approved,
+            "auto_approve_recommendations": preflight.can_auto_approve,
+            "auto_execute_approved": preflight.can_auto_execute,
             "auto_approve_min_confidence": policy.auto_approve_min_confidence,
             "auto_approve_min_composite": policy.auto_approve_min_composite,
             "max_auto_approvals": policy.max_auto_approvals,
@@ -572,9 +575,13 @@ def system_cycle(
 ) -> dict[str, Any]:
     state = get_app_state()
     autopilot_policy: dict[str, Any] | None = None
+    autopilot_preflight: dict[str, Any] | None = None
     if use_autopilot_policy:
+        policy = state.get_autopilot_policy()
+        preflight = state.build_autopilot_preflight(policy)
         policy_values = _apply_autopilot_policy(
-            policy=state.get_autopilot_policy(),
+            policy=policy,
+            preflight=preflight,
             current={
                 "auto_execute_approved": auto_execute_approved,
                 "auto_approve_recommendations": auto_approve_recommendations,
@@ -592,6 +599,7 @@ def system_cycle(
             },
         )
         autopilot_policy = policy_values.pop("autopilot_policy")
+        autopilot_preflight = policy_values.pop("autopilot_preflight")
         auto_execute_approved = policy_values["auto_execute_approved"]
         auto_approve_recommendations = policy_values["auto_approve_recommendations"]
         auto_approve_min_confidence = policy_values["auto_approve_min_confidence"]
@@ -678,6 +686,7 @@ def system_cycle(
     metrics["auto_approval"] = auto_approval
     metrics["auto_execution"] = auto_execution
     metrics["autopilot_policy"] = autopilot_policy
+    metrics["autopilot_preflight"] = autopilot_preflight
     run = SystemCycleRun(
         id=run_id,
         started_at=started_at,
@@ -711,6 +720,7 @@ def system_cycle(
         "auto_execution_enabled": auto_execute_approved,
         "use_autopilot_policy": use_autopilot_policy,
         "autopilot_policy": autopilot_policy,
+        "autopilot_preflight": autopilot_preflight,
         "auto_approval": auto_approval,
         "auto_execution": auto_execution,
         "consumed_event_count": len(consumed_events),

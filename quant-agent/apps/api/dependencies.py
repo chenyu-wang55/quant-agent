@@ -11,6 +11,8 @@ from domain.entities.models import (
     AlertExecutionResult,
     AlertSellRequest,
     ApprovalDecision,
+    AutopilotPreflight,
+    AutopilotPreflightCheck,
     AutopilotPolicy,
     BacktestRunResult,
     Direction,
@@ -270,9 +272,11 @@ class AppState:
         actions.sort(key=lambda item: (priority_rank.get(item.priority, 9), item.action_type, item.ticker or ""))
         latest_source_snapshot_id = self.latest_run.source_snapshot_id if self.latest_run else None
         latest_strategy_config_id = self.latest_run.strategy_config_id if self.latest_run else None
+        autopilot_policy = self.get_autopilot_policy()
         return OperationControlCenter(
             kill_switch=self.kill_switch,
-            autopilot_policy=self.get_autopilot_policy(),
+            autopilot_policy=autopilot_policy,
+            autopilot_preflight=self.build_autopilot_preflight(autopilot_policy),
             latest_source_snapshot_id=latest_source_snapshot_id,
             latest_strategy_config_id=latest_strategy_config_id,
             latest_recommendation_count=len(recommendations),
@@ -877,6 +881,137 @@ class AppState:
     def get_autopilot_policy(self) -> AutopilotPolicy:
         self.autopilot_policy = self.autopilot_policy_repo.get_latest()
         return self.autopilot_policy
+
+    def build_autopilot_preflight(
+        self,
+        policy: AutopilotPolicy | None = None,
+    ) -> AutopilotPreflight:
+        policy = policy or self.get_autopilot_policy()
+        checks: list[AutopilotPreflightCheck] = []
+        reasons: list[str] = []
+
+        if not policy.enabled:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="policy_enabled",
+                    status="fail",
+                    message_cn="Autopilot policy 未开启，自动审批和自动执行保持关闭。",
+                )
+            )
+            return AutopilotPreflight(status="off", reasons=["policy_disabled"], checks=checks)
+
+        checks.append(
+            AutopilotPreflightCheck(
+                name="policy_enabled",
+                status="pass",
+                message_cn="Autopilot policy 已开启。",
+            )
+        )
+
+        if self.kill_switch.enabled:
+            reasons.append("kill_switch_enabled")
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="kill_switch",
+                    status="fail",
+                    message_cn=f"Kill switch 已开启：{self.kill_switch.reason or '未提供原因'}。",
+                    details={"updated_by": self.kill_switch.updated_by},
+                )
+            )
+        else:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="kill_switch",
+                    status="pass",
+                    message_cn="Kill switch 未开启。",
+                )
+            )
+
+        can_auto_approve = (
+            policy.auto_approve_recommendations
+            and policy.max_auto_approvals > 0
+            and not self.kill_switch.enabled
+        )
+        if not policy.auto_approve_recommendations:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_approval",
+                    status="warn",
+                    message_cn="自动审批未启用。",
+                )
+            )
+        elif policy.max_auto_approvals <= 0:
+            reasons.append("max_auto_approvals_zero")
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_approval",
+                    status="fail",
+                    message_cn="自动审批已启用，但 max_auto_approvals 为 0。",
+                )
+            )
+        else:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_approval",
+                    status="pass",
+                    message_cn=f"自动审批可用，本轮最多 {policy.max_auto_approvals} 条。",
+                    details={
+                        "min_confidence": policy.auto_approve_min_confidence,
+                        "min_composite": policy.auto_approve_min_composite,
+                    },
+                )
+            )
+
+        execution_capacity = policy.max_auto_buys > 0 or policy.max_auto_sells > 0
+        can_auto_execute = (
+            policy.auto_execute_approved
+            and execution_capacity
+            and not self.kill_switch.enabled
+        )
+        if not policy.auto_execute_approved:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_execution",
+                    status="warn",
+                    message_cn="自动执行未启用。",
+                )
+            )
+        elif not execution_capacity:
+            reasons.append("auto_execution_capacity_zero")
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_execution",
+                    status="fail",
+                    message_cn="自动执行已启用，但 max_auto_buys 和 max_auto_sells 都为 0。",
+                )
+            )
+        else:
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_execution",
+                    status="pass",
+                    message_cn=(
+                        f"自动执行可用，本轮最多买入 {policy.max_auto_buys} 条、"
+                        f"卖出 {policy.max_auto_sells} 条。"
+                    ),
+                    details={"execution_mode": policy.auto_execution_mode.value},
+                )
+            )
+
+        if can_auto_approve or can_auto_execute:
+            status = "ready"
+        else:
+            if not reasons:
+                reasons.append("no_auto_actions_enabled")
+            status = "blocked"
+
+        return AutopilotPreflight(
+            status=status,
+            can_auto_approve=can_auto_approve,
+            can_auto_execute=can_auto_execute,
+            reasons=reasons,
+            checks=checks,
+        )
 
     def update_autopilot_policy(self, updates: dict[str, Any]) -> AutopilotPolicy:
         current = self.get_autopilot_policy()

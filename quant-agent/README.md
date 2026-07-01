@@ -195,7 +195,9 @@ into prioritized next actions. It is read-only and is safe to poll from scripts.
 `POST /operations/system-cycle` runs one audited `system_cycle` from the API and
 defaults to `use_autopilot_policy=true`, which is the dashboard's manual "run now"
 button for recommendation generation, monitoring, and any policy-enabled automatic
-actions.
+actions. The response includes `autopilot_preflight`; if the preflight is `blocked`
+or `off`, automatic approval and execution are forced off for that cycle even when
+policy flags are enabled.
 System events are persisted in the database, so pending and consumed event audit trails
 survive API or worker restarts.
 
@@ -265,6 +267,10 @@ python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
 
 The policy has a global `enabled` switch. When it is false, `--use-autopilot-policy`
 forces automatic approval and execution off even if older CLI flags are present.
+When it is true, each cycle still runs an `autopilot_preflight` gate. Kill switch,
+zero-capacity approval/execution settings, or disabled action types make the cycle
+skip unsafe automatic actions while still recording the research run and monitoring
+results.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

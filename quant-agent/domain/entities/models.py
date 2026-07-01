@@ -575,6 +575,22 @@ class AutopilotPolicy(BaseModel):
     updated_by: str = "system"
 
 
+class AutopilotPreflightCheck(BaseModel):
+    name: str
+    status: str
+    message_cn: str
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class AutopilotPreflight(BaseModel):
+    status: str = "off"
+    can_auto_approve: bool = False
+    can_auto_execute: bool = False
+    reasons: list[str] = Field(default_factory=list)
+    checks: list[AutopilotPreflightCheck] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utc_now)
+
+
 class HoldingStatus(str, Enum):
     OPEN = "open"
     CLOSED = "closed"
@@ -939,6 +955,7 @@ class OperationControlCenter(BaseModel):
     generated_at: datetime = Field(default_factory=utc_now)
     kill_switch: KillSwitchState
     autopilot_policy: AutopilotPolicy = Field(default_factory=AutopilotPolicy)
+    autopilot_preflight: AutopilotPreflight = Field(default_factory=AutopilotPreflight)
     latest_source_snapshot_id: str | None = None
     latest_strategy_config_id: str | None = None
     latest_recommendation_count: int = 0

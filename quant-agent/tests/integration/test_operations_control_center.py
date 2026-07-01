@@ -158,6 +158,7 @@ def test_operations_system_cycle_endpoint_runs_with_autopilot_policy() -> None:
     assert payload["system_cycle_run_id"]
     assert payload["use_autopilot_policy"] is True
     assert payload["autopilot_policy"]["enabled"] is False
+    assert payload["autopilot_preflight"]["status"] == "off"
     assert payload["auto_approval"]["enabled"] is False
     assert payload["auto_execution"]["enabled"] is False
     assert payload["recommendation_count"] >= 1

@@ -148,6 +148,7 @@ def dashboard_realtime_data(
     recent_strategy_configs = state.list_strategy_configs(limit=10)
     strategy_config_count = len(state.list_strategy_configs(limit=10_000))
     autopilot_policy = state.get_autopilot_policy()
+    autopilot_preflight = state.build_autopilot_preflight(autopilot_policy)
     price_lookup = _build_price_lookup(state=state, recommendations=raw_recommendations, as_of=now)
     recommendations = _select_recommendations_for_dashboard(raw_recommendations, price_lookup)
     return {
@@ -160,6 +161,7 @@ def dashboard_realtime_data(
             "updated_at": state.kill_switch.updated_at.isoformat(),
         },
         "autopilot_policy": autopilot_policy.model_dump(mode="json"),
+        "autopilot_preflight": autopilot_preflight.model_dump(mode="json"),
         "summary": {
             "recommendation_count": len(recommendations),
             "open_holding_count": len(holdings),
@@ -907,6 +909,7 @@ def dashboard_home() -> str:
     let currentStrategyConfigs = [];
     let currentStrategyTuning = [];
     let currentAutopilotPolicy = {};
+    let currentAutopilotPreflight = {};
 
     function esc(v) {
       return String(v ?? "")
@@ -1011,20 +1014,22 @@ def dashboard_home() -> str:
       return data;
     }
 
-    function renderAutopilotPolicy(policy) {
+    function renderAutopilotPolicy(policy, preflight = {}) {
       currentAutopilotPolicy = policy || {};
+      currentAutopilotPreflight = preflight || {};
       const enabled = Boolean(currentAutopilotPolicy.enabled);
-      document.getElementById('autopilotStatus').innerHTML = enabled
-        ? '<span class="badge b-ok">ON</span>'
-        : '<span class="badge b-neutral">OFF</span>';
+      const status = currentAutopilotPreflight.status || (enabled ? 'ready' : 'off');
+      const statusClass = status === 'ready' ? 'b-ok' : (status === 'blocked' ? 'b-danger' : 'b-neutral');
+      document.getElementById('autopilotStatus').innerHTML = `<span class="badge ${statusClass}">${esc(status.toUpperCase())}</span>`;
       document.getElementById('autopilotPolicyBadge').className = enabled
-        ? 'badge b-ok'
+        ? `badge ${statusClass}`
         : 'badge b-neutral';
       document.getElementById('autopilotPolicyBadge').textContent = enabled
-        ? 'Autopilot ON'
+        ? `Autopilot ${status.toUpperCase()}`
         : 'Autopilot OFF';
+      const reasons = (currentAutopilotPreflight.reasons || []).join(', ');
       document.getElementById('autopilotPolicyMeta').textContent =
-        ` #${currentAutopilotPolicy.policy_id || '-'} | ${currentAutopilotPolicy.updated_by || 'system'} | ${fmtTime(currentAutopilotPolicy.updated_at)}`;
+        ` #${currentAutopilotPolicy.policy_id || '-'} | ${currentAutopilotPolicy.updated_by || 'system'} | ${fmtTime(currentAutopilotPolicy.updated_at)}${reasons ? ` | ${reasons}` : ''}`;
 
       setChecked('autopilotEnabled', enabled);
       setChecked('autopilotAutoApprove', currentAutopilotPolicy.auto_approve_recommendations);
@@ -1070,7 +1075,7 @@ def dashboard_home() -> str:
     async function saveAutopilotPolicy(forceEnabled = null) {
       try {
         const result = await postJson('/execution/autopilot-policy', autopilotPolicyPayload(forceEnabled));
-        renderAutopilotPolicy(result);
+        renderAutopilotPolicy(result, currentAutopilotPreflight);
         setActionStatus(`Autopilot policy 已保存: ${result.enabled ? 'ON' : 'OFF'} #${result.policy_id}`);
         await loadData();
       } catch (err) {
@@ -1922,7 +1927,7 @@ def dashboard_home() -> str:
       document.getElementById('killSwitch').innerHTML = data.kill_switch?.enabled
         ? '<span class="badge b-danger">ON</span>'
         : '<span class="badge b-ok">OFF</span>';
-      renderAutopilotPolicy(data.autopilot_policy || {});
+      renderAutopilotPolicy(data.autopilot_policy || {}, data.autopilot_preflight || {});
       const updateTime = data.timestamp ? fmtTime(data.timestamp) : '-';
       document.getElementById('meta').textContent =
         `最后刷新: ${updateTime} | snapshot: ${data.source_snapshot_id || 'N/A'} | pending events: ${data.summary?.pending_event_count ?? 0}`;
