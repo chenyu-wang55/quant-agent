@@ -340,10 +340,13 @@ manual operators can still send broker status snapshots to the sync endpoints;
 snapshots resolve submitted orders as canceled.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
-Before moving beyond paper or live dry-run, reconcile broker positions against the
-local open-holding ledger with `POST /portfolio/reconciliation`. The response is
-persisted in `position_reconciliations`, emits a `position_reconciliation` event, and
-sets `blocks_auto_execution=true` whenever local and broker quantities disagree.
+If the configured broker adapter supports positions, each `system_cycle` also pulls a
+broker position snapshot and records a reconciliation report before the execution gate
+is evaluated. Use `--disable-auto-position-reconciliation` to skip this, or
+`--position-reconciliation-qty-tolerance` to tune quantity matching. Manual snapshots
+can still be posted to `POST /portfolio/reconciliation`. Reconciliation responses are
+persisted in `position_reconciliations`, emit a `position_reconciliation` event, and
+set `blocks_auto_execution=true` whenever local and broker quantities disagree.
 Set `require_position_reconciliation=true` in the autopilot policy, or run
 `system_cycle --require-position-reconciliation`, to block automatic execution unless
 the latest reconciliation is `matched` or `empty` and still within

@@ -42,6 +42,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.max_consecutive_errors),
         "--max-broker-sync-items",
         str(args.max_broker_sync_items),
+        "--position-reconciliation-qty-tolerance",
+        str(args.position_reconciliation_qty_tolerance),
         "--auto-execution-mode",
         args.auto_execution_mode,
         "--auto-approve-min-confidence",
@@ -91,6 +93,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         program_args.append("--use-autopilot-policy")
     if args.disable_auto_broker_sync:
         program_args.append("--disable-auto-broker-sync")
+    if args.disable_auto_position_reconciliation:
+        program_args.append("--disable-auto-position-reconciliation")
     if args.auto_execute_approved:
         program_args.append("--auto-execute-approved")
     if args.auto_approve_recommendations:
@@ -178,6 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-consecutive-errors", type=int, default=3)
     parser.add_argument("--disable-auto-broker-sync", action="store_true")
     parser.add_argument("--max-broker-sync-items", type=int, default=50)
+    parser.add_argument("--disable-auto-position-reconciliation", action="store_true")
+    parser.add_argument("--position-reconciliation-qty-tolerance", type=float, default=1e-6)
     parser.add_argument("--use-autopilot-policy", action="store_true")
     parser.add_argument("--auto-approve-recommendations", action="store_true")
     parser.add_argument("--auto-approve-min-confidence", type=float, default=0.72)

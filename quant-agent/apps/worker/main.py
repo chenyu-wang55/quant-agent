@@ -16,6 +16,7 @@ from domain.entities.models import (
     BrokerOrderStatusSnapshot,
     BrokerOrderSyncRequest,
     BrokerOrderSyncStatus,
+    BrokerPositionSnapshot,
     BacktestRunRequest,
     Direction,
     HoldingControlUpdateRequest,
@@ -23,6 +24,7 @@ from domain.entities.models import (
     OrderExecutionMode,
     PaperOrderRequest,
     PaperOrderStatus,
+    PositionReconciliationRequest,
     PublicationConfig,
     Recommendation,
     ResearchRunRequest,
@@ -34,7 +36,7 @@ from domain.entities.models import (
 )
 from domain.policies.approval import ApprovalDecisionRequest
 from infra.queue.events import EventType
-from services.execution.broker_adapter import BrokerAdapterError, BrokerOrderUpdate
+from services.execution.broker_adapter import BrokerAdapterError, BrokerOrderUpdate, BrokerPositionUpdate
 
 
 def _run_research_job(job_name: str) -> None:
@@ -321,6 +323,98 @@ def _auto_broker_sync_cycle(
         report["reason"] = "broker_sync_errors"
     else:
         report["reason"] = "synced"
+    return report
+
+
+def _broker_position_snapshot(update: BrokerPositionUpdate) -> BrokerPositionSnapshot:
+    avg_price = update.avg_price if update.avg_price is not None and update.avg_price > 0 else None
+    market_price = update.market_price if update.market_price is not None and update.market_price > 0 else None
+    return BrokerPositionSnapshot(
+        ticker=update.symbol,
+        qty=update.qty,
+        avg_price=avg_price,
+        market_price=market_price,
+        broker_position_id=update.broker_position_id,
+    )
+
+
+def _auto_position_reconciliation_cycle(
+    *,
+    enabled: bool,
+    checked_at: datetime,
+    qty_tolerance: float,
+) -> dict[str, Any]:
+    state = get_app_state()
+    report: dict[str, Any] = {
+        "enabled": enabled,
+        "broker": None,
+        "checked_at": checked_at.isoformat(),
+        "position_count": 0,
+        "error_count": 0,
+        "reconciliation": None,
+        "actions": [],
+    }
+    if not enabled:
+        report["reason"] = "auto_position_reconciliation_disabled"
+        return report
+
+    broker_adapter = state.execution_router.broker_adapter
+    if broker_adapter is None:
+        report["enabled"] = False
+        report["reason"] = "broker_adapter_not_configured"
+        return report
+    report["broker"] = broker_adapter.name
+
+    list_positions = getattr(broker_adapter, "list_positions", None)
+    if not callable(list_positions):
+        report["enabled"] = False
+        report["reason"] = "broker_position_reconciliation_not_supported"
+        return report
+
+    try:
+        broker_positions = list_positions()
+        snapshots = [_broker_position_snapshot(position) for position in broker_positions]
+        report["position_count"] = len(snapshots)
+        reconciliation = state.reconcile_broker_positions(
+            PositionReconciliationRequest(
+                broker=broker_adapter.name,
+                as_of=checked_at,
+                qty_tolerance=qty_tolerance,
+                positions=snapshots,
+                note="system_cycle:auto_position_reconciliation",
+            )
+        )
+        report["reconciliation"] = reconciliation.model_dump(mode="json")
+        report["reason"] = "reconciled"
+        report["actions"].append(
+            {
+                "status": "reconciled",
+                "position_count": reconciliation.broker_position_count,
+                "reconciliation_id": reconciliation.reconciliation_id,
+                "reconciliation_status": reconciliation.status,
+                "blocks_auto_execution": reconciliation.blocks_auto_execution,
+            }
+        )
+    except (BrokerAdapterError, ValueError) as exc:
+        report["error_count"] += 1
+        report["reason"] = "position_reconciliation_error"
+        report["actions"].append(
+            {
+                "status": "error",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        )
+    except Exception as exc:
+        report["error_count"] += 1
+        report["reason"] = "position_reconciliation_error"
+        report["actions"].append(
+            {
+                "status": "error",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+            }
+        )
     return report
 
 
@@ -1157,6 +1251,8 @@ def system_cycle(
     as_of: datetime | None = None,
     auto_sync_broker_statuses: bool = True,
     max_broker_sync_items: int = 50,
+    auto_reconcile_broker_positions: bool = True,
+    position_reconciliation_qty_tolerance: float = 1e-6,
     use_autopilot_policy: bool = False,
     auto_execute_approved: bool = False,
     auto_approve_recommendations: bool = False,
@@ -1189,6 +1285,11 @@ def system_cycle(
         enabled=auto_sync_broker_statuses,
         checked_at=started_at,
         max_items=max_broker_sync_items,
+    )
+    broker_position_reconciliation = _auto_position_reconciliation_cycle(
+        enabled=auto_reconcile_broker_positions,
+        checked_at=started_at,
+        qty_tolerance=position_reconciliation_qty_tolerance,
     )
     autopilot_policy: dict[str, Any] | None = None
     autopilot_preflight: dict[str, Any] | None = None
@@ -1399,6 +1500,7 @@ def system_cycle(
     metrics["autopilot_policy"] = autopilot_policy
     metrics["autopilot_preflight"] = autopilot_preflight
     metrics["broker_order_sync"] = broker_order_sync
+    metrics["broker_position_reconciliation"] = broker_position_reconciliation
     metrics["snapshot_quality_gate"] = snapshot_quality_gate
     metrics["daily_loss_gate"] = daily_loss_gate
     metrics["position_reconciliation_gate"] = position_reconciliation_gate
@@ -1437,6 +1539,7 @@ def system_cycle(
         "autopilot_policy": autopilot_policy,
         "autopilot_preflight": autopilot_preflight,
         "broker_order_sync": broker_order_sync,
+        "broker_position_reconciliation": broker_position_reconciliation,
         "snapshot_quality_gate": snapshot_quality_gate,
         "daily_loss_gate": daily_loss_gate,
         "position_reconciliation_gate": position_reconciliation_gate,
@@ -1485,6 +1588,7 @@ def system_cycle_loop(
                     "auto_approval": summary.get("auto_approval", {}),
                     "auto_execution": summary.get("auto_execution", {}),
                     "broker_order_sync": summary.get("broker_order_sync", {}),
+                    "broker_position_reconciliation": summary.get("broker_position_reconciliation", {}),
                     "pending_event_count": summary.get("pending_event_count", 0),
                 }
             )
@@ -1610,6 +1714,17 @@ def main() -> None:
         type=int,
         default=50,
         help="maximum pending live buy orders and live sell executions to poll per cycle",
+    )
+    parser.add_argument(
+        "--disable-auto-position-reconciliation",
+        action="store_true",
+        help="disable automatic broker position reconciliation at the start of system_cycle",
+    )
+    parser.add_argument(
+        "--position-reconciliation-qty-tolerance",
+        type=float,
+        default=1e-6,
+        help="quantity tolerance for automatic broker position reconciliation",
     )
     parser.add_argument(
         "--use-autopilot-policy",
@@ -1780,6 +1895,8 @@ def main() -> None:
             as_of=as_of,
             auto_sync_broker_statuses=not args.disable_auto_broker_sync,
             max_broker_sync_items=args.max_broker_sync_items,
+            auto_reconcile_broker_positions=not args.disable_auto_position_reconciliation,
+            position_reconciliation_qty_tolerance=args.position_reconciliation_qty_tolerance,
             use_autopilot_policy=args.use_autopilot_policy,
             auto_execute_approved=args.auto_execute_approved,
             auto_approve_recommendations=args.auto_approve_recommendations,
@@ -1817,6 +1934,8 @@ def main() -> None:
             as_of=as_of,
             auto_sync_broker_statuses=not args.disable_auto_broker_sync,
             max_broker_sync_items=args.max_broker_sync_items,
+            auto_reconcile_broker_positions=not args.disable_auto_position_reconciliation,
+            position_reconciliation_qty_tolerance=args.position_reconciliation_qty_tolerance,
             use_autopilot_policy=args.use_autopilot_policy,
             auto_execute_approved=args.auto_execute_approved,
             auto_approve_recommendations=args.auto_approve_recommendations,

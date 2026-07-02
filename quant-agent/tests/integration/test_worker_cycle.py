@@ -21,7 +21,7 @@ from domain.entities.models import (
     SystemCycleRun,
 )
 from domain.policies.approval import ApprovalDecisionRequest
-from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate
+from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate, BrokerPositionUpdate
 from services.execution.router import ExecutionRouter
 
 
@@ -47,6 +47,27 @@ class SyncOnlyBrokerAdapter:
 
     def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
         raise AssertionError("client order lookup is not used by broker sync tests")
+
+
+class PositionOnlyBrokerAdapter:
+    name = "position-only-broker"
+
+    def __init__(self, positions: list[BrokerPositionUpdate]) -> None:
+        self.positions = positions
+        self.list_position_calls = 0
+
+    def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
+        raise AssertionError("submit_order is not used by position reconciliation tests")
+
+    def get_order_by_id(self, broker_order_id: str) -> BrokerOrderUpdate:
+        raise AssertionError("order lookup is not used by position reconciliation tests")
+
+    def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
+        raise AssertionError("client order lookup is not used by position reconciliation tests")
+
+    def list_positions(self) -> list[BrokerPositionUpdate]:
+        self.list_position_calls += 1
+        return self.positions
 
 
 def test_system_cycle_generates_recommendations_and_monitors_without_auto_execution() -> None:
@@ -355,6 +376,118 @@ def test_system_cycle_auto_syncs_live_sell_broker_fill() -> None:
     assert sell_trades[0].qty == 2
     run_history = state.list_system_cycle_runs(limit=1)
     assert run_history[0].metrics["broker_order_sync"]["sell_execution_sync"]["filled_count"] == 1
+
+
+def test_system_cycle_auto_reconciles_broker_positions_and_unblocks_gate() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime.now(timezone.utc)
+    ticker = "MSFT"
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker=ticker,
+            qty=5,
+            buy_price=100,
+            bought_at=run_at - timedelta(minutes=30),
+            stop_loss=92,
+            take_profit1=112,
+            take_profit2=125,
+            note="worker position reconciliation setup",
+        )
+    )
+    fake_adapter = PositionOnlyBrokerAdapter(
+        [
+            BrokerPositionUpdate(
+                symbol=ticker,
+                qty=5,
+                avg_price=100,
+                market_price=103,
+                broker_position_id="broker_pos_msft",
+            )
+        ]
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            require_position_reconciliation=True,
+            auto_reconcile_broker_positions=True,
+        )
+    finally:
+        state.execution_router = original_router
+
+    position_sync = result["broker_position_reconciliation"]
+    assert position_sync["broker"] == "position-only-broker"
+    assert position_sync["position_count"] == 1
+    assert position_sync["reconciliation"]["status"] == "matched"
+    assert position_sync["reconciliation"]["blocks_auto_execution"] is False
+    assert result["position_reconciliation_gate"]["passed"] is True
+    assert fake_adapter.list_position_calls == 1
+    recent = state.list_position_reconciliations(limit=1)[0]
+    assert recent.broker == "position-only-broker"
+    assert recent.status == "matched"
+    assert recent.note == "system_cycle:auto_position_reconciliation"
+    run_history = state.list_system_cycle_runs(limit=1)
+    assert run_history[0].metrics["broker_position_reconciliation"]["reconciliation"]["status"] == "matched"
+
+
+def test_system_cycle_auto_reconciliation_mismatch_blocks_auto_execution() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime.now(timezone.utc)
+    ticker = "MSFT"
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker=ticker,
+            qty=5,
+            buy_price=100,
+            bought_at=run_at - timedelta(minutes=30),
+            stop_loss=92,
+            take_profit1=112,
+            take_profit2=125,
+            note="worker mismatch reconciliation setup",
+        )
+    )
+    fake_adapter = PositionOnlyBrokerAdapter(
+        [
+            BrokerPositionUpdate(
+                symbol=ticker,
+                qty=3,
+                avg_price=100,
+                market_price=103,
+                broker_position_id="broker_pos_msft",
+            )
+        ]
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            require_position_reconciliation=True,
+            auto_reconcile_broker_positions=True,
+            auto_execute_approved=True,
+        )
+    finally:
+        state.execution_router = original_router
+
+    position_sync = result["broker_position_reconciliation"]
+    assert position_sync["reconciliation"]["status"] == "mismatch"
+    assert position_sync["reconciliation"]["blocks_auto_execution"] is True
+    assert result["position_reconciliation_gate"]["passed"] is False
+    assert result["position_reconciliation_gate"]["reason"] == "position_reconciliation_mismatch"
+    assert result["auto_execution"]["actions"][0]["reason"] == "position_reconciliation_gate_failed"
 
 
 def test_system_cycle_blocks_auto_buy_when_latest_price_drifts_from_entry_zone(monkeypatch) -> None:

@@ -50,6 +50,16 @@ class BrokerOrderUpdate:
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BrokerPositionUpdate:
+    symbol: str
+    qty: float
+    avg_price: float | None = None
+    market_price: float | None = None
+    broker_position_id: str | None = None
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+
+
 class BrokerAdapterError(RuntimeError):
     pass
 
@@ -64,6 +74,9 @@ class BrokerExecutionAdapter(Protocol):
         ...
 
     def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
+        ...
+
+    def list_positions(self) -> list[BrokerPositionUpdate]:
         ...
 
 
@@ -121,6 +134,17 @@ class AlpacaBrokerAdapter:
         response = self._request("GET", f"/v2/orders/{quote(broker_order_id, safe='')}")
         return self._to_update(response)
 
+    def list_positions(self) -> list[BrokerPositionUpdate]:
+        response = self._request("GET", "/v2/positions")
+        if not isinstance(response, list):
+            raise BrokerAdapterError("Alpaca positions response was not a list")
+        positions: list[BrokerPositionUpdate] = []
+        for item in response:
+            if not isinstance(item, dict):
+                raise BrokerAdapterError("Alpaca positions response included a non-object item")
+            positions.append(self._to_position(item))
+        return positions
+
     def _request(
         self,
         method: str,
@@ -128,7 +152,7 @@ class AlpacaBrokerAdapter:
         *,
         payload: dict[str, Any] | None = None,
         query: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> Any:
         query_string = f"?{urlencode(query)}" if query else ""
         body = json.dumps(payload).encode("utf-8") if payload is not None else None
         request = Request(
@@ -169,6 +193,29 @@ class AlpacaBrokerAdapter:
             filled_avg_price=float(filled_avg_price) if filled_avg_price not in (None, "") else None,
             filled_qty=float(filled_qty) if filled_qty not in (None, "") else None,
             message=payload.get("message") or payload.get("reject_reason"),
+            raw_payload=payload,
+        )
+
+    @staticmethod
+    def _to_position(payload: dict[str, Any]) -> BrokerPositionUpdate:
+        symbol = str(payload.get("symbol") or "").upper().strip()
+        if not symbol:
+            raise BrokerAdapterError("Alpaca position response did not include a symbol")
+        raw_qty = payload.get("qty")
+        if raw_qty in (None, ""):
+            raise BrokerAdapterError(f"Alpaca position for {symbol} did not include qty")
+        qty = float(raw_qty)
+        raw_side = str(payload.get("side") or "").lower().strip()
+        if qty < 0 or raw_side == "short":
+            raise BrokerAdapterError(f"Alpaca short position for {symbol} is not supported by the long-only ledger")
+        avg_price = payload.get("avg_entry_price")
+        market_price = payload.get("current_price")
+        return BrokerPositionUpdate(
+            symbol=symbol,
+            qty=qty,
+            avg_price=float(avg_price) if avg_price not in (None, "") else None,
+            market_price=float(market_price) if market_price not in (None, "") else None,
+            broker_position_id=payload.get("asset_id"),
             raw_payload=payload,
         )
 

@@ -15,6 +15,8 @@ class SystemCycleRunBody(BaseModel):
     consume_events: bool = False
     auto_sync_broker_statuses: bool = True
     max_broker_sync_items: int = Field(default=50, ge=0, le=500)
+    auto_reconcile_broker_positions: bool = True
+    position_reconciliation_qty_tolerance: float = Field(default=1e-6, ge=0.0)
     use_autopilot_policy: bool = True
     as_of: datetime | None = None
 
@@ -54,5 +56,7 @@ def run_system_cycle(body: SystemCycleRunBody) -> dict:
         as_of=body.as_of,
         auto_sync_broker_statuses=body.auto_sync_broker_statuses,
         max_broker_sync_items=body.max_broker_sync_items,
+        auto_reconcile_broker_positions=body.auto_reconcile_broker_positions,
+        position_reconciliation_qty_tolerance=body.position_reconciliation_qty_tolerance,
         use_autopilot_policy=body.use_autopilot_policy,
     )
