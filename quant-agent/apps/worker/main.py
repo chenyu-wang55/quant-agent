@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -418,13 +419,19 @@ def _auto_position_reconciliation_cycle(
     return report
 
 
-def _auto_execution_mode(mode: str) -> tuple[OrderExecutionMode, bool]:
+def _truthy_env_flag(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auto_execution_mode(mode: str) -> tuple[OrderExecutionMode, bool, bool]:
     normalized = mode.lower()
     if normalized == "paper":
-        return OrderExecutionMode.PAPER, False
+        return OrderExecutionMode.PAPER, False, False
     if normalized == "live_dry_run":
-        return OrderExecutionMode.LIVE, True
-    raise ValueError("auto execution mode must be paper or live_dry_run")
+        return OrderExecutionMode.LIVE, True, False
+    if normalized == "live":
+        return OrderExecutionMode.LIVE, False, True
+    raise ValueError("auto execution mode must be paper, live_dry_run, or live")
 
 
 def _auto_approve_cycle(
@@ -598,13 +605,28 @@ def _auto_execute_cycle(
     max_open_risk_pct: float,
     max_daily_realized_loss_pct: float,
     max_auto_buy_price_drift_pct: float,
+    allow_auto_live_execution: bool | None,
     risk_per_trade_pct: float,
     max_position_pct: float,
     max_gross_exposure_pct: float,
     max_sector_exposure_pct: float,
 ) -> dict[str, Any]:
     state = get_app_state()
-    order_mode, dry_run = _auto_execution_mode(execution_mode)
+    order_mode, dry_run, confirm_live = _auto_execution_mode(execution_mode)
+    live_allowed = (
+        _truthy_env_flag("QUANT_ALLOW_AUTOPILOT_LIVE")
+        if allow_auto_live_execution is None
+        else allow_auto_live_execution
+    )
+    live_execution_requested = order_mode == OrderExecutionMode.LIVE and not dry_run
+    live_execution_gate = {
+        "passed": (not live_execution_requested) or live_allowed,
+        "requested": live_execution_requested,
+        "allow_auto_live_execution": live_allowed,
+        "reason": None if (not live_execution_requested or live_allowed) else "auto_live_execution_not_allowed",
+        "required_runtime_flag": "--allow-auto-live-execution",
+        "required_env_var": "QUANT_ALLOW_AUTOPILOT_LIVE=1",
+    }
     actions: list[dict[str, Any]] = []
     sell_blocked_tickers: set[str] = set()
 
@@ -618,6 +640,22 @@ def _auto_execute_cycle(
             }
         )
         return _auto_execution_report(enabled=True, mode=execution_mode, actions=actions)
+    if not live_execution_gate["passed"]:
+        actions.append(
+            {
+                "action": "auto_execution",
+                "status": "skipped",
+                "reason": "auto_live_execution_not_allowed",
+                "live_execution_gate": live_execution_gate,
+                "message_cn": "自动实盘执行需要显式传入 allow_auto_live_execution 或设置 QUANT_ALLOW_AUTOPILOT_LIVE=1。",
+            }
+        )
+        return _auto_execution_report(
+            enabled=True,
+            mode=execution_mode,
+            actions=actions,
+            live_execution_gate=live_execution_gate,
+        )
 
     for alert in alerts:
         if len([item for item in actions if item.get("action") == "sell_alert"]) >= max_auto_sells:
@@ -669,7 +707,7 @@ def _auto_execute_cycle(
                     reason=f"system_cycle:{run_id}:alert:{alert.reason_code}",
                     execution_mode=order_mode,
                     dry_run=dry_run,
-                    confirm_live=False,
+                    confirm_live=confirm_live,
                 ),
             )
             control_adjustment = _post_sell_control_adjustment(
@@ -891,7 +929,7 @@ def _auto_execute_cycle(
                 limit_price=recommendation.entry_zone_high,
                 execution_mode=order_mode,
                 dry_run=dry_run,
-                confirm_live=False,
+                confirm_live=confirm_live,
                 account_equity=account_equity,
                 risk_per_trade_pct=risk_per_trade_pct,
                 max_position_pct=max_position_pct,
@@ -973,6 +1011,7 @@ def _auto_execute_cycle(
         actions=actions,
         portfolio_risk_gate=portfolio_risk_gate,
         daily_loss_gate=daily_loss_gate,
+        live_execution_gate=live_execution_gate,
     )
 
 
@@ -1120,12 +1159,14 @@ def _auto_execution_report(
     actions: list[dict[str, Any]],
     portfolio_risk_gate: dict[str, Any] | None = None,
     daily_loss_gate: dict[str, Any] | None = None,
+    live_execution_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "enabled": enabled,
         "mode": mode,
         "portfolio_risk_gate": portfolio_risk_gate,
         "daily_loss_gate": daily_loss_gate,
+        "live_execution_gate": live_execution_gate,
         "action_count": len(actions),
         "buy_order_count": sum(
             1
@@ -1260,6 +1301,7 @@ def system_cycle(
     auto_approve_min_composite: float = 0.0,
     max_auto_approvals: int = 1,
     auto_execution_mode: str = "paper",
+    allow_auto_live_execution: bool | None = None,
     max_auto_buys: int = 1,
     max_auto_sells: int = 10,
     order_dedupe_minutes: int = 1440,
@@ -1295,7 +1337,11 @@ def system_cycle(
     autopilot_preflight: dict[str, Any] | None = None
     if use_autopilot_policy:
         policy = state.get_autopilot_policy()
-        preflight = state.build_autopilot_preflight(policy, as_of=started_at)
+        preflight = state.build_autopilot_preflight(
+            policy,
+            as_of=started_at,
+            allow_auto_live_execution=allow_auto_live_execution,
+        )
         policy_values = _apply_autopilot_policy(
             policy=policy,
             preflight=preflight,
@@ -1448,6 +1494,7 @@ def system_cycle(
             max_open_risk_pct=max_open_risk_pct,
             max_daily_realized_loss_pct=max_daily_realized_loss_pct,
             max_auto_buy_price_drift_pct=max_auto_buy_price_drift_pct,
+            allow_auto_live_execution=allow_auto_live_execution,
             risk_per_trade_pct=risk_per_trade_pct,
             max_position_pct=max_position_pct,
             max_gross_exposure_pct=max_gross_exposure_pct,
@@ -1462,8 +1509,12 @@ def system_cycle(
         if auto_execute_approved and auto_execution_block is not None
         else _auto_execution_report(enabled=False, mode=auto_execution_mode, actions=[])
     )
+    auto_execution_live_gate = auto_execution.get("live_execution_gate") or {}
     effective_auto_execute_approved = (
-        auto_execute_approved and snapshot_quality_passed and position_reconciliation_passed
+        auto_execute_approved
+        and snapshot_quality_passed
+        and position_reconciliation_passed
+        and bool(auto_execution_live_gate.get("passed", True))
     )
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()
@@ -1756,9 +1807,14 @@ def main() -> None:
     parser.add_argument("--max-auto-approvals", type=int, default=1, help="maximum auto approvals per cycle")
     parser.add_argument(
         "--auto-execution-mode",
-        choices=["paper", "live_dry_run"],
+        choices=["paper", "live_dry_run", "live"],
         default="paper",
         help="execution mode for automatic actions",
+    )
+    parser.add_argument(
+        "--allow-auto-live-execution",
+        action="store_true",
+        help="explicitly allow autopilot live broker order submission when auto-execution-mode=live",
     )
     parser.add_argument("--max-auto-buys", type=int, default=1, help="maximum approved buys per cycle")
     parser.add_argument("--max-auto-sells", type=int, default=10, help="maximum sell alerts to execute per cycle")
@@ -1904,6 +1960,7 @@ def main() -> None:
             auto_approve_min_composite=args.auto_approve_min_composite,
             max_auto_approvals=args.max_auto_approvals,
             auto_execution_mode=args.auto_execution_mode,
+            allow_auto_live_execution=True if args.allow_auto_live_execution else None,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
             order_dedupe_minutes=args.order_dedupe_minutes,
@@ -1943,6 +2000,7 @@ def main() -> None:
             auto_approve_min_composite=args.auto_approve_min_composite,
             max_auto_approvals=args.max_auto_approvals,
             auto_execution_mode=args.auto_execution_mode,
+            allow_auto_live_execution=True if args.allow_auto_live_execution else None,
             max_auto_buys=args.max_auto_buys,
             max_auto_sells=args.max_auto_sells,
             order_dedupe_minutes=args.order_dedupe_minutes,

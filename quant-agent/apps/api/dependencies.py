@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from functools import lru_cache
 import math
+import os
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from domain.entities.models import (
     AlertExecutionResult,
     AlertSellRequest,
     ApprovalDecision,
+    AutoExecutionMode,
     AutopilotPreflight,
     AutopilotPreflightCheck,
     AutopilotPolicy,
@@ -111,6 +113,10 @@ from services.ingestion.provider_factory import build_data_provider
 from services.ranking.pipeline import PipelineOutput, ResearchPipeline
 from services.research.backtest_engine import BacktestEngine
 from services.risk.position_monitor import PositionMonitor
+
+
+def _truthy_env_flag(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -1266,8 +1272,14 @@ class AppState:
         self,
         policy: AutopilotPolicy | None = None,
         as_of: datetime | None = None,
+        allow_auto_live_execution: bool | None = None,
     ) -> AutopilotPreflight:
         policy = policy or self.get_autopilot_policy()
+        live_allowed = (
+            _truthy_env_flag("QUANT_ALLOW_AUTOPILOT_LIVE")
+            if allow_auto_live_execution is None
+            else allow_auto_live_execution
+        )
         checks: list[AutopilotPreflightCheck] = []
         reasons: list[str] = []
         market_session = self.get_market_session_status(as_of=as_of)
@@ -1407,11 +1419,21 @@ class AppState:
             max_age_minutes=policy.max_position_reconciliation_age_minutes,
             as_of=as_of,
         )
+        live_execution_requested = policy.auto_execution_mode == AutoExecutionMode.LIVE
+        live_execution_gate = {
+            "passed": (not live_execution_requested) or live_allowed,
+            "requested": live_execution_requested,
+            "allow_auto_live_execution": live_allowed,
+            "reason": None if (not live_execution_requested or live_allowed) else "auto_live_execution_not_allowed",
+            "required_runtime_flag": "--allow-auto-live-execution",
+            "required_env_var": "QUANT_ALLOW_AUTOPILOT_LIVE=1",
+        }
         can_auto_execute = (
             policy.auto_execute_approved
             and execution_capacity
             and execution_daily_budget
             and market_hours_allowed
+            and live_execution_gate["passed"]
             and position_reconciliation_gate["passed"]
             and not self.kill_switch.enabled
         )
@@ -1459,6 +1481,18 @@ class AppState:
                     details=market_session.model_dump(mode="json"),
                 )
             )
+        elif not live_execution_gate["passed"]:
+            reason = str(live_execution_gate["reason"])
+            if reason not in reasons:
+                reasons.append(reason)
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_live_execution",
+                    status="fail",
+                    message_cn="Autopilot 已选择 live 实盘执行，但本轮未显式允许自动实盘下单。",
+                    details=live_execution_gate,
+                )
+            )
         elif not position_reconciliation_gate["passed"]:
             reason = str(position_reconciliation_gate["reason"])
             if reason not in reasons:
@@ -1483,6 +1517,7 @@ class AppState:
                     ),
                     details={
                         "execution_mode": policy.auto_execution_mode.value,
+                        "live_execution_gate": live_execution_gate,
                         **daily_usage,
                         "daily_loss_gate": daily_loss_gate,
                         "position_reconciliation_gate": position_reconciliation_gate,
@@ -1499,6 +1534,18 @@ class AppState:
                         else "未强制美股常规交易时段门禁。"
                     ),
                     details=market_session.model_dump(mode="json"),
+                )
+            )
+            checks.append(
+                AutopilotPreflightCheck(
+                    name="auto_live_execution",
+                    status="pass" if live_execution_gate["passed"] else "warn",
+                    message_cn=(
+                        "自动实盘执行已显式允许。"
+                        if live_execution_requested and live_execution_gate["passed"]
+                        else "当前自动执行模式不是 live 实盘。"
+                    ),
+                    details=live_execution_gate,
                 )
             )
 

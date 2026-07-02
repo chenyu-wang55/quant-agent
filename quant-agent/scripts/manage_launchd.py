@@ -97,6 +97,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         program_args.append("--disable-auto-position-reconciliation")
     if args.auto_execute_approved:
         program_args.append("--auto-execute-approved")
+    if args.allow_auto_live_execution:
+        program_args.append("--allow-auto-live-execution")
     if args.auto_approve_recommendations:
         program_args.append("--auto-approve-recommendations")
     if args.require_position_reconciliation:
@@ -190,7 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--auto-approve-min-composite", type=float, default=0.0)
     parser.add_argument("--max-auto-approvals", type=int, default=1)
     parser.add_argument("--auto-execute-approved", action="store_true")
-    parser.add_argument("--auto-execution-mode", choices=["paper", "live_dry_run"], default="paper")
+    parser.add_argument("--auto-execution-mode", choices=["paper", "live_dry_run", "live"], default="paper")
+    parser.add_argument("--allow-auto-live-execution", action="store_true")
     parser.add_argument("--max-auto-buys", type=int, default=1)
     parser.add_argument("--max-auto-sells", type=int, default=10)
     parser.add_argument("--order-dedupe-minutes", type=int, default=1440)

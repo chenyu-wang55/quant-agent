@@ -30,10 +30,14 @@ the latest market snapshot, generates recommendations, refreshes sell alerts, pr
 JSON health summary, and leaves order execution to the approval/dashboard flow unless
 `--auto-execute-approved` is explicitly set. In automatic mode it executes sell alerts
 first, then routes only recommendations with an existing approved decision. The same
-kill switch, paper/live-dry-run execution gates, risk-plan limits, trade ledger, sell
-execution audit, and system-event trail still apply. Add `--consume-events` only when
-a downstream event sink has already captured the printed summary and you want pending
-durable system events marked consumed.
+kill switch, paper/broker live execution gates, risk-plan limits, trade ledger, sell
+execution audit, and system-event trail still apply. Use `--auto-execution-mode
+live_dry_run` for broker-shaped rehearsals. Use `--auto-execution-mode live` only
+with a configured broker adapter and an explicit runtime allow switch
+(`--allow-auto-live-execution` or `QUANT_ALLOW_AUTOPILOT_LIVE=1`); otherwise preflight
+and direct system-cycle execution report `auto_live_execution_not_allowed`. Add
+`--consume-events` only when a downstream event sink has already captured the printed
+summary and you want pending durable system events marked consumed.
 Add `--auto-approve-recommendations` only when the machine should also approve fresh
 recommendations without a human click. It still writes normal approval audit rows and
 requires `--auto-approve-min-confidence`, `--auto-approve-min-composite`, and
@@ -336,6 +340,10 @@ Set `Exec Mode` to `Live Dry Run` for broker-adapter rehearsals. Confirmed live 
 orders require `QUANT_BROKER_ADAPTER=alpaca`, Alpaca credentials, `confirm_live=true`,
 an approved recommendation, and passing risk limits. Use Alpaca paper trading first;
 filled broker responses create monitored holdings and trade-ledger rows.
+Autopilot live BUY/SELL uses the same broker adapter path, but requires policy
+`auto_execution_mode=live` plus runtime `--allow-auto-live-execution` or
+`QUANT_ALLOW_AUTOPILOT_LIVE=1`; without the runtime allow switch no broker order is
+submitted.
 
 Sell controls use the same execution gate:
 
@@ -404,6 +412,12 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "reason": "paper autopilot"
   }'
 ```
+
+For broker autopilot, change `auto_execution_mode` to `live` only after rehearsing
+`live_dry_run`, confirming Alpaca paper-trading credentials, and enabling
+`require_position_reconciliation`. The service still needs
+`--allow-auto-live-execution` in the launchd plist, or `QUANT_ALLOW_AUTOPILOT_LIVE=1`
+in its environment, before it can submit real broker orders automatically.
 
 When `restrict_auto_execution_to_regular_hours` is true, preflight blocks automatic
 buys and sells outside the approximate US equity regular session

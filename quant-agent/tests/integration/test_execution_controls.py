@@ -190,6 +190,50 @@ def test_autopilot_preflight_blocks_auto_execute_without_required_reconciliation
     assert reconciliation_check["details"]["reason"] == "position_reconciliation_missing"
 
 
+def test_autopilot_live_mode_requires_runtime_allow(monkeypatch) -> None:
+    state = get_app_state()
+    state.reset()
+    monkeypatch.delenv("QUANT_ALLOW_AUTOPILOT_LIVE", raising=False)
+    client = TestClient(app)
+
+    response = client.post(
+        "/execution/autopilot-policy",
+        json={
+            "enabled": True,
+            "auto_execute_approved": True,
+            "auto_execution_mode": "live",
+            "max_auto_buys": 1,
+            "max_auto_sells": 1,
+            "reason": "live-mode-runtime-allow-test",
+            "updated_by": "qa",
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 200
+    assert response.json()["auto_execution_mode"] == "live"
+
+    control_center = client.get("/operations/control-center?refresh_alerts=false", headers=AUTH_HEADERS)
+    assert control_center.status_code == 200
+    preflight = control_center.json()["autopilot_preflight"]
+    assert preflight["status"] == "blocked"
+    assert preflight["can_auto_execute"] is False
+    assert "auto_live_execution_not_allowed" in preflight["reasons"]
+    live_check = next(item for item in preflight["checks"] if item["name"] == "auto_live_execution")
+    assert live_check["status"] == "fail"
+    assert live_check["details"]["requested"] is True
+    assert live_check["details"]["allow_auto_live_execution"] is False
+
+    allowed_preflight = state.build_autopilot_preflight(
+        state.get_autopilot_policy(),
+        allow_auto_live_execution=True,
+    )
+    assert allowed_preflight.status == "ready"
+    assert allowed_preflight.can_auto_execute is True
+    allowed_check = next(item for item in allowed_preflight.checks if item.name == "auto_live_execution")
+    assert allowed_check.status == "pass"
+    assert allowed_check.details["allow_auto_live_execution"] is True
+
+
 def test_market_session_endpoint_reports_regular_hours() -> None:
     state = get_app_state()
     state.reset()

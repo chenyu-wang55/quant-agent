@@ -77,6 +77,7 @@ class OrderExecutionMode(str, Enum):
 class AutoExecutionMode(str, Enum):
     PAPER = "paper"
     LIVE_DRY_RUN = "live_dry_run"
+    LIVE = "live"
 
 
 class ApprovalDecision(str, Enum):

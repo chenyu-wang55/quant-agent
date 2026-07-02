@@ -728,7 +728,7 @@ def dashboard_home() -> str:
         <label class="check-field"><input id="autopilotAutoApprove" type="checkbox" /><span>Auto Approve</span></label>
         <label class="check-field"><input id="autopilotAutoExecute" type="checkbox" /><span>Auto Execute</span></label>
         <label class="check-field"><input id="autopilotRegularHours" type="checkbox" /><span>Regular Hours</span></label>
-        <div class="field"><label for="autopilotExecutionMode">Policy Exec</label><select id="autopilotExecutionMode"><option value="paper">Paper</option><option value="live_dry_run">Live Dry Run</option></select></div>
+        <div class="field"><label for="autopilotExecutionMode">Policy Exec</label><select id="autopilotExecutionMode"><option value="paper">Paper</option><option value="live_dry_run">Live Dry Run</option><option value="live">Live</option></select></div>
         <div class="field"><label for="autopilotMinConfidence">Auto Min Conf</label><input id="autopilotMinConfidence" type="number" min="0" max="1" step="0.01" value="0.72" /></div>
         <div class="field"><label for="autopilotMinComposite">Min Composite</label><input id="autopilotMinComposite" type="number" min="0" step="0.01" value="0" /></div>
         <div class="field"><label for="autopilotMaxApprovals">Max Approvals</label><input id="autopilotMaxApprovals" type="number" min="0" step="1" value="1" /></div>

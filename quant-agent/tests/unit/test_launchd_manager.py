@@ -29,7 +29,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "0.8",
         "--auto-execute-approved",
         "--auto-execution-mode",
-        "paper",
+        "live",
+        "--allow-auto-live-execution",
         "--interval-seconds",
         "60",
         "--max-consecutive-errors",
@@ -81,6 +82,9 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     ]
     assert "--use-autopilot-policy" in round_trip["ProgramArguments"]
     assert "--auto-execute-approved" in round_trip["ProgramArguments"]
+    assert "--auto-execution-mode" in round_trip["ProgramArguments"]
+    assert "live" in round_trip["ProgramArguments"]
+    assert "--allow-auto-live-execution" in round_trip["ProgramArguments"]
     assert "--auto-approve-recommendations" in round_trip["ProgramArguments"]
     assert "--auto-approve-min-confidence" in round_trip["ProgramArguments"]
     assert "0.8" in round_trip["ProgramArguments"]

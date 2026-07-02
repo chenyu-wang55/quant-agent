@@ -255,9 +255,13 @@ python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
 
 Automatic execution is conservative: sell alerts are handled first, buys only route
 recommendations that already have an `approved` decision, and all actions still pass
-through the existing kill switch, risk sizing, paper-order, live-dry-run, sell audit,
-trade-ledger, event, source-snapshot quality, and portfolio open-risk gates. Use `--auto-execution-mode live_dry_run` to validate
-broker-shaped orders without mutating holdings. Use `--max-auto-buys`,
+through the existing kill switch, risk sizing, paper-order, broker live, sell audit,
+trade-ledger, event, source-snapshot quality, and portfolio open-risk gates. Use
+`--auto-execution-mode live_dry_run` to validate broker-shaped orders without mutating
+holdings. Use `--auto-execution-mode live` only after configuring a broker adapter,
+passing position reconciliation, and explicitly adding `--allow-auto-live-execution`
+or setting `QUANT_ALLOW_AUTOPILOT_LIVE=1`; otherwise the live gate blocks automatic
+broker submissions with `auto_live_execution_not_allowed`. Use `--max-auto-buys`,
 `--max-auto-sells`, `--account-equity`, `--risk-per-trade-pct`,
 `--max-position-pct`, `--max-gross-exposure-pct`, and
 `--max-sector-exposure-pct` to tune the automatic sizing envelope. Use
@@ -305,6 +309,12 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
 python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
   --use-autopilot-policy
 ```
+
+For real broker autopilot, set the policy `auto_execution_mode` to `live` and run the
+cycle with `--allow-auto-live-execution` after the broker adapter, credentials, kill
+switch, source snapshot, risk, daily budget, and reconciliation gates are all green.
+Without that runtime allow switch, `autopilot_preflight` remains blocked even if the
+policy is otherwise enabled.
 
 The policy has a global `enabled` switch. When it is false, `--use-autopilot-policy`
 forces automatic approval and execution off even if older CLI flags are present.
