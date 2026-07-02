@@ -7,6 +7,7 @@ from domain.entities.models import (
     MarketBar,
     ResearchRunResult,
     SourceSnapshotDetail,
+    SourceSnapshotExport,
     SourceSnapshotReplayCompareRequest,
     SourceSnapshotReplayComparison,
     SourceSnapshotReplayRequest,
@@ -35,6 +36,17 @@ def get_source_snapshot(
     if detail is None:
         raise HTTPException(status_code=404, detail="Source snapshot not found")
     return detail
+
+
+@router.get("/source-snapshots/{source_snapshot_id}/export", response_model=SourceSnapshotExport)
+def export_source_snapshot(
+    source_snapshot_id: str,
+    state: AppState = Depends(get_app_state),
+) -> SourceSnapshotExport:
+    snapshot_export = state.get_source_snapshot_export(source_snapshot_id)
+    if snapshot_export is None:
+        raise HTTPException(status_code=404, detail="Source snapshot not found")
+    return snapshot_export
 
 
 @router.get("/source-snapshots/{source_snapshot_id}/bars/{ticker}", response_model=list[MarketBar])

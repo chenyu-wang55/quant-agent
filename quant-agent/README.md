@@ -66,6 +66,7 @@ the configured threshold, or the latest captured bar is too old, the cycle recor
 Snapshot audit and replay endpoints:
 - `GET /source-snapshots`
 - `GET /source-snapshots/{source_snapshot_id}`
+- `GET /source-snapshots/{source_snapshot_id}/export`
 - `GET /source-snapshots/{source_snapshot_id}/bars/{ticker}`
 - `POST /source-snapshots/{source_snapshot_id}/replay`
 - `POST /source-snapshots/{source_snapshot_id}/replay/compare`
@@ -73,6 +74,9 @@ Snapshot audit and replay endpoints:
 The replay endpoint rebuilds recommendations from the stored market/news inputs and
 returns `operation=replayed`, making a live recommendation set reproducible by its
 `source_snapshot_id`.
+The export endpoint returns the full captured input evidence package for audit:
+universe securities, bars grouped by ticker, fundamentals grouped by ticker,
+news/events, and snapshot metadata/data-quality fields.
 The compare endpoint performs the same replay without writing the replayed run into
 the latest recommendation store, then returns a deterministic diff against stored
 recommendations for that snapshot. Use `baseline_strategy_config_id` to compare
@@ -135,6 +139,7 @@ Endpoints:
 - `GET /recommendations/{id}/approval`
 - `GET /recommendations/{id}/evidence`
 - `GET /source-snapshots`
+- `GET /source-snapshots/{source_snapshot_id}/export`
 - `POST /source-snapshots/{source_snapshot_id}/replay`
 - `POST /source-snapshots/{source_snapshot_id}/replay/compare`
 - `GET /operations/control-center`

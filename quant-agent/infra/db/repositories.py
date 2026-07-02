@@ -35,6 +35,7 @@ from domain.entities.models import (
     SellAlertLevel,
     SellExecutionAudit,
     SignalSnapshot,
+    SourceSnapshotExport,
     SourceSnapshotDetail,
     SourceSnapshotSummary,
     StrategyConfigSnapshot,
@@ -461,6 +462,11 @@ class PositionRepository:
             if record.qty > 0
         ]
 
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(PositionStateRecord))
+            session.commit()
+
 
 class HoldingWatchRepository:
     def upsert(self, holding: HoldingWatch) -> None:
@@ -503,6 +509,11 @@ class HoldingWatchRepository:
             stmt = stmt.limit(limit)
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
+
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(HoldingWatchRecord))
+            session.commit()
 
     def close(self, ticker: str) -> HoldingWatch | None:
         with SessionLocal() as session:
@@ -700,6 +711,11 @@ class TradeLedgerRepository:
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(TradeLedgerRecord))
+            session.commit()
+
     @staticmethod
     def _to_domain(record: TradeLedgerRecord) -> TradeLedgerEntry:
         return TradeLedgerEntry(
@@ -790,6 +806,11 @@ class SellExecutionAuditRepository:
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(SellExecutionAuditRecord))
+            session.commit()
+
     @staticmethod
     def _to_domain(record: SellExecutionAuditRecord) -> SellExecutionAudit:
         return SellExecutionAudit(
@@ -863,6 +884,11 @@ class SellAlertAuditRepository:
             stmt = stmt.order_by(SellAlertAuditRecord.generated_at.desc()).limit(limit)
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
+
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(SellAlertAuditRecord))
+            session.commit()
 
     @staticmethod
     def _to_domain(record: SellAlertAuditRecord) -> SellAlertAudit:
@@ -1246,6 +1272,19 @@ class SourceSnapshotRepository:
             recent_events=self.get_events(source_snapshot_id, summary.tickers)[:event_limit],
         )
 
+    def get_export(self, source_snapshot_id: str) -> SourceSnapshotExport | None:
+        summary = self.get_summary(source_snapshot_id)
+        if summary is None:
+            return None
+        return SourceSnapshotExport(
+            **summary.model_dump(),
+            metadata=self.get_metadata(source_snapshot_id),
+            securities=self.get_securities(source_snapshot_id),
+            bars_by_ticker=self.get_bars_by_ticker(source_snapshot_id),
+            fundamentals_by_ticker=self.get_fundamentals_by_ticker(source_snapshot_id),
+            events=self.get_events(source_snapshot_id, []),
+        )
+
     def replace_snapshot(
         self,
         source_snapshot_id: str,
@@ -1578,6 +1617,31 @@ class SourceSnapshotRepository:
             for record in records
         ]
 
+    def get_bars_by_ticker(self, source_snapshot_id: str) -> dict[str, list[MarketBar]]:
+        with SessionLocal() as session:
+            stmt = (
+                select(SnapshotMarketBarRecord)
+                .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
+                .order_by(SnapshotMarketBarRecord.ticker.asc(), SnapshotMarketBarRecord.timestamp.asc())
+            )
+            records = list(session.execute(stmt).scalars())
+
+        bars_by_ticker: dict[str, list[MarketBar]] = {}
+        for record in records:
+            ticker = record.ticker.upper()
+            bars_by_ticker.setdefault(ticker, []).append(
+                MarketBar(
+                    ticker=ticker,
+                    timestamp=_ensure_utc(record.timestamp),
+                    open=record.open,
+                    high=record.high,
+                    low=record.low,
+                    close=record.close,
+                    volume=record.volume,
+                )
+            )
+        return bars_by_ticker
+
     def get_fundamental(self, source_snapshot_id: str, ticker: str) -> FundamentalSnapshot | None:
         with SessionLocal() as session:
             stmt = (
@@ -1600,6 +1664,34 @@ class SourceSnapshotRepository:
             revenue_growth_yoy=record.revenue_growth_yoy,
             eps_revision_30d=record.eps_revision_30d,
         )
+
+    def get_fundamentals_by_ticker(self, source_snapshot_id: str) -> dict[str, FundamentalSnapshot]:
+        with SessionLocal() as session:
+            stmt = (
+                select(SnapshotFundamentalRecord)
+                .where(SnapshotFundamentalRecord.source_snapshot_id == source_snapshot_id)
+                .order_by(
+                    SnapshotFundamentalRecord.ticker.asc(),
+                    SnapshotFundamentalRecord.timestamp.desc(),
+                )
+            )
+            records = list(session.execute(stmt).scalars())
+
+        fundamentals_by_ticker: dict[str, FundamentalSnapshot] = {}
+        for record in records:
+            ticker = record.ticker.upper()
+            fundamentals_by_ticker.setdefault(
+                ticker,
+                FundamentalSnapshot(
+                    ticker=ticker,
+                    timestamp=_ensure_utc(record.timestamp),
+                    pe_ttm=record.pe_ttm,
+                    roe=record.roe,
+                    revenue_growth_yoy=record.revenue_growth_yoy,
+                    eps_revision_30d=record.eps_revision_30d,
+                ),
+            )
+        return fundamentals_by_ticker
 
     def get_events(self, source_snapshot_id: str, tickers: list[str]) -> list[NewsEvent]:
         ticker_set = {ticker.upper() for ticker in tickers}

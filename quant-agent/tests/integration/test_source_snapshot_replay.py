@@ -123,3 +123,12 @@ def test_source_snapshot_records_and_replays_without_live_provider() -> None:
     assert "SPY" in metadata_quality["extra_bar_tickers"]
     assert summary_quality["status"] == metadata_quality["status"]
     assert summary_quality["bar_coverage"] == metadata_quality["bar_coverage"]
+    snapshot_export = repository.get_export(snapshot_id)
+    assert snapshot_export is not None
+    assert snapshot_export.source_snapshot_id == snapshot_id
+    assert snapshot_export.metadata["data_quality"]["status"] == "complete"
+    assert snapshot_export.bar_count == sum(len(bars) for bars in snapshot_export.bars_by_ticker.values())
+    assert set(snapshot_export.fundamentals_by_ticker).issuperset(
+        {rec.ticker for rec in first_output.result.recommendations}
+    )
+    assert snapshot_export.event_count == len(snapshot_export.events)

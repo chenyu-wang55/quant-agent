@@ -115,6 +115,7 @@ curl http://localhost:8000/recommendations/latest
 curl http://localhost:8000/recommendations/<id>/evidence
 curl http://localhost:8000/source-snapshots
 curl http://localhost:8000/source-snapshots/<source_snapshot_id>
+curl http://localhost:8000/source-snapshots/<source_snapshot_id>/export
 curl "http://localhost:8000/source-snapshots/<source_snapshot_id>/bars/MSFT?limit=5"
 curl -X POST http://localhost:8000/source-snapshots/<source_snapshot_id>/replay/compare
 curl http://localhost:8000/strategy-configs

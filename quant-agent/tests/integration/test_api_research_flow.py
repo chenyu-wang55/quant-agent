@@ -94,6 +94,17 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     assert snapshot_detail["data_quality"]["missing_bar_count"] == 0
     assert snapshot_detail["data_quality"]["missing_fundamental_count"] == 0
 
+    snapshot_export_response = client.get(f"/source-snapshots/{snapshot_id}/export", headers=AUTH_HEADERS)
+    assert snapshot_export_response.status_code == 200
+    snapshot_export = snapshot_export_response.json()
+    assert snapshot_export["source_snapshot_id"] == snapshot_id
+    assert snapshot_export["metadata"]["data_quality"]["status"] == "complete"
+    assert snapshot_export["event_count"] == len(snapshot_export["events"])
+    assert ticker in snapshot_export["bars_by_ticker"]
+    assert len(snapshot_export["bars_by_ticker"][ticker]) >= 3
+    assert ticker in snapshot_export["fundamentals_by_ticker"]
+    assert snapshot_export["fundamentals_by_ticker"][ticker]["ticker"] == ticker
+
     snapshot_bars_response = client.get(
         f"/source-snapshots/{snapshot_id}/bars/{ticker}?limit=3",
         headers=AUTH_HEADERS,

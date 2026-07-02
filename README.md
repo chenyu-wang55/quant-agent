@@ -103,6 +103,7 @@ execution_mode: "research_only"
 - `/recommendations`
 - `/recommendations/{id}`
 - `/recommendations/{id}/evidence`
+- `/source-snapshots/{source_snapshot_id}/export`
 - `/paper-orders`
 - `/paper-orders/broker-sync`
 - `/paper-orders/{order_id}/fill`

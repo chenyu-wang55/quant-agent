@@ -66,6 +66,7 @@ from domain.entities.models import (
     SourceSnapshotReplayComparison,
     SourceSnapshotReplayDiff,
     SourceSnapshotDetail,
+    SourceSnapshotExport,
     SourceSnapshotReplayRequest,
     SourceSnapshotSummary,
     StrategyConfigAttribution,
@@ -843,6 +844,9 @@ class AppState:
             source_snapshot_id=source_snapshot_id,
             event_limit=event_limit,
         )
+
+    def get_source_snapshot_export(self, source_snapshot_id: str) -> SourceSnapshotExport | None:
+        return self.source_snapshot_repo.get_export(source_snapshot_id)
 
     def replay_source_snapshot(
         self,
@@ -3774,6 +3778,11 @@ class AppState:
         self.recent_sell_alerts.clear()
         self.event_queue = InMemoryEventQueue()
         self.paper_order_repo.clear_all()
+        self.position_repo.clear_all()
+        self.holding_watch_repo.clear_all()
+        self.trade_ledger_repo.clear_all()
+        self.sell_execution_audit_repo.clear_all()
+        self.sell_alert_audit_repo.clear_all()
         self.approval_repo.clear_all()
         self.autopilot_policy_repo.clear_all()
         self.system_cycle_run_repo.clear_all()

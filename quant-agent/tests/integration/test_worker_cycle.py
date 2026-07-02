@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
@@ -608,11 +608,13 @@ def test_system_cycle_skips_pending_duplicate_buy_order() -> None:
     state.consume_events(limit=1000)
     for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
         state.close_holding(holding.ticker)
+    run_at = datetime(2026, 7, 5, 9, 30, tzinfo=timezone.utc)
 
     first = system_cycle(
         top_n=1,
         min_confidence=0.0,
         consume_events=False,
+        as_of=run_at,
         auto_approve_recommendations=True,
         auto_approve_min_confidence=0.0,
         auto_approve_min_composite=0.0,
@@ -647,6 +649,7 @@ def test_system_cycle_skips_pending_duplicate_buy_order() -> None:
         top_n=1,
         min_confidence=0.0,
         consume_events=False,
+        as_of=run_at,
         auto_execute_approved=True,
         auto_execution_mode="live_dry_run",
         max_auto_buys=1,
@@ -681,6 +684,7 @@ def test_system_cycle_skips_pending_duplicate_buy_order() -> None:
         top_n=1,
         min_confidence=0.0,
         consume_events=False,
+        as_of=run_at,
         auto_approve_recommendations=True,
         auto_approve_min_confidence=0.0,
         auto_approve_min_composite=0.0,
@@ -711,11 +715,13 @@ def test_system_cycle_skips_recent_duplicate_filled_buy_order() -> None:
     state.consume_events(limit=1000)
     for holding in state.list_holdings(status=HoldingStatus.OPEN, limit=100):
         state.close_holding(holding.ticker)
+    run_at = datetime(2026, 7, 5, 9, 30, tzinfo=timezone.utc)
 
     first = system_cycle(
         top_n=1,
         min_confidence=0.0,
         consume_events=False,
+        as_of=run_at,
         auto_approve_recommendations=True,
         auto_approve_min_confidence=0.0,
         auto_approve_min_composite=0.0,
@@ -748,11 +754,12 @@ def test_system_cycle_skips_recent_duplicate_filled_buy_order() -> None:
         top_n=1,
         min_confidence=0.0,
         consume_events=False,
+        as_of=run_at,
         auto_execute_approved=True,
         auto_execution_mode="paper",
         max_auto_buys=1,
         max_auto_sells=0,
-        order_dedupe_minutes=1440,
+        order_dedupe_minutes=10080,
         rebuy_cooldown_minutes=0,
         max_snapshot_bar_age_minutes=999999,
         account_equity=100_000_000,
@@ -1088,7 +1095,7 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
     state.reset()
     state.consume_events(limit=1000)
 
-    seed_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_at = datetime(2026, 7, 5, 9, 30, tzinfo=timezone.utc)
     seed_result = system_cycle(
         top_n=1,
         min_confidence=0.0,
@@ -1104,12 +1111,12 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
             ticker=ticker,
             qty=1,
             buy_price=recommendation.entry_zone_high,
-            bought_at=datetime(2026, 4, 10, 8, 0, tzinfo=timezone.utc),
+            bought_at=seed_at - timedelta(minutes=90),
             source_recommendation_id=recommendation_id,
             note="cooldown setup buy",
         )
     )
-    sold_at = datetime(2026, 4, 10, 8, 30, tzinfo=timezone.utc)
+    sold_at = seed_at - timedelta(minutes=60)
     sell_result = state.sell_holding(
         ticker,
         ManualSellRequest(
@@ -1142,6 +1149,7 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
         rebuy_cooldown_minutes=240,
         account_equity=100_000_000,
         max_daily_realized_loss_pct=1.0,
+        max_auto_buy_price_drift_pct=1.0,
     )
 
     assert sell_result.holding.status == HoldingStatus.CLOSED
@@ -1155,7 +1163,7 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
     assert buy_action["recommendation_id"] == recommendation_id
     assert buy_action["reason"] == "rebuy_cooldown_active"
     assert buy_action["cooldown"]["last_sell_trade_id"]
-    assert buy_action["cooldown"]["cooldown_until"] == "2026-04-10T12:30:00+00:00"
+    assert buy_action["cooldown"]["cooldown_until"] == "2026-07-05T12:30:00+00:00"
     assert buy_action["cooldown"]["minutes_remaining"] == 180
     current_order_ids = {
         order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)

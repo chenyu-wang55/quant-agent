@@ -324,6 +324,14 @@ class SourceSnapshotDetail(SourceSnapshotSummary):
     recent_events: list[NewsEvent] = Field(default_factory=list)
 
 
+class SourceSnapshotExport(SourceSnapshotSummary):
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    securities: list[SecurityMetadata] = Field(default_factory=list)
+    bars_by_ticker: dict[str, list[MarketBar]] = Field(default_factory=dict)
+    fundamentals_by_ticker: dict[str, FundamentalSnapshot] = Field(default_factory=dict)
+    events: list[NewsEvent] = Field(default_factory=list)
+
+
 class FeatureSnapshot(BaseModel):
     id: str
     ticker: str
