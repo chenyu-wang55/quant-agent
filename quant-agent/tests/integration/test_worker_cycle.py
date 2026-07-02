@@ -9,18 +9,44 @@ from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from apps.worker.main import system_cycle, system_cycle_loop
 from domain.entities.models import (
+    Direction,
     HoldingStatus,
     ManualBuyRequest,
     ManualSellRequest,
     OrderExecutionMode,
+    PaperOrder,
     PaperOrderCancelRequest,
     PaperOrderStatus,
+    SellExecutionAudit,
     SystemCycleRun,
 )
 from domain.policies.approval import ApprovalDecisionRequest
+from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate
+from services.execution.router import ExecutionRouter
 
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
+
+
+class SyncOnlyBrokerAdapter:
+    name = "sync-only-broker"
+
+    def __init__(self, updates: dict[str, BrokerOrderUpdate]) -> None:
+        self.updates = updates
+        self.queried_order_ids: list[str] = []
+
+    def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
+        raise AssertionError("submit_order is not used by broker sync tests")
+
+    def get_order_by_id(self, broker_order_id: str) -> BrokerOrderUpdate:
+        self.queried_order_ids.append(broker_order_id)
+        try:
+            return self.updates[broker_order_id]
+        except KeyError as exc:
+            raise AssertionError(f"unexpected broker order id: {broker_order_id}") from exc
+
+    def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
+        raise AssertionError("client order lookup is not used by broker sync tests")
 
 
 def test_system_cycle_generates_recommendations_and_monitors_without_auto_execution() -> None:
@@ -162,6 +188,173 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
     run_history = state.list_system_cycle_runs(limit=1)
     assert run_history[0].auto_execution_enabled is True
     assert run_history[0].metrics["auto_execution"]["buy_order_count"] == 1
+
+
+def test_system_cycle_auto_syncs_live_buy_broker_fill() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime(2026, 7, 5, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=run_at,
+        auto_sync_broker_statuses=False,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    recommendation = state.recommendations_by_id[recommendation_id]
+    state.close_holding(recommendation.ticker)
+
+    broker_order_id = "worker_buy_fill_001"
+    submitted_order = PaperOrder(
+        id="worker_buy_order_001",
+        recommendation_id=recommendation_id,
+        source_snapshot_id=recommendation.source_snapshot_id,
+        strategy_config_id=recommendation.strategy_config_id,
+        side=Direction.BUY,
+        qty=3,
+        limit_price=recommendation.entry_zone_high,
+        execution_mode=OrderExecutionMode.LIVE,
+        dry_run=False,
+        broker_order_id=broker_order_id,
+        adapter_message="accepted by broker",
+        submitted_at=run_at - timedelta(minutes=20),
+        status=PaperOrderStatus.SUBMITTED,
+    )
+    state.record_paper_order(submitted_order, recommendation=recommendation)
+
+    fill_price = recommendation.entry_zone_high
+    fake_adapter = SyncOnlyBrokerAdapter(
+        {
+            broker_order_id: BrokerOrderUpdate(
+                broker_order_id=broker_order_id,
+                raw_status="filled",
+                client_order_id="quant_worker_buy_order_001",
+                submitted_at=submitted_order.submitted_at,
+                filled_at=run_at - timedelta(minutes=5),
+                filled_avg_price=fill_price,
+                filled_qty=3,
+                message="filled by test broker",
+            )
+        }
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            auto_sync_broker_statuses=True,
+        )
+    finally:
+        state.execution_router = original_router
+
+    broker_sync = result["broker_order_sync"]
+    assert broker_sync["broker"] == "sync-only-broker"
+    assert broker_sync["queried_count"] == 1
+    assert broker_sync["buy_order_sync"]["filled_count"] == 1
+    assert broker_sync["buy_order_sync"]["items"][0]["order_id"] == submitted_order.id
+    assert fake_adapter.queried_order_ids == [broker_order_id]
+    updated_order = state.get_paper_order(submitted_order.id)
+    assert updated_order is not None
+    assert updated_order.status == PaperOrderStatus.FILLED
+    holding = state.holding_watch_repo.get(recommendation.ticker)
+    assert holding is not None
+    assert holding.qty == 3
+    assert holding.source_recommendation_id == recommendation_id
+    run_history = state.list_system_cycle_runs(limit=1)
+    assert run_history[0].metrics["broker_order_sync"]["buy_order_sync"]["filled_count"] == 1
+
+
+def test_system_cycle_auto_syncs_live_sell_broker_fill() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime(2026, 7, 5, 9, 30, tzinfo=timezone.utc)
+    ticker = "MSFT"
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker=ticker,
+            qty=5,
+            buy_price=100,
+            bought_at=run_at - timedelta(hours=2),
+            stop_loss=50,
+            take_profit1=10_000,
+            take_profit2=12_000,
+            note="worker broker sell sync setup",
+        )
+    )
+    broker_order_id = "worker_sell_fill_001"
+    audit = SellExecutionAudit(
+        id="worker_sell_audit_001",
+        ticker=ticker,
+        qty=2,
+        sell_price=125,
+        submitted_at=run_at - timedelta(minutes=30),
+        execution_mode=OrderExecutionMode.LIVE,
+        dry_run=False,
+        broker_order_id=broker_order_id,
+        adapter_message="sell accepted by broker",
+        applied_to_ledger=False,
+        status="submitted",
+        reason="worker broker sell sync test",
+        remaining_qty=5,
+        holding_status_after=HoldingStatus.OPEN,
+    )
+    state.sell_execution_audit_repo.add(audit)
+
+    fake_adapter = SyncOnlyBrokerAdapter(
+        {
+            broker_order_id: BrokerOrderUpdate(
+                broker_order_id=broker_order_id,
+                raw_status="filled",
+                client_order_id="quant_sell_worker_sell_audit_001",
+                submitted_at=audit.submitted_at,
+                filled_at=run_at - timedelta(minutes=5),
+                filled_avg_price=125,
+                filled_qty=2,
+                message="sell filled by test broker",
+            )
+        }
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            auto_sync_broker_statuses=True,
+        )
+    finally:
+        state.execution_router = original_router
+
+    broker_sync = result["broker_order_sync"]
+    assert broker_sync["broker"] == "sync-only-broker"
+    assert broker_sync["queried_count"] == 1
+    assert broker_sync["sell_execution_sync"]["filled_count"] == 1
+    assert broker_sync["sell_execution_sync"]["items"][0]["order_id"] == audit.id
+    assert fake_adapter.queried_order_ids == [broker_order_id]
+    holding = state.holding_watch_repo.get(ticker)
+    assert holding is not None
+    assert holding.qty == 3
+    assert holding.last_sell_price == 125
+    updated_audit = state.sell_execution_audit_repo.get(audit.id)
+    assert updated_audit is not None
+    assert updated_audit.status == "filled"
+    assert updated_audit.applied_to_ledger is True
+    assert updated_audit.remaining_qty == 3
+    sell_trades = state.list_trade_ledger(limit=10, ticker=ticker)
+    assert sell_trades[0].side.value == "sell"
+    assert sell_trades[0].qty == 2
+    run_history = state.list_system_cycle_runs(limit=1)
+    assert run_history[0].metrics["broker_order_sync"]["sell_execution_sync"]["filled_count"] == 1
 
 
 def test_system_cycle_blocks_auto_buy_when_latest_price_drifts_from_entry_zone(monkeypatch) -> None:

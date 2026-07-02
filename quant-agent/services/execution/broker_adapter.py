@@ -6,7 +6,7 @@ import json
 import os
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 
@@ -58,6 +58,9 @@ class BrokerExecutionAdapter(Protocol):
     name: str
 
     def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
+        ...
+
+    def get_order_by_id(self, broker_order_id: str) -> BrokerOrderUpdate:
         ...
 
     def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
@@ -112,6 +115,10 @@ class AlpacaBrokerAdapter:
             "/v2/orders:by_client_order_id",
             query={"client_order_id": client_order_id},
         )
+        return self._to_update(response)
+
+    def get_order_by_id(self, broker_order_id: str) -> BrokerOrderUpdate:
+        response = self._request("GET", f"/v2/orders/{quote(broker_order_id, safe='')}")
         return self._to_update(response)
 
     def _request(

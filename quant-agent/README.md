@@ -329,10 +329,15 @@ Submitted buy orders also block new automatic buys for the same recommendation o
 ticker until the order is filled or canceled, independent of the time-based dedupe
 window. Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted dry-run or
 broker-submitted order, or `POST /paper-orders/{order_id}/fill` to record a broker
-fill and release the pending-order gate. For adapter polling, send broker status
-snapshots to `POST /paper-orders/broker-sync`; `filled` snapshots update holdings and
-trades, while `canceled` or `rejected` snapshots resolve the submitted order as
-canceled.
+fill and release the pending-order gate. At the start of every `system_cycle`, the
+worker automatically polls the configured broker adapter for submitted live buy orders
+and live sell executions, then applies the same sync path used by
+`POST /paper-orders/broker-sync` and `POST /portfolio/sell-executions/broker-sync`.
+Use `--disable-auto-broker-sync` to turn that polling off, or `--max-broker-sync-items`
+to cap the number of pending buys and sells queried per cycle. External webhooks or
+manual operators can still send broker status snapshots to the sync endpoints;
+`filled` snapshots update holdings and trades, while `canceled` or `rejected`
+snapshots resolve submitted orders as canceled.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
 Before moving beyond paper or live dry-run, reconcile broker positions against the

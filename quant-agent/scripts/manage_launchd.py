@@ -40,6 +40,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.interval_seconds),
         "--max-consecutive-errors",
         str(args.max_consecutive_errors),
+        "--max-broker-sync-items",
+        str(args.max_broker_sync_items),
         "--auto-execution-mode",
         args.auto_execution_mode,
         "--auto-approve-min-confidence",
@@ -87,6 +89,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         program_args.extend(["--min-confidence", str(args.min_confidence)])
     if args.use_autopilot_policy:
         program_args.append("--use-autopilot-policy")
+    if args.disable_auto_broker_sync:
+        program_args.append("--disable-auto-broker-sync")
     if args.auto_execute_approved:
         program_args.append("--auto-execute-approved")
     if args.auto_approve_recommendations:
@@ -172,6 +176,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-confidence", type=float, default=0.0)
     parser.add_argument("--interval-seconds", type=float, default=300.0)
     parser.add_argument("--max-consecutive-errors", type=int, default=3)
+    parser.add_argument("--disable-auto-broker-sync", action="store_true")
+    parser.add_argument("--max-broker-sync-items", type=int, default=50)
     parser.add_argument("--use-autopilot-policy", action="store_true")
     parser.add_argument("--auto-approve-recommendations", action="store_true")
     parser.add_argument("--auto-approve-min-confidence", type=float, default=0.72)

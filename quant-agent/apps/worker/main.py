@@ -13,12 +13,16 @@ from domain.entities.models import (
     ApprovalDecision,
     AutopilotPreflight,
     AutopilotPolicy,
+    BrokerOrderStatusSnapshot,
+    BrokerOrderSyncRequest,
+    BrokerOrderSyncStatus,
     BacktestRunRequest,
     Direction,
     HoldingControlUpdateRequest,
     ManualSellRequest,
     OrderExecutionMode,
     PaperOrderRequest,
+    PaperOrderStatus,
     PublicationConfig,
     Recommendation,
     ResearchRunRequest,
@@ -30,6 +34,7 @@ from domain.entities.models import (
 )
 from domain.policies.approval import ApprovalDecisionRequest
 from infra.queue.events import EventType
+from services.execution.broker_adapter import BrokerAdapterError, BrokerOrderUpdate
 
 
 def _run_research_job(job_name: str) -> None:
@@ -113,6 +118,210 @@ def _event_type_counts(events: list[Any]) -> dict[str, int]:
         key = event.event_type.value
         type_counts[key] = type_counts.get(key, 0) + 1
     return type_counts
+
+
+def _broker_sync_status(raw_status: str) -> BrokerOrderSyncStatus:
+    normalized = raw_status.strip().lower().replace(" ", "_")
+    if normalized == "filled":
+        return BrokerOrderSyncStatus.FILLED
+    if normalized == "partially_filled":
+        return BrokerOrderSyncStatus.PARTIALLY_FILLED
+    if normalized in {"canceled", "cancelled", "expired"}:
+        return BrokerOrderSyncStatus.CANCELED
+    if normalized == "rejected":
+        return BrokerOrderSyncStatus.REJECTED
+    return BrokerOrderSyncStatus.SUBMITTED
+
+
+def _broker_status_snapshot(
+    *,
+    local_order_id: str,
+    fallback_broker_order_id: str,
+    update: BrokerOrderUpdate,
+) -> BrokerOrderStatusSnapshot:
+    status = _broker_sync_status(update.raw_status)
+    fill_price = None
+    if status in {BrokerOrderSyncStatus.FILLED, BrokerOrderSyncStatus.PARTIALLY_FILLED}:
+        if update.filled_avg_price is None:
+            raise ValueError("broker fill status is missing filled_avg_price")
+        fill_price = float(update.filled_avg_price)
+    return BrokerOrderStatusSnapshot(
+        order_id=local_order_id,
+        broker_order_id=update.broker_order_id or fallback_broker_order_id,
+        status=status,
+        fill_price=fill_price,
+        filled_qty=update.filled_qty,
+        filled_at=update.filled_at,
+        reason=update.message,
+        broker_message=update.message or f"raw_status={update.raw_status}",
+    )
+
+
+def _auto_broker_sync_cycle(
+    *,
+    enabled: bool,
+    checked_at: datetime,
+    max_items: int,
+) -> dict[str, Any]:
+    state = get_app_state()
+    item_limit = max(0, max_items)
+    pending_buy_orders = [
+        order
+        for order in state.list_paper_orders(
+            limit=max(1, item_limit),
+            side=Direction.BUY,
+            status=PaperOrderStatus.SUBMITTED,
+        )
+        if order.execution_mode == OrderExecutionMode.LIVE
+        and not order.dry_run
+        and order.broker_order_id
+    ][:item_limit]
+    pending_sell_audits = [
+        audit
+        for audit in state.list_sell_execution_audits(limit=max(1, item_limit))
+        if audit.execution_mode == OrderExecutionMode.LIVE
+        and not audit.dry_run
+        and audit.broker_order_id
+        and audit.status in {"submitted", "partially_filled"}
+    ][:item_limit]
+    report: dict[str, Any] = {
+        "enabled": enabled,
+        "broker": None,
+        "checked_at": checked_at.isoformat(),
+        "pending_buy_order_count": len(pending_buy_orders),
+        "pending_sell_execution_count": len(pending_sell_audits),
+        "queried_count": 0,
+        "error_count": 0,
+        "buy_order_sync": None,
+        "sell_execution_sync": None,
+        "actions": [],
+    }
+    if not enabled:
+        report["reason"] = "auto_broker_sync_disabled"
+        return report
+    if not pending_buy_orders and not pending_sell_audits:
+        report["reason"] = "no_pending_live_broker_orders"
+        return report
+
+    broker_adapter = state.execution_router.broker_adapter
+    if broker_adapter is None:
+        report["enabled"] = False
+        report["reason"] = "broker_adapter_not_configured"
+        return report
+    report["broker"] = broker_adapter.name
+
+    buy_snapshots: list[BrokerOrderStatusSnapshot] = []
+    sell_snapshots: list[BrokerOrderStatusSnapshot] = []
+
+    def query_order(resource: str, local_order_id: str, broker_order_id: str) -> BrokerOrderStatusSnapshot | None:
+        try:
+            update = broker_adapter.get_order_by_id(broker_order_id)
+            report["queried_count"] += 1
+            snapshot = _broker_status_snapshot(
+                local_order_id=local_order_id,
+                fallback_broker_order_id=broker_order_id,
+                update=update,
+            )
+            report["actions"].append(
+                {
+                    "resource": resource,
+                    "status": "queried",
+                    "order_id": local_order_id,
+                    "broker_order_id": snapshot.broker_order_id,
+                    "broker_status": snapshot.status.value,
+                }
+            )
+            return snapshot
+        except (BrokerAdapterError, ValueError) as exc:
+            report["error_count"] += 1
+            report["actions"].append(
+                {
+                    "resource": resource,
+                    "status": "error",
+                    "order_id": local_order_id,
+                    "broker_order_id": broker_order_id,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            return None
+        except Exception as exc:
+            report["error_count"] += 1
+            report["actions"].append(
+                {
+                    "resource": resource,
+                    "status": "error",
+                    "order_id": local_order_id,
+                    "broker_order_id": broker_order_id,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            )
+            return None
+
+    for order in pending_buy_orders:
+        if order.broker_order_id is None:
+            continue
+        snapshot = query_order("paper_orders", order.id, order.broker_order_id)
+        if snapshot is not None:
+            buy_snapshots.append(snapshot)
+
+    for audit in pending_sell_audits:
+        if audit.broker_order_id is None:
+            continue
+        snapshot = query_order("sell_executions", audit.id, audit.broker_order_id)
+        if snapshot is not None:
+            sell_snapshots.append(snapshot)
+
+    if buy_snapshots:
+        try:
+            result = state.sync_broker_order_statuses(
+                BrokerOrderSyncRequest(
+                    broker=broker_adapter.name,
+                    checked_at=checked_at,
+                    updated_by="system_cycle:auto_broker_sync",
+                    statuses=buy_snapshots,
+                )
+            )
+            report["buy_order_sync"] = result.model_dump(mode="json")
+        except Exception as exc:
+            report["error_count"] += 1
+            report["actions"].append(
+                {
+                    "resource": "paper_orders",
+                    "status": "sync_error",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            )
+
+    if sell_snapshots:
+        try:
+            result = state.sync_broker_sell_statuses(
+                BrokerOrderSyncRequest(
+                    broker=broker_adapter.name,
+                    checked_at=checked_at,
+                    updated_by="system_cycle:auto_broker_sync",
+                    statuses=sell_snapshots,
+                )
+            )
+            report["sell_execution_sync"] = result.model_dump(mode="json")
+        except Exception as exc:
+            report["error_count"] += 1
+            report["actions"].append(
+                {
+                    "resource": "sell_executions",
+                    "status": "sync_error",
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            )
+
+    if report["error_count"]:
+        report["reason"] = "broker_sync_errors"
+    else:
+        report["reason"] = "synced"
+    return report
 
 
 def _auto_execution_mode(mode: str) -> tuple[OrderExecutionMode, bool]:
@@ -946,6 +1155,8 @@ def system_cycle(
     min_confidence: float | None = None,
     consume_events: bool = False,
     as_of: datetime | None = None,
+    auto_sync_broker_statuses: bool = True,
+    max_broker_sync_items: int = 50,
     use_autopilot_policy: bool = False,
     auto_execute_approved: bool = False,
     auto_approve_recommendations: bool = False,
@@ -974,6 +1185,11 @@ def system_cycle(
 ) -> dict[str, Any]:
     state = get_app_state()
     started_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    broker_order_sync = _auto_broker_sync_cycle(
+        enabled=auto_sync_broker_statuses,
+        checked_at=started_at,
+        max_items=max_broker_sync_items,
+    )
     autopilot_policy: dict[str, Any] | None = None
     autopilot_preflight: dict[str, Any] | None = None
     if use_autopilot_policy:
@@ -1182,6 +1398,7 @@ def system_cycle(
     metrics["auto_execution"] = auto_execution
     metrics["autopilot_policy"] = autopilot_policy
     metrics["autopilot_preflight"] = autopilot_preflight
+    metrics["broker_order_sync"] = broker_order_sync
     metrics["snapshot_quality_gate"] = snapshot_quality_gate
     metrics["daily_loss_gate"] = daily_loss_gate
     metrics["position_reconciliation_gate"] = position_reconciliation_gate
@@ -1219,6 +1436,7 @@ def system_cycle(
         "use_autopilot_policy": use_autopilot_policy,
         "autopilot_policy": autopilot_policy,
         "autopilot_preflight": autopilot_preflight,
+        "broker_order_sync": broker_order_sync,
         "snapshot_quality_gate": snapshot_quality_gate,
         "daily_loss_gate": daily_loss_gate,
         "position_reconciliation_gate": position_reconciliation_gate,
@@ -1266,6 +1484,7 @@ def system_cycle_loop(
                     "sell_alert_count": summary.get("sell_alert_count", 0),
                     "auto_approval": summary.get("auto_approval", {}),
                     "auto_execution": summary.get("auto_execution", {}),
+                    "broker_order_sync": summary.get("broker_order_sync", {}),
                     "pending_event_count": summary.get("pending_event_count", 0),
                 }
             )
@@ -1380,6 +1599,17 @@ def main() -> None:
         "--as-of",
         default=None,
         help="optional ISO timestamp for deterministic system_cycle replay, defaults to now",
+    )
+    parser.add_argument(
+        "--disable-auto-broker-sync",
+        action="store_true",
+        help="disable automatic broker status polling at the start of system_cycle",
+    )
+    parser.add_argument(
+        "--max-broker-sync-items",
+        type=int,
+        default=50,
+        help="maximum pending live buy orders and live sell executions to poll per cycle",
     )
     parser.add_argument(
         "--use-autopilot-policy",
@@ -1548,6 +1778,8 @@ def main() -> None:
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,
             as_of=as_of,
+            auto_sync_broker_statuses=not args.disable_auto_broker_sync,
+            max_broker_sync_items=args.max_broker_sync_items,
             use_autopilot_policy=args.use_autopilot_policy,
             auto_execute_approved=args.auto_execute_approved,
             auto_approve_recommendations=args.auto_approve_recommendations,
@@ -1583,6 +1815,8 @@ def main() -> None:
             min_confidence=args.min_confidence,
             consume_events=args.consume_events,
             as_of=as_of,
+            auto_sync_broker_statuses=not args.disable_auto_broker_sync,
+            max_broker_sync_items=args.max_broker_sync_items,
             use_autopilot_policy=args.use_autopilot_policy,
             auto_execute_approved=args.auto_execute_approved,
             auto_approve_recommendations=args.auto_approve_recommendations,

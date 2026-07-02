@@ -34,6 +34,9 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "60",
         "--max-consecutive-errors",
         "4",
+        "--max-broker-sync-items",
+        "12",
+        "--disable-auto-broker-sync",
         "--max-auto-buys",
         "2",
         "--order-dedupe-minutes",
@@ -82,6 +85,9 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "60.0" in round_trip["ProgramArguments"]
     assert "--max-consecutive-errors" in round_trip["ProgramArguments"]
     assert "4" in round_trip["ProgramArguments"]
+    assert "--max-broker-sync-items" in round_trip["ProgramArguments"]
+    assert "12" in round_trip["ProgramArguments"]
+    assert "--disable-auto-broker-sync" in round_trip["ProgramArguments"]
     assert "--rebuy-cooldown-minutes" in round_trip["ProgramArguments"]
     assert "--order-dedupe-minutes" in round_trip["ProgramArguments"]
     assert "720" in round_trip["ProgramArguments"]

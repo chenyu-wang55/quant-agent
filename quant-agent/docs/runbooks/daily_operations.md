@@ -48,8 +48,8 @@ to run policy-enabled automatic actions, `off` as intentionally disabled, and `b
 as an operator issue to fix before expecting automatic approval or execution.
 The JSON summary includes `system_cycle_run_id`, and the durable run history is available
 at `GET /operations/system-runs`. Automatic action details are included under
-`auto_approval`, `auto_execution`, `autopilot_policy`, and `autopilot_preflight` and
-are also persisted in the run metrics JSON.
+`broker_order_sync`, `auto_approval`, `auto_execution`, `autopilot_policy`, and
+`autopilot_preflight` and are also persisted in the run metrics JSON.
 Automatic approval and execution also require the current source snapshot to pass
 `snapshot_quality_gate`. By default the worker requires 100% captured bar coverage
 and 100% captured fundamental coverage for the tickers that were actually modeled,
@@ -70,9 +70,14 @@ the same recommendation or ticker blocks a new automatic buy until that order is
 filled or canceled, even if the time-based dedupe window has expired or is disabled.
 Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted order when it should
 no longer block automation, or `POST /paper-orders/{order_id}/fill` to record the
-broker fill and optionally apply it to the holding/trade ledger. Broker adapters can
-batch poll/webhook results into `POST /paper-orders/broker-sync`, using `filled`,
-`canceled`, or `rejected` status snapshots.
+broker fill and optionally apply it to the holding/trade ledger. By default,
+`system_cycle` polls the configured broker adapter before research/monitoring and
+syncs submitted live buy orders plus submitted live sell executions automatically.
+Use `--disable-auto-broker-sync` to skip that poll or `--max-broker-sync-items` to cap
+per-cycle broker queries. External broker webhooks or manual pollers can still batch
+results into `POST /paper-orders/broker-sync` and
+`POST /portfolio/sell-executions/broker-sync`, using `filled`, `canceled`, or
+`rejected` status snapshots.
 Before enabling any real broker adapter, submit a broker/account position snapshot to
 `POST /portfolio/reconciliation`. The report is persisted and visible on the
 dashboard; any missing, extra, or quantity-mismatched position sets

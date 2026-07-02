@@ -13,6 +13,8 @@ class SystemCycleRunBody(BaseModel):
     top_n: int = Field(default=8, ge=1, le=50)
     min_confidence: float | None = Field(default=0.0, ge=0.0, le=1.0)
     consume_events: bool = False
+    auto_sync_broker_statuses: bool = True
+    max_broker_sync_items: int = Field(default=50, ge=0, le=500)
     use_autopilot_policy: bool = True
     as_of: datetime | None = None
 
@@ -50,5 +52,7 @@ def run_system_cycle(body: SystemCycleRunBody) -> dict:
         min_confidence=body.min_confidence,
         consume_events=body.consume_events,
         as_of=body.as_of,
+        auto_sync_broker_statuses=body.auto_sync_broker_statuses,
+        max_broker_sync_items=body.max_broker_sync_items,
         use_autopilot_policy=body.use_autopilot_policy,
     )

@@ -13,7 +13,11 @@ class CapturingAlpacaAdapter(AlpacaBrokerAdapter):
         return {
             "id": "alpaca_order_123",
             "status": "accepted",
-            "client_order_id": payload.get("client_order_id") if payload else query.get("client_order_id"),
+            "client_order_id": (
+                payload.get("client_order_id")
+                if payload
+                else (query or {}).get("client_order_id")
+            ),
             "submitted_at": "2026-04-10T15:30:00Z",
         }
 
@@ -60,6 +64,17 @@ def test_alpaca_adapter_gets_order_by_client_order_id() -> None:
     assert adapter.calls[0]["method"] == "GET"
     assert adapter.calls[0]["path"] == "/v2/orders:by_client_order_id"
     assert adapter.calls[0]["query"] == {"client_order_id": "quant_test_456"}
+
+
+def test_alpaca_adapter_gets_order_by_broker_order_id() -> None:
+    adapter = CapturingAlpacaAdapter()
+
+    update = adapter.get_order_by_id("alpaca/order 456")
+
+    assert update.broker_order_id == "alpaca_order_123"
+    assert adapter.calls[0]["method"] == "GET"
+    assert adapter.calls[0]["path"] == "/v2/orders/alpaca%2Forder%20456"
+    assert adapter.calls[0]["query"] is None
 
 
 def test_alpaca_adapter_submits_sell_order_payload() -> None:
