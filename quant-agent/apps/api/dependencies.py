@@ -527,15 +527,46 @@ class AppState:
         if order.status != PaperOrderStatus.SUBMITTED:
             raise ValueError("Only submitted orders can be canceled")
 
+        broker_cancel_message: str | None = None
+        if order.execution_mode == OrderExecutionMode.LIVE and not order.dry_run and not request.skip_broker_cancel:
+            if not order.broker_order_id:
+                raise ValueError("Live broker order is missing broker_order_id")
+            broker_adapter = self.execution_router.broker_adapter
+            if broker_adapter is None:
+                raise NotImplementedError("Live broker cancel adapter is not configured")
+            cancel_order = getattr(broker_adapter, "cancel_order", None)
+            if not callable(cancel_order):
+                raise NotImplementedError("Live broker cancel adapter does not support order cancellation")
+            try:
+                broker_update = cancel_order(order.broker_order_id)
+            except BrokerAdapterError:
+                raise
+            except Exception as exc:
+                raise BrokerAdapterError(f"Live broker order cancel failed: {exc}") from exc
+            broker_status = broker_update.raw_status.lower()
+            if broker_status in {"filled", "partially_filled"}:
+                raise ValueError("Broker order already filled; sync broker status before canceling locally")
+            if broker_status not in {"canceled", "cancelled", "expired", "rejected", "pending_cancel"}:
+                raise BrokerAdapterError(f"Broker cancel returned unsupported status: {broker_update.raw_status}")
+            broker_cancel_message = (
+                f"{broker_adapter.name}: cancel_status={broker_update.raw_status}; "
+                f"broker_order_id={broker_update.broker_order_id or order.broker_order_id}"
+            )
+            if broker_update.message:
+                broker_cancel_message = f"{broker_cancel_message}; message={broker_update.message}"
+
         reason = request.reason or f"canceled_by:{request.canceled_by}"
+        cancel_message = f"canceled_by={request.canceled_by}"
+        if broker_cancel_message:
+            cancel_message = f"{cancel_message}; {broker_cancel_message}"
         updated = order.model_copy(
             update={
                 "status": PaperOrderStatus.CANCELED,
                 "cancel_reason": reason,
                 "adapter_message": (
-                    f"{order.adapter_message}; canceled_by={request.canceled_by}"
+                    f"{order.adapter_message}; {cancel_message}"
                     if order.adapter_message
-                    else f"canceled_by={request.canceled_by}"
+                    else cancel_message
                 ),
             }
         )
@@ -765,6 +796,7 @@ class AppState:
                         PaperOrderCancelRequest(
                             reason=reason,
                             canceled_by=f"{request.updated_by}:{request.broker}",
+                            skip_broker_cancel=True,
                         ),
                     )
                     action = "unchanged" if before_status == PaperOrderStatus.CANCELED else "canceled"

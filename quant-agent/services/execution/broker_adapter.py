@@ -76,6 +76,9 @@ class BrokerExecutionAdapter(Protocol):
     def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
         ...
 
+    def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
+        ...
+
     def list_positions(self) -> list[BrokerPositionUpdate]:
         ...
 
@@ -134,6 +137,17 @@ class AlpacaBrokerAdapter:
         response = self._request("GET", f"/v2/orders/{quote(broker_order_id, safe='')}")
         return self._to_update(response)
 
+    def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
+        response = self._request("DELETE", f"/v2/orders/{quote(broker_order_id, safe='')}")
+        if isinstance(response, dict) and response:
+            return self._to_update(response)
+        return BrokerOrderUpdate(
+            broker_order_id=broker_order_id,
+            raw_status="canceled",
+            message="cancel request accepted",
+            raw_payload=response if isinstance(response, dict) else {},
+        )
+
     def list_positions(self) -> list[BrokerPositionUpdate]:
         response = self._request("GET", "/v2/positions")
         if not isinstance(response, list):
@@ -168,7 +182,10 @@ class AlpacaBrokerAdapter:
         )
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
-                return json.loads(response.read().decode("utf-8"))
+                raw_body = response.read().decode("utf-8")
+                if not raw_body.strip():
+                    return {}
+                return json.loads(raw_body)
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             raise BrokerAdapterError(f"Alpaca API error {exc.code}: {detail}") from exc

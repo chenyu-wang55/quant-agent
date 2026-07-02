@@ -23,6 +23,7 @@ class FakeBrokerAdapter:
         self.raw_status = raw_status
         self.fill_price = fill_price
         self.placements: list[BrokerOrderPlacement] = []
+        self.cancelled_order_ids: list[str] = []
 
     def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
         self.placements.append(placement)
@@ -37,6 +38,14 @@ class FakeBrokerAdapter:
 
     def get_order_by_client_order_id(self, client_order_id: str) -> BrokerOrderUpdate:
         raise AssertionError("not used in this test")
+
+    def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
+        self.cancelled_order_ids.append(broker_order_id)
+        return BrokerOrderUpdate(
+            broker_order_id=broker_order_id,
+            raw_status="canceled",
+            message="broker cancel accepted",
+        )
 
 
 def test_autopilot_policy_api_persists_latest_policy() -> None:
@@ -771,6 +780,97 @@ def test_confirmed_live_buy_uses_configured_broker_adapter_and_records_fill() ->
     )
 
 
+def test_live_submitted_buy_cancel_calls_broker_before_local_cancel() -> None:
+    state = get_app_state()
+    state.reset()
+    original_router = state.execution_router
+    client = TestClient(app)
+
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "live-broker-cancel-test",
+            "as_of": "2026-04-10T09:30:00Z",
+            "snapshot_mode": "point_in_time",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "max_name_weight": 0.10,
+                "max_sector_weight": 0.30,
+                "max_gross_exposure": 1.0,
+                "max_correlated_cluster_weight": 0.35,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1000000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100000000,
+                "allowed_sectors": [],
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    recommendation_id = recommendation["id"]
+    state.close_holding(recommendation["ticker"])
+
+    approval_response = client.post(
+        f"/recommendations/{recommendation_id}/approval",
+        json={"decision": "approved", "approver": "qa", "notes": "ok"},
+        headers=AUTH_HEADERS,
+    )
+    assert approval_response.status_code == 200
+
+    fake_adapter = FakeBrokerAdapter(raw_status="accepted")
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        order_response = client.post(
+            "/paper-orders",
+            json={
+                "recommendation_id": recommendation_id,
+                "side": "BUY",
+                "qty": 1,
+                "limit_price": recommendation["entry_zone_high"],
+                "execution_mode": "live",
+                "dry_run": False,
+                "confirm_live": True,
+            },
+            headers=AUTH_HEADERS,
+        )
+        assert order_response.status_code == 200
+        order = order_response.json()
+        assert order["status"] == "submitted"
+        assert order["broker_order_id"] == "fake_broker_order_123"
+
+        cancel_response = client.post(
+            f"/paper-orders/{order['id']}/cancel",
+            json={
+                "reason": "operator cancel live broker order",
+                "canceled_by": "qa",
+                "skip_broker_cancel": True,
+            },
+            headers=AUTH_HEADERS,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert cancel_response.status_code == 200
+    canceled = cancel_response.json()
+    assert canceled["status"] == "canceled"
+    assert canceled["cancel_reason"] == "operator cancel live broker order"
+    assert "cancel_status=canceled" in canceled["adapter_message"]
+    assert fake_adapter.cancelled_order_ids == ["fake_broker_order_123"]
+    holdings = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
+    assert holdings.status_code == 200
+    assert all(item["ticker"] != recommendation["ticker"] for item in holdings.json())
+
+
 def test_broker_order_sync_applies_fill_and_reject_snapshots() -> None:
     state = get_app_state()
     state.reset()
@@ -835,7 +935,7 @@ def test_broker_order_sync_applies_fill_and_reject_snapshots() -> None:
         qty=2,
         limit_price=None,
         execution_mode=OrderExecutionMode.LIVE,
-        dry_run=True,
+        dry_run=False,
         broker_order_id=f"broker_reject_{uuid4().hex[:8]}",
         adapter_message="broker accepted reject test",
         submitted_at=datetime.now(timezone.utc),

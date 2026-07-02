@@ -328,9 +328,12 @@ Filled BUY paper orders automatically create/update the monitored holding and wr
 buy row to `/portfolio/trades`, so sell alerts and later recommendation attribution
 start from the approved order fill instead of a separate manual entry. For live
 dry-runs, set `apply_to_ledger=false` when using `/fill` so the audit order can be
-resolved without creating a fake holding. `/paper-orders/broker-sync` uses the same
-fill/cancel handlers, so it releases pending-order gates and produces the same durable
-events as manual order lifecycle updates.
+resolved without creating a fake holding. For confirmed live broker BUY orders,
+`POST /paper-orders/{order_id}/cancel` calls the configured broker adapter before the
+local order is marked canceled; if the adapter fails, the local submitted order remains
+submitted. `/paper-orders/broker-sync` uses the same fill/cancel handlers, so it
+releases pending-order gates and produces the same durable events as manual order
+lifecycle updates.
 `/paper-orders/risk-plan` shows `recommended_qty`, stop-loss risk, position percentage,
 gross exposure, sector exposure, and any violations. `/paper-orders` enforces the same
 limits unless `enforce_risk_limits` is explicitly set to `false`.
@@ -432,8 +435,9 @@ ledger.
 Submitted buy orders always block duplicate automatic buys for the same recommendation
 or ticker until the order lifecycle is resolved. Resolve stale submitted orders with
 `POST /paper-orders/{order_id}/fill` when the broker confirms a fill, or
-`POST /paper-orders/{order_id}/cancel` when the order is no longer live. Automated
-broker status pollers should prefer `POST /paper-orders/broker-sync`.
+`POST /paper-orders/{order_id}/cancel` when the order is no longer live; for confirmed
+live broker BUY orders this sends a broker cancel before changing local state.
+Automated broker status pollers should prefer `POST /paper-orders/broker-sync`.
 When `sell_alert_cooldown_minutes` is positive, automatic sell alerts are skipped if
 the same ticker and alert reason already produced a recent sell execution.
 When `max_auto_buy_price_drift_pct` is positive, automatic buys are skipped if the

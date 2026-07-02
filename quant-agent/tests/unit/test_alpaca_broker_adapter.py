@@ -12,6 +12,8 @@ class CapturingAlpacaAdapter(AlpacaBrokerAdapter):
 
     def _request(self, method, path, *, payload=None, query=None):  # type: ignore[no-untyped-def]
         self.calls.append({"method": method, "path": path, "payload": payload, "query": query})
+        if method == "DELETE":
+            return {}
         if path == "/v2/positions":
             return [
                 {
@@ -86,6 +88,19 @@ def test_alpaca_adapter_gets_order_by_broker_order_id() -> None:
     assert update.broker_order_id == "alpaca_order_123"
     assert adapter.calls[0]["method"] == "GET"
     assert adapter.calls[0]["path"] == "/v2/orders/alpaca%2Forder%20456"
+    assert adapter.calls[0]["query"] is None
+
+
+def test_alpaca_adapter_cancels_order_by_broker_order_id() -> None:
+    adapter = CapturingAlpacaAdapter()
+
+    update = adapter.cancel_order("alpaca/order 789")
+
+    assert update.broker_order_id == "alpaca/order 789"
+    assert update.raw_status == "canceled"
+    assert "cancel request accepted" in (update.message or "")
+    assert adapter.calls[0]["method"] == "DELETE"
+    assert adapter.calls[0]["path"] == "/v2/orders/alpaca%2Forder%20789"
     assert adapter.calls[0]["query"] is None
 
 

@@ -144,11 +144,16 @@ def cancel_paper_order(
     state: AppState = Depends(get_app_state),
 ) -> PaperOrder:
     try:
+        request = request.model_copy(update={"skip_broker_cancel": False})
         return state.cancel_paper_order(order_id=order_id, request=request)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="paper order not found") from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except NotImplementedError as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except BrokerAdapterError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/paper-orders/{order_id}/fill", response_model=PaperOrder)

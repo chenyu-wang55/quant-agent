@@ -476,6 +476,7 @@ class PaperOrderRequest(BaseModel):
 class PaperOrderCancelRequest(BaseModel):
     reason: str | None = None
     canceled_by: str = "operator"
+    skip_broker_cancel: bool = False
 
 
 class PaperOrderFillRequest(BaseModel):

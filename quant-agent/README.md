@@ -166,8 +166,10 @@ paper router.
 Use `GET /paper-orders` to audit recent submitted, filled, or canceled paper orders
 separately from the trade ledger and P&L records. Submitted broker or dry-run orders
 can be resolved with `POST /paper-orders/{order_id}/fill` or
-`POST /paper-orders/{order_id}/cancel`; broker pollers/webhooks can batch the same
-lifecycle updates through `POST /paper-orders/broker-sync`.
+`POST /paper-orders/{order_id}/cancel`; for confirmed live broker BUY orders, cancel
+first calls the configured broker adapter and only then marks the local order canceled.
+Broker pollers/webhooks can batch the same lifecycle updates through
+`POST /paper-orders/broker-sync`.
 `POST /paper-orders/risk-plan` computes the maximum and recommended order quantity
 from account equity, per-trade risk, max position size, max gross exposure, max
 sector exposure, entry price, and stop-loss distance. `POST /paper-orders` enforces
@@ -338,8 +340,9 @@ has drifted beyond the allowed entry-zone tolerance, reducing stale-snapshot cha
 Submitted buy orders also block new automatic buys for the same recommendation or
 ticker until the order is filled or canceled, independent of the time-based dedupe
 window. Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted dry-run or
-broker-submitted order, or `POST /paper-orders/{order_id}/fill` to record a broker
-fill and release the pending-order gate. At the start of every `system_cycle`, the
+broker-submitted order; confirmed live broker BUY cancellation calls the broker adapter
+before updating the local order. Use `POST /paper-orders/{order_id}/fill` to record a
+broker fill and release the pending-order gate. At the start of every `system_cycle`, the
 worker automatically polls the configured broker adapter for submitted live buy orders
 and live sell executions, then applies the same sync path used by
 `POST /paper-orders/broker-sync` and `POST /portfolio/sell-executions/broker-sync`.
