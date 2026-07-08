@@ -86,7 +86,10 @@ balance. If the account is tradeable but buying power is missing or below the pl
 notional, only that buy recommendation is skipped before any broker order is submitted.
 Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted order when it should
 no longer block automation, or `POST /paper-orders/{order_id}/fill` to record the
-broker fill and optionally apply it to the holding/trade ledger. By default,
+broker fill and optionally apply it to the holding/trade ledger. Pending live broker
+SELL orders also block automatic sell-alert execution for the same ticker until
+`/portfolio/sell-executions/broker-sync` marks the sell filled, canceled, rejected, or
+expired. By default,
 `system_cycle` polls the configured broker adapter before research/monitoring and
 syncs submitted live buy orders plus submitted live sell executions automatically.
 Use `--disable-auto-broker-sync` to skip that poll or `--max-broker-sync-items` to cap
@@ -359,7 +362,8 @@ Autopilot live BUY/SELL uses the same broker adapter path, but requires policy
 `QUANT_ALLOW_AUTOPILOT_LIVE=1`; without the runtime allow switch no broker order is
 submitted. With the runtime switch enabled, the worker still checks the broker account
 snapshot first, sizes live automatic buys from broker equity or portfolio value, and
-skips automatic buys when broker buying power is insufficient.
+skips automatic buys when broker buying power is insufficient. It also skips automatic
+sell-alert execution for a ticker that already has a pending live broker sell order.
 
 Sell controls use the same execution gate:
 

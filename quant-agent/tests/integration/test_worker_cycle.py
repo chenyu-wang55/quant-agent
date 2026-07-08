@@ -1875,6 +1875,85 @@ def test_system_cycle_skips_repeated_sell_alert_during_cooldown() -> None:
     assert holding_after_second.qty == 4
 
 
+def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    state.close_holding("AAPL")
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker="AAPL",
+            qty=8,
+            buy_price=100,
+            stop_loss=1,
+            take_profit1=2,
+            take_profit2=999999,
+            note="worker pending live sell gate setup",
+        )
+    )
+
+    fake_adapter = LiveSubmitBrokerAdapter(raw_status="accepted")
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        first = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            auto_sync_broker_statuses=False,
+            auto_execute_approved=True,
+            auto_execution_mode="live",
+            allow_auto_live_execution=True,
+            max_auto_buys=0,
+            max_auto_sells=1,
+            sell_alert_cooldown_minutes=0,
+            max_snapshot_bar_age_minutes=999999,
+            account_equity=100_000_000,
+            max_daily_realized_loss_pct=1.0,
+        )
+        second = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            auto_sync_broker_statuses=False,
+            auto_execute_approved=True,
+            auto_execution_mode="live",
+            allow_auto_live_execution=True,
+            max_auto_buys=0,
+            max_auto_sells=1,
+            sell_alert_cooldown_minutes=0,
+            max_snapshot_bar_age_minutes=999999,
+            account_equity=100_000_000,
+            max_daily_realized_loss_pct=1.0,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert first["auto_execution"]["sell_order_count"] == 1
+    first_sell = next(item for item in first["auto_execution"]["actions"] if item["action"] == "sell_alert")
+    assert first_sell["status"] == "executed"
+    audit = state.list_sell_execution_audits(limit=1, ticker="AAPL")[0]
+    assert audit.id == first_sell["sell_execution_id"]
+    assert audit.status == "submitted"
+    assert audit.applied_to_ledger is False
+    holding_after_first = state.holding_watch_repo.get("AAPL")
+    assert holding_after_first is not None
+    assert holding_after_first.qty == 8
+
+    assert second["auto_execution"]["sell_order_count"] == 0
+    second_sell = next(item for item in second["auto_execution"]["actions"] if item["action"] == "sell_alert")
+    assert second_sell["status"] == "skipped"
+    assert second_sell["reason"] == "pending_sell_order_gate_failed"
+    gate = second_sell["pending_sell_order_gate"]
+    assert gate["passed"] is False
+    assert gate["reason"] == "pending_live_sell_order"
+    assert gate["pending_sell_execution_id"] == audit.id
+    assert gate["pending_broker_order_id"] == audit.broker_order_id
+    assert len(fake_adapter.placements) == 1
+    assert fake_adapter.placements[0].side.lower() == "sell"
+    assert state.holding_watch_repo.get("AAPL").qty == 8
+
+
 def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
     state = get_app_state()
     state.reset()

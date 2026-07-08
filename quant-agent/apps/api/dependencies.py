@@ -1906,6 +1906,52 @@ class AppState:
             "cooldown_minutes": cooldown_minutes,
         }
 
+    def get_pending_sell_order_gate(
+        self,
+        *,
+        ticker: str,
+        reason_code: str | None = None,
+    ) -> dict[str, Any]:
+        ticker_upper = ticker.upper()
+        pending_statuses = {
+            "accepted",
+            "accepted_for_bidding",
+            "new",
+            "partially_filled",
+            "pending_cancel",
+            "pending_new",
+            "pending_replace",
+            "submitted",
+        }
+        recent_executions = self.list_sell_execution_audits(limit=1000, ticker=ticker_upper)
+        for execution in recent_executions:
+            status = (execution.status or "").strip().lower()
+            if status not in pending_statuses:
+                continue
+            if execution.execution_mode != OrderExecutionMode.LIVE or execution.dry_run:
+                continue
+            if not execution.broker_order_id:
+                continue
+            return {
+                "passed": False,
+                "reason": "pending_live_sell_order",
+                "ticker": ticker_upper,
+                "reason_code": reason_code,
+                "pending_sell_execution_id": execution.id,
+                "pending_broker_order_id": execution.broker_order_id,
+                "pending_status": execution.status,
+                "pending_qty": execution.qty,
+                "pending_remaining_qty": execution.remaining_qty,
+                "pending_submitted_at": execution.submitted_at.isoformat(),
+                "pending_applied_to_ledger": execution.applied_to_ledger,
+                "pending_reason": execution.reason,
+            }
+        return {
+            "passed": True,
+            "ticker": ticker_upper,
+            "reason_code": reason_code,
+        }
+
     def get_recent_buy_order_gate(
         self,
         ticker: str,

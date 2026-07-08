@@ -349,7 +349,10 @@ ticker until the order is filled or canceled, independent of the time-based dedu
 window. Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted dry-run or
 broker-submitted order; confirmed live broker BUY cancellation calls the broker adapter
 before updating the local order. Use `POST /paper-orders/{order_id}/fill` to record a
-broker fill and release the pending-order gate. At the start of every `system_cycle`, the
+broker fill and release the pending-order gate. Pending live broker SELL orders also
+block automatic sell-alert execution for the same ticker until broker sync marks the
+sell filled, canceled, rejected, or expired; this prevents repeated sell submissions
+when the previous broker sell is still open. At the start of every `system_cycle`, the
 worker automatically polls the configured broker adapter for submitted live buy orders
 and live sell executions, then applies the same sync path used by
 `POST /paper-orders/broker-sync` and `POST /portfolio/sell-executions/broker-sync`.

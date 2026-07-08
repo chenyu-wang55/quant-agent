@@ -901,6 +901,22 @@ def _auto_execute_cycle(
                     }
                 )
                 continue
+            pending_sell_order_gate = state.get_pending_sell_order_gate(
+                ticker=alert.ticker,
+                reason_code=alert.reason_code,
+            )
+            if not pending_sell_order_gate["passed"]:
+                actions.append(
+                    {
+                        "action": "sell_alert",
+                        "status": "skipped",
+                        "ticker": alert.ticker,
+                        "reason_code": alert.reason_code,
+                        "reason": "pending_sell_order_gate_failed",
+                        "pending_sell_order_gate": pending_sell_order_gate,
+                    }
+                )
+                continue
             cooldown = state.get_sell_alert_cooldown(
                 ticker=alert.ticker,
                 reason_code=alert.reason_code,
