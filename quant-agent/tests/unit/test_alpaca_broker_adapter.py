@@ -14,6 +14,20 @@ class CapturingAlpacaAdapter(AlpacaBrokerAdapter):
         self.calls.append({"method": method, "path": path, "payload": payload, "query": query})
         if method == "DELETE":
             return {}
+        if path == "/v2/account":
+            return {
+                "id": "acct_123",
+                "status": "ACTIVE",
+                "currency": "USD",
+                "cash": "1234.56",
+                "buying_power": "9876.54",
+                "equity": "12000.10",
+                "portfolio_value": "11950.25",
+                "trading_blocked": False,
+                "account_blocked": False,
+                "transfers_blocked": "false",
+                "pattern_day_trader": "true",
+            }
         if path == "/v2/positions":
             return [
                 {
@@ -117,6 +131,26 @@ def test_alpaca_adapter_lists_positions() -> None:
     assert positions[0].broker_position_id == "asset_aapl"
     assert adapter.calls[0]["method"] == "GET"
     assert adapter.calls[0]["path"] == "/v2/positions"
+
+
+def test_alpaca_adapter_gets_account_snapshot() -> None:
+    adapter = CapturingAlpacaAdapter()
+
+    account = adapter.get_account()
+
+    assert account.account_id == "acct_123"
+    assert account.status == "ACTIVE"
+    assert account.currency == "USD"
+    assert account.cash == 1234.56
+    assert account.buying_power == 9876.54
+    assert account.equity == 12000.10
+    assert account.portfolio_value == 11950.25
+    assert account.trading_blocked is False
+    assert account.account_blocked is False
+    assert account.transfers_blocked is False
+    assert account.pattern_day_trader is True
+    assert adapter.calls[0]["method"] == "GET"
+    assert adapter.calls[0]["path"] == "/v2/account"
 
 
 def test_alpaca_adapter_rejects_short_positions_for_long_only_ledger() -> None:

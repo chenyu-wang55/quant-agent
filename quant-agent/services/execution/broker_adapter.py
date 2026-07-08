@@ -60,6 +60,22 @@ class BrokerPositionUpdate:
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BrokerAccountSnapshot:
+    account_id: str | None = None
+    status: str | None = None
+    currency: str | None = None
+    cash: float | None = None
+    buying_power: float | None = None
+    equity: float | None = None
+    portfolio_value: float | None = None
+    trading_blocked: bool = False
+    account_blocked: bool = False
+    transfers_blocked: bool = False
+    pattern_day_trader: bool | None = None
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+
+
 class BrokerAdapterError(RuntimeError):
     pass
 
@@ -80,6 +96,9 @@ class BrokerExecutionAdapter(Protocol):
         ...
 
     def list_positions(self) -> list[BrokerPositionUpdate]:
+        ...
+
+    def get_account(self) -> BrokerAccountSnapshot:
         ...
 
 
@@ -159,6 +178,12 @@ class AlpacaBrokerAdapter:
             positions.append(self._to_position(item))
         return positions
 
+    def get_account(self) -> BrokerAccountSnapshot:
+        response = self._request("GET", "/v2/account")
+        if not isinstance(response, dict):
+            raise BrokerAdapterError("Alpaca account response was not an object")
+        return self._to_account(response)
+
     def _request(
         self,
         method: str,
@@ -233,6 +258,47 @@ class AlpacaBrokerAdapter:
             avg_price=float(avg_price) if avg_price not in (None, "") else None,
             market_price=float(market_price) if market_price not in (None, "") else None,
             broker_position_id=payload.get("asset_id"),
+            raw_payload=payload,
+        )
+
+    @staticmethod
+    def _optional_float(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        return float(value)
+
+    @staticmethod
+    def _optional_bool(value: Any) -> bool | None:
+        if value in (None, ""):
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return None
+
+    @classmethod
+    def _to_account(cls, payload: dict[str, Any]) -> BrokerAccountSnapshot:
+        trading_blocked = bool(cls._optional_bool(payload.get("trading_blocked")))
+        account_blocked = bool(cls._optional_bool(payload.get("account_blocked")))
+        transfers_blocked = bool(cls._optional_bool(payload.get("transfers_blocked")))
+        return BrokerAccountSnapshot(
+            account_id=str(payload.get("id") or "") or None,
+            status=str(payload.get("status") or "") or None,
+            currency=str(payload.get("currency") or "") or None,
+            cash=cls._optional_float(payload.get("cash")),
+            buying_power=cls._optional_float(payload.get("buying_power")),
+            equity=cls._optional_float(payload.get("equity")),
+            portfolio_value=cls._optional_float(payload.get("portfolio_value")),
+            trading_blocked=trading_blocked,
+            account_blocked=account_blocked,
+            transfers_blocked=transfers_blocked,
+            pattern_day_trader=cls._optional_bool(payload.get("pattern_day_trader")),
             raw_payload=payload,
         )
 

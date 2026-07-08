@@ -37,7 +37,12 @@ from domain.entities.models import (
 )
 from domain.policies.approval import ApprovalDecisionRequest
 from infra.queue.events import EventType
-from services.execution.broker_adapter import BrokerAdapterError, BrokerOrderUpdate, BrokerPositionUpdate
+from services.execution.broker_adapter import (
+    BrokerAccountSnapshot,
+    BrokerAdapterError,
+    BrokerOrderUpdate,
+    BrokerPositionUpdate,
+)
 
 
 def _run_research_job(job_name: str) -> None:
@@ -419,6 +424,126 @@ def _auto_position_reconciliation_cycle(
     return report
 
 
+def _broker_account_snapshot_payload(snapshot: BrokerAccountSnapshot) -> dict[str, Any]:
+    return {
+        "account_id": snapshot.account_id,
+        "status": snapshot.status,
+        "currency": snapshot.currency,
+        "cash": snapshot.cash,
+        "buying_power": snapshot.buying_power,
+        "equity": snapshot.equity,
+        "portfolio_value": snapshot.portfolio_value,
+        "trading_blocked": snapshot.trading_blocked,
+        "account_blocked": snapshot.account_blocked,
+        "transfers_blocked": snapshot.transfers_blocked,
+        "pattern_day_trader": snapshot.pattern_day_trader,
+        "raw_payload_keys": sorted(snapshot.raw_payload.keys()) if snapshot.raw_payload else [],
+    }
+
+
+def _auto_live_broker_account_gate(*, required: bool, checked_at: datetime) -> dict[str, Any]:
+    state = get_app_state()
+    report: dict[str, Any] = {
+        "required": required,
+        "passed": True,
+        "broker": None,
+        "checked_at": checked_at.isoformat(),
+        "reason": "not_required",
+        "account": None,
+        "buying_power_check": None,
+    }
+    if not required:
+        return report
+
+    report["passed"] = False
+    broker_adapter = state.execution_router.broker_adapter
+    if broker_adapter is None:
+        report["reason"] = "broker_adapter_not_configured"
+        return report
+    report["broker"] = broker_adapter.name
+
+    get_account = getattr(broker_adapter, "get_account", None)
+    if not callable(get_account):
+        report["reason"] = "broker_account_snapshot_not_supported"
+        return report
+
+    try:
+        snapshot = get_account()
+    except (BrokerAdapterError, ValueError) as exc:
+        report["reason"] = "broker_account_snapshot_error"
+        report["error"] = str(exc)
+        report["error_type"] = type(exc).__name__
+        return report
+    except Exception as exc:
+        report["reason"] = "broker_account_snapshot_error"
+        report["error"] = str(exc)
+        report["error_type"] = type(exc).__name__
+        return report
+
+    account = _broker_account_snapshot_payload(snapshot)
+    buying_power = snapshot.buying_power
+    if buying_power is None:
+        buying_power_check = {"passed": False, "reason": "broker_buying_power_missing"}
+    elif buying_power <= 0:
+        buying_power_check = {
+            "passed": False,
+            "reason": "broker_buying_power_empty",
+            "buying_power": buying_power,
+        }
+    else:
+        buying_power_check = {
+            "passed": True,
+            "reason": None,
+            "buying_power": buying_power,
+        }
+    report["account"] = account
+    report["buying_power_check"] = buying_power_check
+
+    status = (snapshot.status or "").strip().upper()
+    if snapshot.account_blocked:
+        report["reason"] = "broker_account_blocked"
+        return report
+    if snapshot.trading_blocked:
+        report["reason"] = "broker_trading_blocked"
+        return report
+    if status and status != "ACTIVE":
+        report["reason"] = "broker_account_not_active"
+        return report
+
+    report["passed"] = True
+    report["reason"] = "broker_account_ready"
+    return report
+
+
+def _auto_live_buying_power_gate(
+    *,
+    broker_account_gate: dict[str, Any] | None,
+    requested_notional: float,
+) -> dict[str, Any]:
+    if not broker_account_gate or not broker_account_gate.get("required"):
+        return {
+            "passed": True,
+            "reason": "not_required",
+            "requested_notional": round(requested_notional, 6),
+        }
+    account = broker_account_gate.get("account") or {}
+    buying_power = account.get("buying_power")
+    gate = {
+        "passed": False,
+        "requested_notional": round(requested_notional, 6),
+        "buying_power": buying_power,
+    }
+    if buying_power is None:
+        gate["reason"] = "broker_buying_power_missing"
+        return gate
+    if float(buying_power) + 1e-9 < requested_notional:
+        gate["reason"] = "broker_buying_power_insufficient"
+        return gate
+    gate["passed"] = True
+    gate["reason"] = None
+    return gate
+
+
 def _truthy_env_flag(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -629,6 +754,7 @@ def _auto_execute_cycle(
     }
     actions: list[dict[str, Any]] = []
     sell_blocked_tickers: set[str] = set()
+    broker_account_gate: dict[str, Any] | None = None
 
     if state.kill_switch.enabled:
         actions.append(
@@ -639,7 +765,12 @@ def _auto_execute_cycle(
                 "message_cn": f"Kill switch 已开启：{state.kill_switch.reason or '未提供原因'}。",
             }
         )
-        return _auto_execution_report(enabled=True, mode=execution_mode, actions=actions)
+        return _auto_execution_report(
+            enabled=True,
+            mode=execution_mode,
+            actions=actions,
+            live_execution_gate=live_execution_gate,
+        )
     if not live_execution_gate["passed"]:
         actions.append(
             {
@@ -655,6 +786,28 @@ def _auto_execute_cycle(
             mode=execution_mode,
             actions=actions,
             live_execution_gate=live_execution_gate,
+        )
+
+    broker_account_gate = _auto_live_broker_account_gate(
+        required=live_execution_requested,
+        checked_at=as_of,
+    )
+    if live_execution_requested and not broker_account_gate["passed"]:
+        actions.append(
+            {
+                "action": "auto_execution",
+                "status": "skipped",
+                "reason": "broker_account_gate_failed",
+                "broker_account_gate": broker_account_gate,
+                "message_cn": "自动实盘执行前的 broker 账户快照门禁未通过，本轮不会提交 broker 订单。",
+            }
+        )
+        return _auto_execution_report(
+            enabled=True,
+            mode=execution_mode,
+            actions=actions,
+            live_execution_gate=live_execution_gate,
+            broker_account_gate=broker_account_gate,
         )
 
     for alert in alerts:
@@ -968,6 +1121,24 @@ def _auto_execute_cycle(
                     }
                 )
                 continue
+            buying_power_gate = _auto_live_buying_power_gate(
+                broker_account_gate=broker_account_gate,
+                requested_notional=risk_plan.requested_notional,
+            )
+            if not buying_power_gate["passed"]:
+                actions.append(
+                    {
+                        "action": "buy_recommendation",
+                        "status": "skipped",
+                        "ticker": recommendation.ticker,
+                        "recommendation_id": recommendation.id,
+                        "reason": buying_power_gate["reason"],
+                        "broker_buying_power_gate": buying_power_gate,
+                        "broker_account_gate": broker_account_gate,
+                        "message_cn": "Broker buying power 不足或不可用，自动实盘买入已跳过。",
+                    }
+                )
+                continue
             order, updated_positions = state.execution_router.submit(
                 recommendation=recommendation,
                 request=request,
@@ -1012,6 +1183,7 @@ def _auto_execute_cycle(
         portfolio_risk_gate=portfolio_risk_gate,
         daily_loss_gate=daily_loss_gate,
         live_execution_gate=live_execution_gate,
+        broker_account_gate=broker_account_gate,
     )
 
 
@@ -1160,6 +1332,7 @@ def _auto_execution_report(
     portfolio_risk_gate: dict[str, Any] | None = None,
     daily_loss_gate: dict[str, Any] | None = None,
     live_execution_gate: dict[str, Any] | None = None,
+    broker_account_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "enabled": enabled,
@@ -1167,6 +1340,7 @@ def _auto_execution_report(
         "portfolio_risk_gate": portfolio_risk_gate,
         "daily_loss_gate": daily_loss_gate,
         "live_execution_gate": live_execution_gate,
+        "broker_account_gate": broker_account_gate,
         "action_count": len(actions),
         "buy_order_count": sum(
             1
@@ -1510,11 +1684,13 @@ def system_cycle(
         else _auto_execution_report(enabled=False, mode=auto_execution_mode, actions=[])
     )
     auto_execution_live_gate = auto_execution.get("live_execution_gate") or {}
+    auto_execution_account_gate = auto_execution.get("broker_account_gate") or {}
     effective_auto_execute_approved = (
         auto_execute_approved
         and snapshot_quality_passed
         and position_reconciliation_passed
         and bool(auto_execution_live_gate.get("passed", True))
+        and bool(auto_execution_account_gate.get("passed", True))
     )
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()

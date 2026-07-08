@@ -1933,9 +1933,8 @@ class AppState:
             if submitted_at.tzinfo is None:
                 submitted_at = submitted_at.replace(tzinfo=timezone.utc)
             submitted_at = submitted_at.astimezone(timezone.utc)
-            if submitted_at > now:
-                continue
-            cooldown_until = submitted_at + timedelta(minutes=order_dedupe_minutes)
+            effective_submitted_at = submitted_at if submitted_at <= now else now
+            cooldown_until = effective_submitted_at + timedelta(minutes=order_dedupe_minutes)
             if now >= cooldown_until:
                 continue
 
@@ -1963,6 +1962,8 @@ class AppState:
                 "recent_order_status": order.status.value,
                 "recent_order_execution_mode": order.execution_mode.value,
                 "recent_order_submitted_at": submitted_at.isoformat(),
+                "recent_order_effective_submitted_at": effective_submitted_at.isoformat(),
+                "recent_order_clock_skew_seconds": max(0, int((submitted_at - now).total_seconds())),
                 "dedupe_until": cooldown_until.isoformat(),
                 "minutes_remaining": max(0, int((cooldown_until - now).total_seconds() // 60)),
             }

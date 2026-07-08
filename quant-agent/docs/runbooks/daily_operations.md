@@ -35,7 +35,10 @@ execution audit, and system-event trail still apply. Use `--auto-execution-mode
 live_dry_run` for broker-shaped rehearsals. Use `--auto-execution-mode live` only
 with a configured broker adapter and an explicit runtime allow switch
 (`--allow-auto-live-execution` or `QUANT_ALLOW_AUTOPILOT_LIVE=1`); otherwise preflight
-and direct system-cycle execution report `auto_live_execution_not_allowed`. Add
+and direct system-cycle execution report `auto_live_execution_not_allowed`. Once live
+automatic execution is explicitly allowed, the worker pulls a broker account snapshot:
+blocked or non-active accounts stop broker routing, and automatic buys also require
+broker `buying_power` to cover the risk-plan notional for that order. Add
 `--consume-events` only when a downstream event sink has already captured the printed
 summary and you want pending durable system events marked consumed.
 Add `--auto-approve-recommendations` only when the machine should also approve fresh
@@ -73,6 +76,11 @@ policy field.
 Automatic buys also pass `pending_buy_order_gate`: an existing submitted buy order for
 the same recommendation or ticker blocks a new automatic buy until that order is
 filled or canceled, even if the time-based dedupe window has expired or is disabled.
+Live automatic buys additionally pass `broker_account_gate` and
+`broker_buying_power_gate`. If Alpaca reports `trading_blocked`, `account_blocked`, or
+a non-active status, the whole live automatic execution step is skipped. If the account
+is tradeable but buying power is missing or below the planned notional, only that buy
+recommendation is skipped before any broker order is submitted.
 Use `POST /paper-orders/{order_id}/cancel` to cancel a submitted order when it should
 no longer block automation, or `POST /paper-orders/{order_id}/fill` to record the
 broker fill and optionally apply it to the holding/trade ledger. By default,
@@ -346,7 +354,8 @@ filled broker responses create monitored holdings and trade-ledger rows.
 Autopilot live BUY/SELL uses the same broker adapter path, but requires policy
 `auto_execution_mode=live` plus runtime `--allow-auto-live-execution` or
 `QUANT_ALLOW_AUTOPILOT_LIVE=1`; without the runtime allow switch no broker order is
-submitted.
+submitted. With the runtime switch enabled, the worker still checks the broker account
+snapshot first and skips automatic buys when broker buying power is insufficient.
 
 Sell controls use the same execution gate:
 
@@ -418,7 +427,9 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
 
 For broker autopilot, change `auto_execution_mode` to `live` only after rehearsing
 `live_dry_run`, confirming Alpaca paper-trading credentials, and enabling
-`require_position_reconciliation`. The service still needs
+`require_position_reconciliation`. The service still needs the broker account snapshot
+to show an active, unblocked account with enough buying power for each automatic buy.
+It also needs
 `--allow-auto-live-execution` in the launchd plist, or `QUANT_ALLOW_AUTOPILOT_LIVE=1`
 in its environment, before it can submit real broker orders automatically.
 

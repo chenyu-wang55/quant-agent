@@ -263,8 +263,12 @@ trade-ledger, event, source-snapshot quality, and portfolio open-risk gates. Use
 holdings. Use `--auto-execution-mode live` only after configuring a broker adapter,
 passing position reconciliation, and explicitly adding `--allow-auto-live-execution`
 or setting `QUANT_ALLOW_AUTOPILOT_LIVE=1`; otherwise the live gate blocks automatic
-broker submissions with `auto_live_execution_not_allowed`. Use `--max-auto-buys`,
-`--max-auto-sells`, `--account-equity`, `--risk-per-trade-pct`,
+broker submissions with `auto_live_execution_not_allowed`. When live automatic
+execution is allowed, the worker also pulls a broker account snapshot before routing
+orders; blocked/non-active accounts stop the cycle with `broker_account_gate_failed`,
+and automatic buys are skipped when broker `buying_power` cannot cover the
+risk-plan notional. Use `--max-auto-buys`, `--max-auto-sells`, `--account-equity`,
+`--risk-per-trade-pct`,
 `--max-position-pct`, `--max-gross-exposure-pct`, and
 `--max-sector-exposure-pct` to tune the automatic sizing envelope. Use
 `--max-open-risk-pct` to stop new automatic buys when current portfolio risk to stop
@@ -314,7 +318,8 @@ python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
 
 For real broker autopilot, set the policy `auto_execution_mode` to `live` and run the
 cycle with `--allow-auto-live-execution` after the broker adapter, credentials, kill
-switch, source snapshot, risk, daily budget, and reconciliation gates are all green.
+switch, source snapshot, risk, daily budget, broker account, and reconciliation gates
+are all green.
 Without that runtime allow switch, `autopilot_preflight` remains blocked even if the
 policy is otherwise enabled.
 
@@ -353,6 +358,10 @@ manual operators can still send broker status snapshots to the sync endpoints;
 snapshots resolve submitted orders as canceled.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
+For live automatic execution, the same cycle records `broker_account_gate` inside
+`auto_execution`: the gate includes normalized cash, buying power, equity, account
+status, and block flags. Broker account or trading blocks stop all live automatic
+orders; missing or insufficient buying power skips automatic buys before broker submit.
 If the configured broker adapter supports positions, each `system_cycle` also pulls a
 broker position snapshot and records a reconciliation report before the execution gate
 is evaluated. Use `--disable-auto-position-reconciliation` to skip this, or

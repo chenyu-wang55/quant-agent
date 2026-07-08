@@ -21,7 +21,12 @@ from domain.entities.models import (
     SystemCycleRun,
 )
 from domain.policies.approval import ApprovalDecisionRequest
-from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate, BrokerPositionUpdate
+from services.execution.broker_adapter import (
+    BrokerAccountSnapshot,
+    BrokerOrderPlacement,
+    BrokerOrderUpdate,
+    BrokerPositionUpdate,
+)
 from services.execution.router import ExecutionRouter
 
 
@@ -73,10 +78,25 @@ class PositionOnlyBrokerAdapter:
 class LiveSubmitBrokerAdapter:
     name = "live-submit-broker"
 
-    def __init__(self, *, raw_status: str = "filled") -> None:
+    def __init__(
+        self,
+        *,
+        raw_status: str = "filled",
+        account_snapshot: BrokerAccountSnapshot | None = None,
+    ) -> None:
         self.raw_status = raw_status
+        self.account_snapshot = account_snapshot or BrokerAccountSnapshot(
+            account_id="acct_live_test",
+            status="ACTIVE",
+            currency="USD",
+            cash=1_000_000_000,
+            buying_power=1_000_000_000,
+            equity=1_000_000_000,
+            portfolio_value=1_000_000_000,
+        )
         self.placements: list[BrokerOrderPlacement] = []
         self.list_position_calls = 0
+        self.account_calls = 0
 
     def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
         self.placements.append(placement)
@@ -101,6 +121,10 @@ class LiveSubmitBrokerAdapter:
     def list_positions(self) -> list[BrokerPositionUpdate]:
         self.list_position_calls += 1
         return []
+
+    def get_account(self) -> BrokerAccountSnapshot:
+        self.account_calls += 1
+        return self.account_snapshot
 
 
 def test_system_cycle_generates_recommendations_and_monitors_without_auto_execution() -> None:
@@ -348,6 +372,9 @@ def test_system_cycle_auto_executes_live_buy_when_runtime_allowed() -> None:
     assert result["auto_execution_enabled"] is True
     assert result["auto_execution"]["buy_order_count"] == 1
     assert result["auto_execution"]["live_execution_gate"]["passed"] is True
+    assert result["auto_execution"]["broker_account_gate"]["passed"] is True
+    assert result["auto_execution"]["broker_account_gate"]["account"]["buying_power"] == 1_000_000_000
+    assert fake_adapter.account_calls == 1
     assert len(fake_adapter.placements) == 1
     assert fake_adapter.placements[0].side == "BUY"
     order = state.list_paper_orders(limit=1, recommendation_id=recommendation_id)[0]
@@ -358,6 +385,144 @@ def test_system_cycle_auto_executes_live_buy_when_runtime_allowed() -> None:
     holding = state.holding_watch_repo.get(ticker)
     assert holding is not None
     assert holding.qty == order.qty
+
+
+def test_system_cycle_blocks_live_auto_execution_when_broker_account_blocked() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=run_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    ticker = seed_result["top_recommendations"][0]["ticker"]
+    state.close_holding(ticker)
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="broker account should block live execution",
+        )
+    )
+
+    fake_adapter = LiveSubmitBrokerAdapter(
+        account_snapshot=BrokerAccountSnapshot(
+            account_id="acct_blocked",
+            status="ACTIVE",
+            currency="USD",
+            cash=1_000_000,
+            buying_power=1_000_000,
+            equity=1_000_000,
+            portfolio_value=1_000_000,
+            trading_blocked=True,
+        )
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            auto_execute_approved=True,
+            auto_execution_mode="live",
+            allow_auto_live_execution=True,
+            max_auto_buys=1,
+            max_auto_sells=0,
+            rebuy_cooldown_minutes=0,
+            account_equity=100_000_000,
+            max_daily_realized_loss_pct=1.0,
+            max_auto_buy_price_drift_pct=1.0,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert result["auto_execution_enabled"] is False
+    assert result["auto_execution"]["buy_order_count"] == 0
+    gate = result["auto_execution"]["broker_account_gate"]
+    assert gate["passed"] is False
+    assert gate["reason"] == "broker_trading_blocked"
+    assert result["auto_execution"]["actions"][0]["reason"] == "broker_account_gate_failed"
+    assert fake_adapter.account_calls == 1
+    assert fake_adapter.placements == []
+    assert state.list_paper_orders(limit=10, recommendation_id=recommendation_id) == []
+
+
+def test_system_cycle_skips_live_auto_buy_when_broker_buying_power_is_insufficient() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=run_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    ticker = seed_result["top_recommendations"][0]["ticker"]
+    state.close_holding(ticker)
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="broker buying power should block auto buy",
+        )
+    )
+
+    fake_adapter = LiveSubmitBrokerAdapter(
+        account_snapshot=BrokerAccountSnapshot(
+            account_id="acct_low_power",
+            status="ACTIVE",
+            currency="USD",
+            cash=1,
+            buying_power=1,
+            equity=100_000,
+            portfolio_value=100_000,
+        )
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            auto_execute_approved=True,
+            auto_execution_mode="live",
+            allow_auto_live_execution=True,
+            max_auto_buys=1,
+            max_auto_sells=0,
+            rebuy_cooldown_minutes=0,
+            account_equity=100_000_000,
+            max_daily_realized_loss_pct=1.0,
+            max_auto_buy_price_drift_pct=1.0,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert result["auto_execution"]["broker_account_gate"]["passed"] is True
+    assert result["auto_execution"]["buy_order_count"] == 0
+    buy_action = next(
+        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert buy_action["status"] == "skipped"
+    assert buy_action["reason"] == "broker_buying_power_insufficient"
+    assert buy_action["broker_buying_power_gate"]["buying_power"] == 1
+    assert buy_action["broker_buying_power_gate"]["requested_notional"] > 1
+    assert fake_adapter.account_calls == 1
+    assert fake_adapter.placements == []
+    assert state.list_paper_orders(limit=10, recommendation_id=recommendation_id) == []
 
 
 def test_system_cycle_auto_syncs_live_buy_broker_fill() -> None:
