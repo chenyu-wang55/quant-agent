@@ -7,7 +7,13 @@ from fastapi.testclient import TestClient
 
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
-from domain.entities.models import Direction, OrderExecutionMode, PaperOrder, PaperOrderStatus
+from domain.entities.models import (
+    Direction,
+    OrderExecutionMode,
+    PaperOrder,
+    PaperOrderStatus,
+    PositionReconciliationRequest,
+)
 from infra.queue.events import EventType
 from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate
 from services.execution.router import ExecutionRouter
@@ -232,6 +238,13 @@ def test_autopilot_live_mode_requires_runtime_allow(monkeypatch) -> None:
     assert live_check["details"]["requested"] is True
     assert live_check["details"]["allow_auto_live_execution"] is False
 
+    state.reconcile_broker_positions(
+        PositionReconciliationRequest(
+            broker="fake-broker",
+            positions=[],
+            note="live allow preflight empty-position check",
+        )
+    )
     allowed_preflight = state.build_autopilot_preflight(
         state.get_autopilot_policy(),
         allow_auto_live_execution=True,

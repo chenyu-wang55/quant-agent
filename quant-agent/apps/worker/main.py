@@ -1701,8 +1701,9 @@ def system_cycle(
         max_daily_realized_loss_pct=max_daily_realized_loss_pct,
     )
     daily_loss_passed = bool(daily_loss_gate.get("passed"))
+    live_auto_execution_requested = auto_execute_approved and auto_execution_mode.lower() == "live"
     position_reconciliation_gate = state.get_position_reconciliation_gate(
-        require_position_reconciliation=require_position_reconciliation,
+        require_position_reconciliation=require_position_reconciliation or live_auto_execution_requested,
         max_age_minutes=max_position_reconciliation_age_minutes,
         as_of=started_at,
     )

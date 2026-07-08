@@ -376,10 +376,11 @@ is evaluated. Use `--disable-auto-position-reconciliation` to skip this, or
 can still be posted to `POST /portfolio/reconciliation`. Reconciliation responses are
 persisted in `position_reconciliations`, emit a `position_reconciliation` event, and
 set `blocks_auto_execution=true` whenever local and broker quantities disagree.
-Set `require_position_reconciliation=true` in the autopilot policy, or run
-`system_cycle --require-position-reconciliation`, to block automatic execution unless
-the latest reconciliation is `matched` or `empty` and still within
-`max_position_reconciliation_age_minutes`.
+Live automatic execution always requires the latest reconciliation to be `matched` or
+`empty` and still within `max_position_reconciliation_age_minutes`, even if the policy
+field is false. For paper automation, set `require_position_reconciliation=true` in
+the autopilot policy, or run `system_cycle --require-position-reconciliation`, to make
+the same gate mandatory.
 
 Use `--consume-events` only when the printed summary is your audit sink and you want
 pending in-memory events drained after the cycle.

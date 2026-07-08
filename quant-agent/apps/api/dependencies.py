@@ -1446,12 +1446,15 @@ class AppState:
             not policy.restrict_auto_execution_to_regular_hours
             or market_session.is_regular_session
         )
+        live_execution_requested = policy.auto_execution_mode == AutoExecutionMode.LIVE
+        live_position_reconciliation_required = policy.auto_execute_approved and live_execution_requested
         position_reconciliation_gate = self.get_position_reconciliation_gate(
-            require_position_reconciliation=policy.require_position_reconciliation,
+            require_position_reconciliation=(
+                policy.require_position_reconciliation or live_position_reconciliation_required
+            ),
             max_age_minutes=policy.max_position_reconciliation_age_minutes,
             as_of=as_of,
         )
-        live_execution_requested = policy.auto_execution_mode == AutoExecutionMode.LIVE
         live_execution_gate = {
             "passed": (not live_execution_requested) or live_allowed,
             "requested": live_execution_requested,
@@ -1582,19 +1585,20 @@ class AppState:
             )
 
         if not policy.auto_execute_approved or position_reconciliation_gate["passed"]:
+            position_reconciliation_required = bool(position_reconciliation_gate.get("required"))
             checks.append(
                 AutopilotPreflightCheck(
                     name="position_reconciliation",
                     status=(
                         "pass"
-                        if policy.require_position_reconciliation and position_reconciliation_gate["passed"]
+                        if position_reconciliation_required and position_reconciliation_gate["passed"]
                         else "warn"
                     ),
                     message_cn=(
                         "自动执行前要求最近一次仓位核对通过，当前门禁已通过。"
-                        if policy.require_position_reconciliation and position_reconciliation_gate["passed"]
+                        if position_reconciliation_required and position_reconciliation_gate["passed"]
                         else "自动执行前要求最近一次仓位核对通过；当前未通过，但自动执行未启用。"
-                        if policy.require_position_reconciliation
+                        if position_reconciliation_required
                         else "未强制要求自动执行前仓位核对。"
                     ),
                     details=position_reconciliation_gate,

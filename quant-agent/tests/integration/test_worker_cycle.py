@@ -83,6 +83,7 @@ class LiveSubmitBrokerAdapter:
         *,
         raw_status: str = "filled",
         account_snapshot: BrokerAccountSnapshot | None = None,
+        broker_positions: list[BrokerPositionUpdate] | None = None,
     ) -> None:
         self.raw_status = raw_status
         self.account_snapshot = account_snapshot or BrokerAccountSnapshot(
@@ -94,6 +95,7 @@ class LiveSubmitBrokerAdapter:
             equity=1_000_000_000,
             portfolio_value=1_000_000_000,
         )
+        self.broker_positions = broker_positions or []
         self.placements: list[BrokerOrderPlacement] = []
         self.list_position_calls = 0
         self.account_calls = 0
@@ -120,7 +122,7 @@ class LiveSubmitBrokerAdapter:
 
     def list_positions(self) -> list[BrokerPositionUpdate]:
         self.list_position_calls += 1
-        return []
+        return self.broker_positions
 
     def get_account(self) -> BrokerAccountSnapshot:
         self.account_calls += 1
@@ -1875,6 +1877,56 @@ def test_system_cycle_skips_repeated_sell_alert_during_cooldown() -> None:
     assert holding_after_second.qty == 4
 
 
+def test_system_cycle_requires_position_reconciliation_for_live_auto_execution() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+    state.close_holding("AAPL")
+    state.record_manual_buy(
+        ManualBuyRequest(
+            ticker="AAPL",
+            qty=8,
+            buy_price=100,
+            stop_loss=1,
+            take_profit1=2,
+            take_profit2=999999,
+            note="worker live reconciliation hard gate setup",
+        )
+    )
+
+    fake_adapter = LiveSubmitBrokerAdapter(raw_status="accepted")
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            auto_sync_broker_statuses=False,
+            auto_execute_approved=True,
+            auto_execution_mode="live",
+            allow_auto_live_execution=True,
+            max_auto_buys=0,
+            max_auto_sells=1,
+            sell_alert_cooldown_minutes=0,
+            max_snapshot_bar_age_minutes=999999,
+            account_equity=100_000_000,
+            max_daily_realized_loss_pct=1.0,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert result["auto_execution_enabled"] is False
+    assert result["position_reconciliation_gate"]["passed"] is False
+    assert result["position_reconciliation_gate"]["required"] is True
+    assert result["position_reconciliation_gate"]["reason"] == "position_reconciliation_mismatch"
+    assert result["broker_position_reconciliation"]["reconciliation"]["status"] == "mismatch"
+    assert result["auto_execution"]["enabled"] is False
+    assert result["auto_execution"]["actions"][0]["reason"] == "position_reconciliation_gate_failed"
+    assert fake_adapter.list_position_calls == 1
+    assert fake_adapter.placements == []
+
+
 def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
     state = get_app_state()
     state.reset()
@@ -1892,7 +1944,18 @@ def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
         )
     )
 
-    fake_adapter = LiveSubmitBrokerAdapter(raw_status="accepted")
+    fake_adapter = LiveSubmitBrokerAdapter(
+        raw_status="accepted",
+        broker_positions=[
+            BrokerPositionUpdate(
+                symbol="AAPL",
+                qty=8,
+                avg_price=100,
+                market_price=509,
+                broker_position_id="broker_pos_aapl",
+            )
+        ],
+    )
     original_router = state.execution_router
     state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
     try:
