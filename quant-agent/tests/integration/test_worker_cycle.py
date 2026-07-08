@@ -374,6 +374,8 @@ def test_system_cycle_auto_executes_live_buy_when_runtime_allowed() -> None:
     assert result["auto_execution"]["live_execution_gate"]["passed"] is True
     assert result["auto_execution"]["broker_account_gate"]["passed"] is True
     assert result["auto_execution"]["broker_account_gate"]["account"]["buying_power"] == 1_000_000_000
+    assert result["auto_execution"]["account_equity_gate"]["passed"] is True
+    assert result["auto_execution"]["account_equity_gate"]["source"] == "broker_equity"
     assert fake_adapter.account_calls == 1
     assert len(fake_adapter.placements) == 1
     assert fake_adapter.placements[0].side == "BUY"
@@ -385,6 +387,149 @@ def test_system_cycle_auto_executes_live_buy_when_runtime_allowed() -> None:
     holding = state.holding_watch_repo.get(ticker)
     assert holding is not None
     assert holding.qty == order.qty
+
+
+def test_system_cycle_live_auto_buy_sizes_from_broker_account_equity() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=run_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    ticker = seed_result["top_recommendations"][0]["ticker"]
+    state.close_holding(ticker)
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="live auto buy should size from broker equity",
+        )
+    )
+
+    fake_adapter = LiveSubmitBrokerAdapter(
+        account_snapshot=BrokerAccountSnapshot(
+            account_id="acct_small_live",
+            status="ACTIVE",
+            currency="USD",
+            cash=50_000,
+            buying_power=50_000,
+            equity=50_000,
+            portfolio_value=50_000,
+        )
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            auto_execute_approved=True,
+            auto_execution_mode="live",
+            allow_auto_live_execution=True,
+            max_auto_buys=1,
+            max_auto_sells=0,
+            rebuy_cooldown_minutes=0,
+            account_equity=100_000_000,
+            max_daily_realized_loss_pct=1.0,
+            max_auto_buy_price_drift_pct=1.0,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert result["auto_execution"]["buy_order_count"] == 1
+    equity_gate = result["auto_execution"]["account_equity_gate"]
+    assert equity_gate["passed"] is True
+    assert equity_gate["configured_account_equity"] == 100_000_000
+    assert equity_gate["effective_account_equity"] == 50_000
+    assert equity_gate["source"] == "broker_equity"
+    buy_action = next(
+        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    notional = buy_action["qty"] * buy_action["limit_price"]
+    assert notional <= 50_000 * 0.10 + buy_action["limit_price"]
+    assert notional < 100_000_000 * 0.10
+    order = state.list_paper_orders(limit=1, recommendation_id=recommendation_id)[0]
+    assert order.execution_mode == OrderExecutionMode.LIVE
+    assert fake_adapter.account_calls == 1
+    assert len(fake_adapter.placements) == 1
+
+
+def test_system_cycle_skips_live_auto_buy_when_broker_account_equity_is_missing() -> None:
+    state = get_app_state()
+    state.reset()
+    state.consume_events(limit=1000)
+
+    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=run_at,
+    )
+    recommendation_id = seed_result["top_recommendations"][0]["id"]
+    ticker = seed_result["top_recommendations"][0]["ticker"]
+    state.close_holding(ticker)
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=recommendation_id,
+            decision="approved",
+            approver="worker-test",
+            notes="missing broker equity should block live auto buy",
+        )
+    )
+
+    fake_adapter = LiveSubmitBrokerAdapter(
+        account_snapshot=BrokerAccountSnapshot(
+            account_id="acct_missing_equity",
+            status="ACTIVE",
+            currency="USD",
+            cash=1_000_000,
+            buying_power=1_000_000,
+        )
+    )
+    original_router = state.execution_router
+    state.execution_router = ExecutionRouter(broker_adapter=fake_adapter)
+    try:
+        result = system_cycle(
+            top_n=1,
+            min_confidence=0.0,
+            consume_events=False,
+            as_of=run_at,
+            auto_execute_approved=True,
+            auto_execution_mode="live",
+            allow_auto_live_execution=True,
+            max_auto_buys=1,
+            max_auto_sells=0,
+            rebuy_cooldown_minutes=0,
+            account_equity=100_000_000,
+            max_daily_realized_loss_pct=1.0,
+            max_auto_buy_price_drift_pct=1.0,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert result["auto_execution_enabled"] is False
+    assert result["auto_execution"]["buy_order_count"] == 0
+    equity_gate = result["auto_execution"]["account_equity_gate"]
+    assert equity_gate["passed"] is False
+    assert equity_gate["reason"] == "broker_account_equity_missing"
+    buy_action = next(
+        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
+    )
+    assert buy_action["status"] == "skipped"
+    assert buy_action["reason"] == "broker_account_equity_gate_failed"
+    assert fake_adapter.account_calls == 1
+    assert fake_adapter.placements == []
+    assert state.list_paper_orders(limit=10, recommendation_id=recommendation_id) == []
 
 
 def test_system_cycle_blocks_live_auto_execution_when_broker_account_blocked() -> None:

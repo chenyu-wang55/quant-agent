@@ -544,6 +544,67 @@ def _auto_live_buying_power_gate(
     return gate
 
 
+def _positive_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _auto_live_account_equity_gate(
+    *,
+    broker_account_gate: dict[str, Any] | None,
+    configured_account_equity: float,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "required": bool(broker_account_gate and broker_account_gate.get("required")),
+        "passed": True,
+        "reason": "not_required",
+        "configured_account_equity": round(configured_account_equity, 6),
+        "effective_account_equity": round(configured_account_equity, 6),
+        "source": "configured_account_equity",
+    }
+    if not report["required"]:
+        return report
+
+    account = (broker_account_gate or {}).get("account") or {}
+    equity = _positive_float(account.get("equity"))
+    portfolio_value = _positive_float(account.get("portfolio_value"))
+    if equity is not None:
+        report.update(
+            {
+                "passed": True,
+                "reason": None,
+                "effective_account_equity": round(equity, 6),
+                "source": "broker_equity",
+            }
+        )
+        return report
+    if portfolio_value is not None:
+        report.update(
+            {
+                "passed": True,
+                "reason": None,
+                "effective_account_equity": round(portfolio_value, 6),
+                "source": "broker_portfolio_value",
+            }
+        )
+        return report
+
+    report.update(
+        {
+            "passed": False,
+            "reason": "broker_account_equity_missing",
+            "effective_account_equity": None,
+            "source": None,
+        }
+    )
+    return report
+
+
 def _truthy_env_flag(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -755,6 +816,7 @@ def _auto_execute_cycle(
     actions: list[dict[str, Any]] = []
     sell_blocked_tickers: set[str] = set()
     broker_account_gate: dict[str, Any] | None = None
+    account_equity_gate: dict[str, Any] | None = None
 
     if state.kill_switch.enabled:
         actions.append(
@@ -809,6 +871,12 @@ def _auto_execute_cycle(
             live_execution_gate=live_execution_gate,
             broker_account_gate=broker_account_gate,
         )
+
+    account_equity_gate = _auto_live_account_equity_gate(
+        broker_account_gate=broker_account_gate,
+        configured_account_equity=account_equity,
+    )
+    effective_account_equity = float(account_equity_gate.get("effective_account_equity") or account_equity)
 
     for alert in alerts:
         if len([item for item in actions if item.get("action") == "sell_alert"]) >= max_auto_sells:
@@ -902,8 +970,8 @@ def _auto_execute_cycle(
 
     portfolio_summary = state.get_portfolio_summary(as_of=as_of)
     open_risk_pct = (
-        round(portfolio_summary.open_risk_to_stop / account_equity, 6)
-        if account_equity > 0
+        round(portfolio_summary.open_risk_to_stop / effective_account_equity, 6)
+        if effective_account_equity > 0
         else 1.0
     )
     portfolio_risk_gate = {
@@ -912,12 +980,14 @@ def _auto_execute_cycle(
         "open_risk_to_stop": portfolio_summary.open_risk_to_stop,
         "open_risk_pct": open_risk_pct,
         "max_open_risk_pct": max_open_risk_pct,
-        "account_equity": account_equity,
+        "account_equity": effective_account_equity,
+        "configured_account_equity": account_equity,
+        "account_equity_gate": account_equity_gate,
         "open_holding_count": portfolio_summary.open_holding_count,
     }
     daily_loss_gate = state.get_autopilot_daily_loss_gate(
         as_of=as_of,
-        account_equity=account_equity,
+        account_equity=effective_account_equity,
         max_daily_realized_loss_pct=max_daily_realized_loss_pct,
     )
 
@@ -933,6 +1003,20 @@ def _auto_execute_cycle(
                     "ticker": recommendation.ticker,
                     "recommendation_id": recommendation.id,
                     "reason": "max_auto_buys_reached",
+                }
+            )
+            continue
+        if live_execution_requested and account_equity_gate and not account_equity_gate["passed"]:
+            actions.append(
+                {
+                    "action": "buy_recommendation",
+                    "status": "skipped",
+                    "ticker": recommendation.ticker,
+                    "recommendation_id": recommendation.id,
+                    "reason": "broker_account_equity_gate_failed",
+                    "account_equity_gate": account_equity_gate,
+                    "broker_account_gate": broker_account_gate,
+                    "message_cn": "Broker account equity/portfolio value 不可用，自动实盘买入已跳过。",
                 }
             )
             continue
@@ -1083,7 +1167,7 @@ def _auto_execute_cycle(
                 execution_mode=order_mode,
                 dry_run=dry_run,
                 confirm_live=confirm_live,
-                account_equity=account_equity,
+                account_equity=effective_account_equity,
                 risk_per_trade_pct=risk_per_trade_pct,
                 max_position_pct=max_position_pct,
                 max_gross_exposure_pct=max_gross_exposure_pct,
@@ -1162,6 +1246,7 @@ def _auto_execute_cycle(
                     "qty": order.qty,
                     "limit_price": order.limit_price,
                     "simulated_fill_price": order.simulated_fill_price,
+                    "account_equity_gate": account_equity_gate,
                     "message_cn": risk_plan.message_cn,
                 }
             )
@@ -1184,6 +1269,7 @@ def _auto_execute_cycle(
         daily_loss_gate=daily_loss_gate,
         live_execution_gate=live_execution_gate,
         broker_account_gate=broker_account_gate,
+        account_equity_gate=account_equity_gate,
     )
 
 
@@ -1333,6 +1419,7 @@ def _auto_execution_report(
     daily_loss_gate: dict[str, Any] | None = None,
     live_execution_gate: dict[str, Any] | None = None,
     broker_account_gate: dict[str, Any] | None = None,
+    account_equity_gate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "enabled": enabled,
@@ -1341,6 +1428,7 @@ def _auto_execution_report(
         "daily_loss_gate": daily_loss_gate,
         "live_execution_gate": live_execution_gate,
         "broker_account_gate": broker_account_gate,
+        "account_equity_gate": account_equity_gate,
         "action_count": len(actions),
         "buy_order_count": sum(
             1
@@ -1685,12 +1773,14 @@ def system_cycle(
     )
     auto_execution_live_gate = auto_execution.get("live_execution_gate") or {}
     auto_execution_account_gate = auto_execution.get("broker_account_gate") or {}
+    auto_execution_equity_gate = auto_execution.get("account_equity_gate") or {}
     effective_auto_execute_approved = (
         auto_execute_approved
         and snapshot_quality_passed
         and position_reconciliation_passed
         and bool(auto_execution_live_gate.get("passed", True))
         and bool(auto_execution_account_gate.get("passed", True))
+        and bool(auto_execution_equity_gate.get("passed", True))
     )
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()

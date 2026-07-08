@@ -266,8 +266,10 @@ or setting `QUANT_ALLOW_AUTOPILOT_LIVE=1`; otherwise the live gate blocks automa
 broker submissions with `auto_live_execution_not_allowed`. When live automatic
 execution is allowed, the worker also pulls a broker account snapshot before routing
 orders; blocked/non-active accounts stop the cycle with `broker_account_gate_failed`,
-and automatic buys are skipped when broker `buying_power` cannot cover the
-risk-plan notional. Use `--max-auto-buys`, `--max-auto-sells`, `--account-equity`,
+live automatic buys size risk from broker `equity` or `portfolio_value`, and automatic
+buys are skipped when broker `buying_power` cannot cover the risk-plan notional. If
+broker equity is missing, live automatic buys are skipped instead of falling back to a
+stale static balance. Use `--max-auto-buys`, `--max-auto-sells`, `--account-equity`,
 `--risk-per-trade-pct`,
 `--max-position-pct`, `--max-gross-exposure-pct`, and
 `--max-sector-exposure-pct` to tune the automatic sizing envelope. Use
@@ -361,7 +363,9 @@ from repeatedly selling partial positions on every loop.
 For live automatic execution, the same cycle records `broker_account_gate` inside
 `auto_execution`: the gate includes normalized cash, buying power, equity, account
 status, and block flags. Broker account or trading blocks stop all live automatic
-orders; missing or insufficient buying power skips automatic buys before broker submit.
+orders. `account_equity_gate` records whether live buy sizing used broker `equity` or
+`portfolio_value`; if neither is available, live buys are skipped. Missing or
+insufficient buying power skips automatic buys before broker submit.
 If the configured broker adapter supports positions, each `system_cycle` also pulls a
 broker position snapshot and records a reconciliation report before the execution gate
 is evaluated. Use `--disable-auto-position-reconciliation` to skip this, or
