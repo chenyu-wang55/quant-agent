@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import OperationControlCenter, SystemCycleRun
+from infra.observability.alerts import OperationalAlertManager
 
 
 class SystemCycleRunBody(BaseModel):
@@ -23,6 +24,11 @@ class SystemCycleRunBody(BaseModel):
 
 
 router = APIRouter(tags=["operations"])
+
+
+@router.get("/operations/alerts")
+def list_operational_alerts() -> list[dict]:
+    return OperationalAlertManager().list_active()
 
 
 @router.get("/operations/system-runs", response_model=list[SystemCycleRun])

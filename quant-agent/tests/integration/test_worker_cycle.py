@@ -4,9 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from apps.worker import main as worker_main
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
+from apps.worker import main as worker_main
 from apps.worker.main import system_cycle, system_cycle_loop
 from domain.entities.models import (
     Direction,
@@ -28,7 +28,6 @@ from services.execution.broker_adapter import (
     BrokerPositionUpdate,
 )
 from services.execution.router import ExecutionRouter
-
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
@@ -248,9 +247,7 @@ def test_system_cycle_auto_executes_approved_buy() -> None:
     assert result["auto_execution"]["enabled"] is True
     assert result["auto_execution"]["buy_order_count"] == 1
     assert result["auto_execution"]["sell_order_count"] == 0
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "executed"
     assert buy_action["recommendation_id"] == recommendation_id
     assert buy_action["ticker"] == ticker
@@ -275,7 +272,7 @@ def test_system_cycle_blocks_auto_live_execution_without_runtime_allow() -> None
     state.reset()
     state.consume_events(limit=1000)
 
-    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    run_at = datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc)
     seed_result = system_cycle(
         top_n=1,
         min_confidence=0.0,
@@ -330,7 +327,7 @@ def test_system_cycle_auto_executes_live_buy_when_runtime_allowed() -> None:
     state.reset()
     state.consume_events(limit=1000)
 
-    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    run_at = datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc)
     seed_result = system_cycle(
         top_n=1,
         min_confidence=0.0,
@@ -396,7 +393,7 @@ def test_system_cycle_live_auto_buy_sizes_from_broker_account_equity() -> None:
     state.reset()
     state.consume_events(limit=1000)
 
-    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    run_at = datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc)
     seed_result = system_cycle(
         top_n=1,
         min_confidence=0.0,
@@ -453,9 +450,7 @@ def test_system_cycle_live_auto_buy_sizes_from_broker_account_equity() -> None:
     assert equity_gate["configured_account_equity"] == 100_000_000
     assert equity_gate["effective_account_equity"] == 50_000
     assert equity_gate["source"] == "broker_equity"
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     notional = buy_action["qty"] * buy_action["limit_price"]
     assert notional <= 50_000 * 0.10 + buy_action["limit_price"]
     assert notional < 100_000_000 * 0.10
@@ -470,7 +465,7 @@ def test_system_cycle_skips_live_auto_buy_when_broker_account_equity_is_missing(
     state.reset()
     state.consume_events(limit=1000)
 
-    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    run_at = datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc)
     seed_result = system_cycle(
         top_n=1,
         min_confidence=0.0,
@@ -524,9 +519,7 @@ def test_system_cycle_skips_live_auto_buy_when_broker_account_equity_is_missing(
     equity_gate = result["auto_execution"]["account_equity_gate"]
     assert equity_gate["passed"] is False
     assert equity_gate["reason"] == "broker_account_equity_missing"
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["reason"] == "broker_account_equity_gate_failed"
     assert fake_adapter.account_calls == 1
@@ -539,7 +532,7 @@ def test_system_cycle_blocks_live_auto_execution_when_broker_account_blocked() -
     state.reset()
     state.consume_events(limit=1000)
 
-    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    run_at = datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc)
     seed_result = system_cycle(
         top_n=1,
         min_confidence=0.0,
@@ -607,7 +600,7 @@ def test_system_cycle_skips_live_auto_buy_when_broker_buying_power_is_insufficie
     state.reset()
     state.consume_events(limit=1000)
 
-    run_at = datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc)
+    run_at = datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc)
     seed_result = system_cycle(
         top_n=1,
         min_confidence=0.0,
@@ -660,9 +653,7 @@ def test_system_cycle_skips_live_auto_buy_when_broker_buying_power_is_insufficie
 
     assert result["auto_execution"]["broker_account_gate"]["passed"] is True
     assert result["auto_execution"]["buy_order_count"] == 0
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["reason"] == "broker_buying_power_insufficient"
     assert buy_action["broker_buying_power_gate"]["buying_power"] == 1
@@ -975,9 +966,7 @@ def test_system_cycle_blocks_auto_buy_when_latest_price_drifts_from_entry_zone(m
             notes="approval should be blocked by price drift gate",
         )
     )
-    existing_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    existing_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
     original_get_latest_price = state.provider.get_latest_price
 
     def drifted_latest_price(candidate_ticker: str, as_of: datetime):
@@ -1003,9 +992,7 @@ def test_system_cycle_blocks_auto_buy_when_latest_price_drifts_from_entry_zone(m
     )
 
     assert result["auto_execution"]["buy_order_count"] == 0
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["reason"] == "price_drift_gate_failed"
     price_gate = buy_action["price_drift_gate"]
@@ -1013,9 +1000,7 @@ def test_system_cycle_blocks_auto_buy_when_latest_price_drifts_from_entry_zone(m
     assert price_gate["reason"] == "latest_price_above_entry_zone"
     assert price_gate["latest_price"] > price_gate["entry_zone_high"]
     assert price_gate["drift_pct"] > price_gate["max_drift_pct"]
-    current_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    current_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
     assert current_order_ids == existing_order_ids
     holding = state.holding_watch_repo.get(ticker)
     assert holding is None or holding.status != HoldingStatus.OPEN
@@ -1044,9 +1029,7 @@ def test_system_cycle_blocks_auto_execution_when_required_reconciliation_is_miss
             notes="approval should be blocked by missing reconciliation",
         )
     )
-    existing_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    existing_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
 
     result = system_cycle(
         top_n=1,
@@ -1073,9 +1056,7 @@ def test_system_cycle_blocks_auto_execution_when_required_reconciliation_is_miss
     assert gate["passed"] is False
     assert gate["reason"] == "position_reconciliation_missing"
     assert result["position_reconciliation_gate"] == gate
-    current_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    current_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
     assert current_order_ids == existing_order_ids
 
 
@@ -1108,12 +1089,8 @@ def test_system_cycle_auto_approves_and_executes_same_cycle() -> None:
     assert result["auto_approval"]["enabled"] is True
     assert result["auto_approval"]["approved_count"] == 1
     assert result["auto_execution"]["buy_order_count"] == 1
-    approved_action = next(
-        item for item in result["auto_approval"]["actions"] if item["status"] == "approved"
-    )
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    approved_action = next(item for item in result["auto_approval"]["actions"] if item["status"] == "approved")
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert approved_action["recommendation_id"] == buy_action["recommendation_id"]
     assert buy_action["source_snapshot_id"] == result["source_snapshot_id"]
     assert buy_action["strategy_config_id"] == result["strategy_config_id"]
@@ -1267,9 +1244,7 @@ def test_system_cycle_blocks_auto_buy_when_open_risk_exceeds_policy_limit() -> N
             notes="approval should still be blocked by portfolio risk gate",
         )
     )
-    existing_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    existing_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
 
     result = system_cycle(
         top_n=1,
@@ -1291,14 +1266,10 @@ def test_system_cycle_blocks_auto_buy_when_open_risk_exceeds_policy_limit() -> N
     assert gate["reason"] == "open_risk_above_policy_limit"
     assert gate["open_risk_pct"] > gate["max_open_risk_pct"]
     assert result["auto_execution"]["buy_order_count"] == 0
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["reason"] == "portfolio_open_risk_gate_failed"
-    current_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    current_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
     assert current_order_ids == existing_order_ids
 
 
@@ -1352,9 +1323,7 @@ def test_system_cycle_blocks_auto_buy_when_daily_realized_loss_exceeds_policy_li
             notes="approval should still be blocked by daily loss gate",
         )
     )
-    existing_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    existing_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
 
     result = system_cycle(
         top_n=1,
@@ -1378,14 +1347,10 @@ def test_system_cycle_blocks_auto_buy_when_daily_realized_loss_exceeds_policy_li
     assert gate["daily_realized_loss_pct"] > gate["max_daily_realized_loss_pct"]
     assert result["daily_loss_gate"]["passed"] is False
     assert result["auto_execution"]["buy_order_count"] == 0
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["reason"] == "daily_loss_gate_failed"
-    current_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    current_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
     assert current_order_ids == existing_order_ids
 
 
@@ -1451,9 +1416,7 @@ def test_system_cycle_skips_pending_duplicate_buy_order() -> None:
 
     assert second["auto_execution"]["enabled"] is True
     assert second["auto_execution"]["buy_order_count"] == 0
-    buy_action = next(
-        item for item in second["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in second["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["reason"] == "pending_buy_order_gate_failed"
     assert buy_action["pending_buy_order_gate"]["passed"] is False
@@ -1556,9 +1519,7 @@ def test_system_cycle_skips_recent_duplicate_filled_buy_order() -> None:
 
     assert second["auto_execution"]["enabled"] is True
     assert second["auto_execution"]["buy_order_count"] == 0
-    buy_action = next(
-        item for item in second["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in second["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["reason"] == "recent_buy_order_gate_failed"
     assert buy_action["recent_buy_order_gate"]["passed"] is False
@@ -1597,7 +1558,7 @@ def test_system_cycle_uses_persisted_autopilot_policy() -> None:
         top_n=1,
         min_confidence=0.0,
         consume_events=False,
-        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+        as_of=datetime(2026, 4, 10, 13, 30, tzinfo=timezone.utc),
         use_autopilot_policy=True,
     )
 
@@ -1615,6 +1576,9 @@ def test_system_cycle_uses_persisted_autopilot_policy() -> None:
     assert latest_run.metrics["autopilot_preflight"]["status"] == "ready"
     assert latest_run.metrics["auto_approval"]["approved_count"] == 1
     assert latest_run.metrics["auto_execution"]["buy_order_count"] == 1
+    assert result["paper_shadow_evidence"]["qualified"] is True
+    assert result["paper_shadow_evidence"]["xnys_session_date"] == "2026-04-10"
+    assert latest_run.metrics["paper_shadow_evidence"] == result["paper_shadow_evidence"]
 
 
 def test_system_cycle_autopilot_preflight_blocks_on_kill_switch() -> None:
@@ -1652,6 +1616,8 @@ def test_system_cycle_autopilot_preflight_blocks_on_kill_switch() -> None:
     assert result["auto_approval"]["enabled"] is False
     assert result["auto_execution"]["enabled"] is False
     assert result["auto_execution_enabled"] is False
+    assert result["paper_shadow_evidence"]["qualified"] is False
+    assert "preflight_can_auto_execute" in result["paper_shadow_evidence"]["reasons"]
     latest_run = state.list_system_cycle_runs(limit=1)[0]
     assert latest_run.metrics["autopilot_preflight"]["status"] == "blocked"
 
@@ -1687,7 +1653,7 @@ def test_system_cycle_autopilot_market_hours_gate_blocks_auto_execution() -> Non
         top_n=1,
         min_confidence=0.0,
         consume_events=False,
-        as_of=datetime(2026, 4, 11, 13, 30, tzinfo=timezone.utc),
+        as_of=datetime(2026, 7, 3, 14, 0, tzinfo=timezone.utc),
         use_autopilot_policy=True,
     )
 
@@ -1695,6 +1661,8 @@ def test_system_cycle_autopilot_market_hours_gate_blocks_auto_execution() -> Non
     assert result["autopilot_preflight"]["status"] == "blocked"
     assert result["autopilot_preflight"]["can_auto_execute"] is False
     assert "market_session_closed" in result["autopilot_preflight"]["reasons"]
+    market_check = next(item for item in result["autopilot_preflight"]["checks"] if item["name"] == "market_session")
+    assert market_check["details"]["holiday_name"] == "July 4th"
     assert result["auto_execution"]["enabled"] is False
     assert result["auto_execution_enabled"] is False
     latest_run = state.list_system_cycle_runs(limit=1)[0]
@@ -1966,6 +1934,7 @@ def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
             auto_sync_broker_statuses=False,
             auto_execute_approved=True,
             auto_execution_mode="live",
+            restrict_auto_execution_to_regular_hours=False,
             allow_auto_live_execution=True,
             max_auto_buys=0,
             max_auto_sells=1,
@@ -1981,6 +1950,7 @@ def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
             auto_sync_broker_statuses=False,
             auto_execute_approved=True,
             auto_execution_mode="live",
+            restrict_auto_execution_to_regular_hours=False,
             allow_auto_live_execution=True,
             max_auto_buys=0,
             max_auto_sells=1,
@@ -2060,9 +2030,7 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
             notes="approval should still be blocked by rebuy cooldown",
         )
     )
-    existing_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    existing_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
 
     result = system_cycle(
         top_n=1,
@@ -2082,9 +2050,7 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
     assert sell_result.holding.status == HoldingStatus.CLOSED
     assert result["auto_execution"]["enabled"] is True
     assert result["auto_execution"]["buy_order_count"] == 0
-    buy_action = next(
-        item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation"
-    )
+    buy_action = next(item for item in result["auto_execution"]["actions"] if item["action"] == "buy_recommendation")
     assert buy_action["status"] == "skipped"
     assert buy_action["ticker"] == ticker
     assert buy_action["recommendation_id"] == recommendation_id
@@ -2092,9 +2058,7 @@ def test_system_cycle_skips_rebuy_during_cooldown_after_recent_sell() -> None:
     assert buy_action["cooldown"]["last_sell_trade_id"]
     assert buy_action["cooldown"]["cooldown_until"] == "2026-07-05T12:30:00+00:00"
     assert buy_action["cooldown"]["minutes_remaining"] == 180
-    current_order_ids = {
-        order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)
-    }
+    current_order_ids = {order.id for order in state.list_paper_orders(limit=100, recommendation_id=recommendation_id)}
     assert current_order_ids == existing_order_ids
 
 

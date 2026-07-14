@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
 
-
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 

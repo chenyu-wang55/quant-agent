@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import PlainTextResponse
 
 from apps.api.dependencies import AppState, get_app_state
 
-
 router = APIRouter(tags=["metrics"])
+
+
+@router.get("/metrics/prometheus", response_class=PlainTextResponse)
+def get_prometheus_metrics(state: AppState = Depends(get_app_state)) -> PlainTextResponse:
+    return PlainTextResponse(
+        state.metrics_store.prometheus_text(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @router.get("/metrics")

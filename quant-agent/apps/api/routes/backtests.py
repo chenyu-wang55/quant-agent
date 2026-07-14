@@ -8,7 +8,6 @@ from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import BacktestRunRequest, BacktestRunResult, ResearchRunRequest, RunType
 from infra.queue.events import EventType
 
-
 router = APIRouter(tags=["backtests"])
 
 

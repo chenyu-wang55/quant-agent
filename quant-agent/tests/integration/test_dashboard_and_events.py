@@ -7,7 +7,6 @@ from apps.api.main import app
 from apps.dashboard.main import _select_recommendations_for_dashboard
 from infra.queue.events import EventType
 
-
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 
@@ -143,6 +142,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "systemRunCount" in dashboard_home.text
     assert "autoApprovalCount" in dashboard_home.text
     assert "autoActionCount" in dashboard_home.text
+    assert "paperShadowStatus" in dashboard_home.text
 
     realtime = client.get("/dashboard/realtime-data?refresh_alerts=false", headers=AUTH_HEADERS)
     assert realtime.status_code == 200
@@ -151,6 +151,7 @@ def test_dashboard_and_event_endpoints() -> None:
     assert "summary" in payload
     assert "autopilot_policy" in payload
     assert "autopilot_preflight" in payload
+    assert "paper_shadow_readiness" in payload
     assert "market_session" in payload
     assert "source_snapshots" in payload
     assert "strategy_configs" in payload
@@ -177,6 +178,8 @@ def test_dashboard_and_event_endpoints() -> None:
     assert payload["autopilot_policy"]["max_position_reconciliation_age_minutes"] == 1440
     assert payload["autopilot_preflight"]["status"] == "off"
     assert "daily_usage" in payload["autopilot_preflight"]
+    assert payload["paper_shadow_readiness"]["required_trading_days"] == 20
+    assert payload["paper_shadow_readiness"]["observed_trading_days"] == 0
     assert payload["market_session"]["timezone"] == "America/New_York"
     assert payload["summary"]["source_snapshot_count"] >= 1
     assert payload["summary"]["strategy_config_count"] >= 1

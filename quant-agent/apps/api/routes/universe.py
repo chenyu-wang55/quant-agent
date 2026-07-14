@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Query
 
 from apps.api.dependencies import AppState, get_app_state
 
-
 router = APIRouter(tags=["universe"])
 
 

@@ -32,7 +32,6 @@ from domain.entities.models import (
 )
 from services.execution.broker_adapter import BrokerAdapterError
 
-
 router = APIRouter(tags=["portfolio"])
 
 

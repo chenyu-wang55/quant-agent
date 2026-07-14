@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-import os
 
+from infra.config import CoreSettings
 from services.ingestion.interfaces import DataProvider
 from services.ingestion.mock_provider import MockMarketDataProvider
 from services.ingestion.vendors.yfinance_provider import YFinanceProvider
-
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class ExternalProviderPlaceholder:
 
 
 def build_data_provider() -> DataProvider:
-    provider = os.getenv("DATA_PROVIDER", "yfinance").lower()
+    provider = CoreSettings.from_env().data_provider
     if provider == "mock":
         return MockMarketDataProvider()
     if provider == "yfinance":

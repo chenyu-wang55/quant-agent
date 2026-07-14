@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
-
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import Recommendation
-
 
 router = APIRouter(tags=["recommendations"])
 

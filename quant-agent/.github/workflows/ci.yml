@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+      - name: Ruff
+        run: ruff check .
+      - name: Mypy
+        run: mypy
+      - name: Core module size
+        run: python scripts/check_core_module_size.py --max-lines 850
+
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps -e .
+      - name: Verify migrations
+        run: >-
+          pytest -q tests/unit/test_migrations.py
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
+      - name: Run test suite
+        run: >-
+          pytest -q
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
+      - name: Enforce real-provider coverage
+        if: matrix.python-version == '3.13'
+        run: >-
+          pytest -q tests/unit/test_yfinance_provider.py tests/unit/test_data_provenance.py
+          tests/unit/test_point_in_time_validator.py
+          --cov=services.ingestion.vendors.yfinance_provider
+          --cov=services.ingestion.point_in_time_validator
+          --cov-report=term-missing
+          --cov-fail-under=70

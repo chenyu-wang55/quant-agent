@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import StrategyConfigSnapshot, StrategyTuningReport
 
-
 router = APIRouter(tags=["strategy-configs"])
 
 

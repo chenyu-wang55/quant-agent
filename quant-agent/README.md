@@ -22,22 +22,109 @@ PRD-aligned quant research and trading recommendation platform.
 - `docs/` PRD and runbooks
 - `prompts/` implementation prompts
 
+Runtime environment parsing is centralized in `infra/config.py`. API state behavior is split into
+focused mixins (`state_orders`, `state_autopilot`, `state_trading`, `state_sells`, and
+`state_portfolio`); Worker broker synchronization and automatic execution live in separate modules,
+and the Dashboard HTML asset is isolated from its data API.
+
 ## Quick Start
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,vendors]"
+pip install -r requirements.lock
+pip install --no-deps -e .
 export QUANT_AGENT_ACCESS_PASSWORD="replace-with-a-local-secret"
 uvicorn apps.api.main:app --reload
 ```
 
-API health endpoint: `GET /health`
+Health endpoints:
+
+- `GET /health` and `GET /health/live`: process liveness
+- `GET /health/ready`: database/provider/broker/snapshot/reconciliation readiness plus a separate
+  `trading_ready` decision and explicit blockers
+
+For a persistent loopback-only API on macOS, install the authenticated LaunchAgent:
+
+```bash
+export QUANT_AGENT_ACCESS_PASSWORD="a-long-local-password"
+export QUANT_AGENT_AUTH_SIGNING_SECRET="$(openssl rand -hex 32)"
+python scripts/manage_api_launchd.py install --load
+python scripts/manage_api_launchd.py status
+```
+
+The generated plist is mode `0600`, binds only to `127.0.0.1`, keeps authentication
+enabled, uses an absolute production database path, starts at login, and writes through
+the rotating structured-log handler. A non-loopback host, short password, or short signing
+secret is rejected. Use `python scripts/manage_api_launchd.py uninstall --unload` to remove it.
+
+## Authentication and execution roles
+
+Browser access uses `POST /auth/login` and a signed, expiring HttpOnly session cookie. Passwords in
+URLs are rejected; do not use the former `?pwd=` pattern. Dashboard write requests also send the
+session-bound `quant_csrf` token in `x-csrf-token`.
+
+The legacy `x-access-password` header remains available for local scripts. A single
+`QUANT_AGENT_ACCESS_PASSWORD` grants the highest role for backward compatibility. For separated
+permissions, configure distinct values:
+
+```bash
+export QUANT_AGENT_READ_PASSWORD="..."
+export QUANT_AGENT_APPROVAL_PASSWORD="..."
+export QUANT_AGENT_EXECUTION_PASSWORD="..."
+export QUANT_AGENT_AUTH_SIGNING_SECRET="a-separate-long-random-secret"
+export QUANT_AGENT_COOKIE_SECURE=1  # default outside tests; terminate TLS before the API
+```
+
+Set `QUANT_AGENT_COOKIE_SECURE=0` only for a loopback-only HTTP deployment.
+
+- `read`: dashboards, GET APIs, metrics, and protected OpenAPI documentation
+- `approve`: read access plus research/backtest writes and recommendation approval
+- `execute`: approval access plus order, portfolio, execution-control, and operations writes
+
+Automatic execution is restricted to the NYSE (`XNYS`) regular session by default. The calendar
+uses the maintained `exchange_calendars` XNYS schedule for exchange holidays, observed holidays,
+one-off closures, and 13:00 ET early closes; dates outside its supported 1990–2050 range fail
+closed instead of falling back to hand-written rules.
+
+## Order idempotency and recovery
+
+Buy and sell execution requests accept `idempotency_key`. Confirmed live orders require it. The
+system persists an intent before broker I/O, derives a stable `client_order_id`, and uses unique
+database indexes to collapse concurrent retries. Ambiguous broker responses are reconciled by
+`client_order_id`; the Worker automatically revisits unknown or stale submissions. Local order,
+holding, position, trade-ledger, audit, and event effects commit atomically.
+
+Database maintenance commands always operate on an explicit database/backup path:
+
+```bash
+python3 scripts/manage_database.py backup \
+  --output backups/quant_agent_v2-before-maintenance.db
+python3 scripts/manage_database.py restore \
+  --backup backups/quant_agent_v2-before-maintenance.db \
+  --output /tmp/quant-agent-restored.db
+python3 scripts/manage_database.py retention-plan \
+  --created-before "2026-01-01T00:00:00Z" --keep-latest 500
+python3 scripts/manage_database.py archive-and-prune --help
+python3 scripts/manage_database.py compact --help
+python3 scripts/manage_database.py inspect-test-snapshots --help
+python3 scripts/manage_database.py cleanup-test-snapshots --help
+```
+
+The retention workflow is deliberately two-step: inspect a plan, then archive the complete
+database and prune only the exact expected snapshot count. It refuses to prune snapshots with
+operational order, trade, holding, or approval references. `compact` requires a verified backup
+before it runs SQLite `VACUUM`. Keep daily backups for 14 days, weekly backups for 12 weeks, and
+monthly backups for 12 months; test a restore into a new path at least monthly.
 
 ## Data Provider
 
 - Default provider is real-market mode: `DATA_PROVIDER=yfinance`
 - For deterministic/local testing, set `DATA_PROVIDER=mock`
+- Real-provider runs require point-in-time universe membership via
+  `POINT_IN_TIME_UNIVERSE_CSV`. Historical runs additionally require
+  `POINT_IN_TIME_FUNDAMENTALS_CSV`, `POINT_IN_TIME_EVENTS_CSV`, and
+  `POINT_IN_TIME_EARNINGS_CSV`; the system fails closed when these are absent.
 
 Example:
 
@@ -45,12 +132,65 @@ Example:
 DATA_PROVIDER=yfinance uvicorn apps.api.main:app --reload
 ```
 
+Point-in-time CSV contracts:
+
+- universe: `universe,ticker,effective_from,effective_to,sector,market_cap_usd,spread_bps,source`
+- fundamentals: `ticker,period_end,available_at,pe_ttm,roe,revenue_growth_yoy,eps_revision_30d,source`
+- events: `source_id,published_at,ingested_at,headline,normalized_text,tickers,event_type,sentiment,relevance,horizon,source_url,source`
+- earnings: `ticker,known_at,earnings_at,source`
+
+Before a historical backtest, validate the complete licensed export offline and retain the
+JSON report with the run evidence:
+
+```bash
+python scripts/validate_point_in_time_data.py \
+  --start 2021-01-01T00:00:00Z --end 2025-12-31T00:00:00Z \
+  --output artifacts/pit-validation-2021-2025.json
+```
+
+The command reads the four `POINT_IN_TIME_*_CSV` variables by default. It checks every XNYS
+trading point in the requested range, minimum constituent coverage, overlapping memberships,
+explicit timestamp timezones, source/provenance fields, fundamental availability and age,
+event publication/ingestion ordering, and earnings-known ordering. The default maximum
+fundamental age is 550 days; configure `POINT_IN_TIME_MAX_FUNDAMENTAL_AGE_DAYS` or pass
+`--max-fundamental-age-days` only when the licensed feed's publication cadence justifies it.
+The report records each input file's SHA-256 and a content-derived `dataset_fingerprint`.
+
+Production validation requires both `SP500` and `NASDAQ100` by default and rejects active
+membership sets below 450 and 90 securities respectively, overlapping rows for the same ticker,
+blank sources, or incomplete sector/capitalization/spread metadata. Configure a smaller intended
+scope explicitly with `POINT_IN_TIME_REQUIRED_UNIVERSES` and the corresponding
+`POINT_IN_TIME_MIN_<UNIVERSE>_CONSTITUENTS`; do not lower these thresholds merely to make a
+partial export pass readiness.
+
+Use an official or licensed historical constituent feed. S&P DJI describes constituent,
+weight, GICS, and composition-event delivery as subscription index data:
+<https://www.spglobal.com/spdji/en/documents/index-policies/index-data-capabilities-brochure.pdf>.
+Nasdaq exposes NDX weighting data through its index portal, with additional history requiring
+full-access login: <https://indexes.nasdaqomx.com/Index/Weighting/NDX>. Current constituent pages
+or reconstructed static ticker lists are not acceptable substitutes for point-in-time history.
+
+All timestamps must include a timezone. Every returned bar, fundamental record, event, and
+universe row is checked against the run's `as_of`. A future timestamp raises an error; vendor
+failures are recorded in snapshot quality metadata. Fallback or unverified data sets
+`live_execution_allowed=false`, so it cannot pass the Worker execution gate. `MarketBar`
+exports include adjusted close, dividends, splits, source, and quality status.
+Real-provider backtests invoke the same full-range validator automatically before any
+simulation work. The dataset fingerprint is included in the backtest configuration hash and
+daily snapshot IDs, so changed source files cannot silently replay snapshots from an older
+export with the same strategy parameters.
+
 ## Source Snapshots and Replay
 
 Research runs persist the exact input snapshot used by the pipeline: universe metadata,
 historical bars, fundamentals, news/events, and earnings-blackout timing. The first
 run with a new `source_snapshot_id` records the provider inputs; later runs with the
 same `source_snapshot_id` replay from the database instead of calling the live vendor.
+Historical bars are content-addressed across every persisted price, corporate-action, quality,
+and provenance field in `market_bars`; a vendor revision creates a new immutable bar version
+instead of rewriting older snapshot evidence. Snapshots store compact integer references, so
+identical repeated 260-day histories are not copied again. Snapshot reads use a
+`(ticker, timestamp)` index and the snapshot-reference primary key.
 
 The run output reports this under `universe_summary.snapshot.operation`:
 - `recorded`: provider data was captured into a new snapshot
@@ -181,6 +321,9 @@ configured. Live dry-runs return a submitted audit order with `broker_order_id` 
 `adapter_message`, but do not create holdings or send anything to a broker.
 Confirmed live BUY orders still require approval and risk-plan checks; filled broker
 responses create monitored holdings and trade-ledger rows through the same fill path.
+Alpaca live BUY submissions use a broker-native bracket order: the recommendation's
+second target is the take-profit limit and its stop-loss is the stop order. The exit
+protection therefore remains active at the broker if this process is offline.
 Sell requests and alert execution use the same gate. `execution_mode=live` with
 `dry_run=true` validates the exit, emits a `sell_routed` event, and returns adapter
 metadata without closing the holding or writing a sell trade. Confirmed live SELL
@@ -201,11 +344,18 @@ Default risk guardrails:
 - `min_confidence=0.72`
 - `max_entry_gap_pct=0.30` (reject plans too far from current spot)
 - `max_name_weight=0.10`, `max_sector_weight=0.30`, and `max_correlated_cluster_weight=0.35`
-- In live mode (`snapshot_mode=latest`), engine applies calibrated confidence relaxation to preserve coverage (`effective_min_confidence = max(0.0, min_confidence - 0.08)`).
+- `max_gross_exposure=1.00`, `max_portfolio_beta=1.50`,
+  `max_portfolio_volatility=0.45`, and `max_liquidation_days=5.0`
+- Live and point-in-time modes apply the configured `min_confidence` without an unvalidated
+  automatic relaxation.
 
 Portfolio risk is applied after candidates are ranked by composite score. The run output includes
-`universe_summary.portfolio_exposure` so operators can inspect the published name, sector, and
-correlated-cluster weights that shaped the final recommendation set.
+`universe_summary.portfolio_exposure` so operators can inspect published name and sector weights,
+return-derived correlation clusters, gross exposure, portfolio beta and volatility, maximum
+liquidation days, and liquidity stress loss. BUY requests reserve gross exposure inside a
+serialized SQLite transaction before broker I/O; concurrent requests cannot both spend the same
+remaining capacity. Reservations are committed on fill, released on definitive cancel/rejection,
+and retained after ambiguous broker responses until reconciliation resolves the order.
 
 Default publication:
 - `top_n=8`
@@ -218,6 +368,7 @@ Default real-data universe:
 - Realtime dashboard (auto-refresh by session: market open 1m, closed 30m): `GET /dashboard`
 - Realtime dashboard payload: `GET /dashboard/realtime-data`
 - Recommendation detail page: `GET /dashboard/recommendations/{id}`
+- Paper-shadow readiness (visible even while Autopilot is off): `GET /execution/paper-shadow-readiness`
 - Operations control center: `GET /operations/control-center`
 - Pending events: `GET /events/pending`
 - Consumed events: `GET /events/consumed`
@@ -331,8 +482,8 @@ When it is true, each cycle still runs an `autopilot_preflight` gate. Kill switc
 zero-capacity approval/execution settings, or disabled action types make the cycle
 skip unsafe automatic actions while still recording the research run and monitoring
 results. Set `restrict_auto_execution_to_regular_hours=true` when automatic buys and
-sells should be blocked outside the approximate US equity regular session
-(`09:30-16:00 America/New_York`). `GET /execution/market-session` exposes the same
+sells should be blocked outside the XNYS regular session
+(`09:30-16:00 America/New_York`, with holidays and early closes). `GET /execution/market-session` exposes the same
 session status used by preflight. Daily automatic action budgets
 (`max_daily_auto_approvals`, `max_daily_auto_buys`, `max_daily_auto_sells`) are also
 checked from persisted `system_cycle` history so a fast loop cannot keep spending the
@@ -363,6 +514,20 @@ manual operators can still send broker status snapshots to the sync endpoints;
 snapshots resolve submitted orders as canceled.
 `sell_alert_cooldown_minutes` similarly prevents the same ticker/reason sell alert
 from repeatedly selling partial positions on every loop.
+
+Live autopilot also requires at least `min_paper_shadow_trading_days` successful paper
+shadow cycles on distinct XNYS trading days (default `20`). Paper mode is allowed to
+bootstrap before this threshold; only live mode is blocked by the threshold. A day counts
+only when a policy-driven cycle runs during the regular XNYS session with the autopilot
+policy and paper auto-execution enabled, snapshot/daily-loss/reconciliation gates passing,
+the execution path actually evaluated, and no execution errors. Each run persists explicit
+`paper_shadow_evidence`; missing or legacy inferred metrics fail closed, duplicate cycles on
+one trading date count once, and synthetic/backdated rows are not operational evidence.
+The dashboard always displays the distinct-day progress, and
+`GET /execution/paper-shadow-readiness` returns the policy-derived required, observed,
+remaining, first, and latest qualifying dates without changing the policy or execution state.
+Unit/integration tests bypass only the elapsed-time result where needed while still
+exercising the other execution controls.
 For live automatic execution, the same cycle records `broker_account_gate` inside
 `auto_execution`: the gate includes normalized cash, buying power, equity, account
 status, and block flags. Broker account or trading blocks stop all live automatic
@@ -413,13 +578,67 @@ python scripts/manage_launchd.py status
 python scripts/manage_launchd.py uninstall --unload
 ```
 
-The LaunchAgent writes logs to `~/Library/Logs/com.quant-agent.system-cycle-loop.*.log`
-and keeps the worker alive through `launchd`.
+The LaunchAgent writes structured JSON to
+`~/Library/Logs/com.quant-agent.system-cycle-loop.json.log`, rotates at 20 MiB, and keeps ten
+archives by default. Override this with `--log-file`, `--log-max-bytes`, and
+`--log-backup-count`. Raw launchd stdout/stderr is discarded so it cannot grow without bounds.
+The worker remains managed by `launchd`.
+
+## Observability and alerts
+
+Logs are JSON by default and include `correlation_id`, `run_id`, and `order_id` where applicable.
+API responses echo `x-correlation-id`; password, authorization, API-key, and secret values are
+redacted before output. Configure an application log file with:
+
+```bash
+export QUANT_AGENT_LOG_FILE="$HOME/Library/Logs/quant-agent.json.log"
+export QUANT_AGENT_LOG_MAX_BYTES=$((20 * 1024 * 1024))
+export QUANT_AGENT_LOG_BACKUP_COUNT=10
+```
+
+Operational counters and gauges are persisted in SQLite rather than reset on process restart.
+`GET /metrics` returns the JSON operational view and `GET /metrics/prometheus` returns Prometheus
+text exposition. `GET /operations/alerts` lists active persisted alerts. Readiness evaluation and
+each Worker cycle activate or resolve alerts for provider failures, consecutive cycle failures,
+database size, and broker-position reconciliation differences. Relevant thresholds are
+`QUANT_AGENT_DB_SIZE_ALERT_BYTES` and `QUANT_AGENT_CONSECUTIVE_ERROR_ALERT_COUNT`.
+
+## Development checks and CI
+
+The repository contains an exact `requirements.lock` and GitHub Actions runs on Python 3.11 and
+3.13 for every pull request. Run the same gates locally:
+
+```bash
+ruff check .
+mypy
+python scripts/check_core_module_size.py --max-lines 850
+pytest -q tests/unit/test_migrations.py
+pytest -q
+pytest -q tests/unit/test_yfinance_provider.py tests/unit/test_data_provenance.py \
+  tests/unit/test_point_in_time_validator.py \
+  --cov=services.ingestion.vendors.yfinance_provider \
+  --cov=services.ingestion.point_in_time_validator \
+  --cov-report=term-missing --cov-fail-under=70
+```
+
+Migration tests require a single Alembic head, build a fresh database through head, exercise the
+0031-to-head downgrade/upgrade path, and run SQLite integrity checks. The real yfinance adapter's
+offline contract suite covers live and historical bars, point-in-time CSVs, fundamentals, events,
+earnings, retries, caching, and explicit fallback behavior; CI enforces at least 70% coverage.
+CI also caps the API state mixins, Worker modules, and dashboard Python entrypoint at 850
+lines. The large dashboard HTML/CSS template is deliberately kept in `home_page.py` and is
+not counted as a Python business-service module.
 
 ## Backtest (Real Historical Data)
 
-- Backtest engine now uses walk-forward historical bars (not synthetic TP-proxy math).
-- Period metrics include annualized return, benchmark return, alpha, information ratio, fill rate, and max drawdown.
+- The event-driven portfolio engine uses XNYS trading days, cash, overlapping positions,
+  position/gross limits, volume-constrained partial fills, slippage, bilateral fees, and turnover.
+- Entry/stop/target fills are gap-aware; dividends and splits adjust the portfolio explicitly.
+- Every run has a deterministic configuration hash and produces an equity curve and trade ledger.
+- Results are split into training, validation, and out-of-sample segments and include confidence
+  calibration (Brier score, expected calibration error, and confidence bins).
+- Period metrics include annualized return, benchmark return, alpha, information ratio, fill rate,
+  turnover, total fees, and maximum drawdown.
 
 Endpoint:
 - `POST /backtests/runs`
@@ -437,7 +656,14 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
     "benchmark": "SPY",
     "top_n": 10,
     "rebalance_frequency": "monthly",
-    "transaction_cost_bps": 10
+    "transaction_cost_bps": 10,
+    "slippage_bps": 5,
+    "initial_cash": 100000,
+    "max_position_pct": 0.10,
+    "max_gross_exposure_pct": 1.0,
+    "max_volume_participation_pct": 0.05,
+    "train_fraction": 0.60,
+    "validation_fraction": 0.20
   }'
 ```
 

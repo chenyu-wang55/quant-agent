@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
 import hashlib
 import json
+from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -56,6 +56,9 @@ class RecommendationStatus(str, Enum):
 
 
 class PaperOrderStatus(str, Enum):
+    PENDING_SUBMIT = "pending_submit"
+    SUBMIT_UNKNOWN = "submit_unknown"
+    SUBMIT_FAILED = "submit_failed"
     SUBMITTED = "submitted"
     FILLED = "filled"
     CANCELED = "canceled"
@@ -142,6 +145,12 @@ class RiskPolicy(BaseModel):
     max_sector_weight: float = 0.30
     max_gross_exposure: float = 1.0
     max_correlated_cluster_weight: float = 0.35
+    max_pairwise_correlation: float = Field(default=0.75, ge=-1.0, le=1.0)
+    max_portfolio_beta: float = Field(default=1.50, ge=0.0)
+    max_portfolio_volatility: float = Field(default=0.45, ge=0.0)
+    max_liquidation_days: float = Field(default=5.0, gt=0.0)
+    liquidity_stress_participation: float = Field(default=0.10, gt=0.0, le=1.0)
+    portfolio_reference_equity: float = Field(default=100_000.0, gt=0.0)
     max_entry_gap_pct: float = 0.30
     reject_on_material_evidence_conflict: bool = True
     event_trading_enabled: bool = False
@@ -270,6 +279,10 @@ class SecurityMetadata(BaseModel):
     avg_dollar_volume: float
     last_price: float
     spread_bps: float
+    as_of: datetime | None = None
+    source: str = "unknown"
+    quality_status: str = "unverified"
+    fallback_fields: list[str] = Field(default_factory=list)
 
 
 class MarketBar(BaseModel):
@@ -280,6 +293,11 @@ class MarketBar(BaseModel):
     low: float
     close: float
     volume: float
+    adjusted_close: float | None = None
+    dividend: float = 0.0
+    split_factor: float = 0.0
+    source: str = "unknown"
+    quality_status: str = "unverified"
 
 
 class FundamentalSnapshot(BaseModel):
@@ -289,6 +307,11 @@ class FundamentalSnapshot(BaseModel):
     roe: float
     revenue_growth_yoy: float
     eps_revision_30d: float
+    period_end: datetime | None = None
+    available_at: datetime | None = None
+    source: str = "unknown"
+    quality_status: str = "unverified"
+    fallback_fields: list[str] = Field(default_factory=list)
 
 
 class NewsEvent(BaseModel):
@@ -303,6 +326,8 @@ class NewsEvent(BaseModel):
     relevance: float
     horizon: str
     source_url: str
+    source: str = "unknown"
+    quality_status: str = "unverified"
 
 
 class SourceSnapshotSummary(BaseModel):
@@ -459,6 +484,12 @@ class ResearchRunResult(BaseModel):
 
 class PaperOrderRequest(BaseModel):
     recommendation_id: str
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:/-]+$",
+    )
     side: Direction = Direction.BUY
     qty: float = Field(gt=0)
     limit_price: float | None = Field(default=None, gt=0)
@@ -580,6 +611,8 @@ class PaperOrderRiskPlan(BaseModel):
 class PaperOrder(BaseModel):
     id: str
     recommendation_id: str
+    client_order_id: str | None = None
+    idempotency_key: str | None = None
     source_snapshot_id: str | None = None
     strategy_config_id: str | None = None
     side: Direction
@@ -616,6 +649,26 @@ class BacktestRunRequest(BaseModel):
     top_n: int = 10
     rebalance_frequency: str = "monthly"
     transaction_cost_bps: float = 10.0
+    slippage_bps: float = 5.0
+    initial_cash: float = Field(default=100_000.0, gt=0)
+    max_position_pct: float = Field(default=0.10, gt=0, le=1.0)
+    max_gross_exposure_pct: float = Field(default=1.0, gt=0, le=5.0)
+    max_volume_participation: float = Field(default=0.02, gt=0, le=1.0)
+    entry_valid_trading_days: int = Field(default=3, ge=1, le=20)
+    max_holding_trading_days: int = Field(default=10, ge=1, le=252)
+    train_fraction: float = Field(default=0.60, gt=0, lt=1)
+    validation_fraction: float = Field(default=0.20, ge=0, lt=1)
+    confidence_bins: int = Field(default=10, ge=2, le=50)
+
+    @model_validator(mode="after")
+    def validate_backtest_split(self) -> "BacktestRunRequest":
+        if self.end_date <= self.start_date:
+            raise ValueError("end_date must be after start_date")
+        if self.train_fraction + self.validation_fraction >= 1.0:
+            raise ValueError("train_fraction + validation_fraction must be below 1.0")
+        if self.transaction_cost_bps < 0 or self.slippage_bps < 0:
+            raise ValueError("transaction costs and slippage must be non-negative")
+        return self
 
 
 class BacktestRunResult(BaseModel):
@@ -624,6 +677,11 @@ class BacktestRunResult(BaseModel):
     config_hash: str
     metrics: dict[str, float]
     notes: str
+    segments: dict[str, dict[str, float]] = Field(default_factory=dict)
+    calibration: dict[str, Any] = Field(default_factory=dict)
+    equity_curve: list[dict[str, Any]] = Field(default_factory=list)
+    trades: list[dict[str, Any]] = Field(default_factory=list)
+    assumptions: dict[str, Any] = Field(default_factory=dict)
 
 
 class RecommendationApproval(BaseModel):
@@ -647,7 +705,7 @@ class AutopilotPolicy(BaseModel):
     enabled: bool = False
     auto_approve_recommendations: bool = False
     auto_execute_approved: bool = False
-    restrict_auto_execution_to_regular_hours: bool = False
+    restrict_auto_execution_to_regular_hours: bool = True
     auto_execution_mode: AutoExecutionMode = AutoExecutionMode.PAPER
     auto_approve_min_confidence: float = Field(default=0.72, ge=0.0, le=1.0)
     auto_approve_min_composite: float = Field(default=0.0, ge=0.0)
@@ -668,6 +726,7 @@ class AutopilotPolicy(BaseModel):
     max_auto_buy_price_drift_pct: float = Field(default=0.03, ge=0.0, le=1.0)
     require_position_reconciliation: bool = False
     max_position_reconciliation_age_minutes: int = Field(default=1440, ge=0)
+    min_paper_shadow_trading_days: int = Field(default=20, ge=0)
     account_equity: float = Field(default=100_000.0, gt=0)
     risk_per_trade_pct: float = Field(default=0.01, gt=0, le=1.0)
     max_position_pct: float = Field(default=0.10, gt=0, le=1.0)
@@ -678,14 +737,29 @@ class AutopilotPolicy(BaseModel):
     updated_by: str = "system"
 
 
+class PaperShadowReadiness(BaseModel):
+    passed: bool
+    required_trading_days: int = Field(ge=0)
+    observed_trading_days: int = Field(ge=0)
+    remaining_trading_days: int = Field(ge=0)
+    first_trading_date: str | None = None
+    last_trading_date: str | None = None
+    bypassed_for_test: bool = False
+    checked_at: datetime = Field(default_factory=utc_now)
+
+
 class MarketSessionStatus(BaseModel):
     as_of: datetime
     generated_at: datetime = Field(default_factory=utc_now)
     timezone: str = "America/New_York"
+    calendar: str = "XNYS"
     local_time: str
     regular_open_time: str = "09:30"
     regular_close_time: str = "16:00"
     is_weekday: bool
+    is_trading_day: bool = True
+    is_early_close: bool = False
+    holiday_name: str | None = None
     is_regular_session: bool
     status: str
 
@@ -730,6 +804,12 @@ class ManualBuyRequest(BaseModel):
 
 
 class ManualSellRequest(BaseModel):
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:/-]+$",
+    )
     qty: float | None = Field(default=None, gt=0)
     sell_price: float = Field(gt=0)
     sold_at: datetime | None = None
@@ -793,6 +873,8 @@ class HoldingControlUpdateResult(BaseModel):
 
 class SellExecutionResult(BaseModel):
     sell_execution_id: str | None = None
+    client_order_id: str | None = None
+    idempotency_key: str | None = None
     holding: HoldingWatch
     sold_qty: float
     sell_price: float
@@ -810,6 +892,8 @@ class SellExecutionResult(BaseModel):
 
 class SellExecutionAudit(BaseModel):
     id: str
+    client_order_id: str | None = None
+    idempotency_key: str | None = None
     ticker: str
     qty: float
     sell_price: float
@@ -831,6 +915,12 @@ class SellExecutionAudit(BaseModel):
 
 
 class AlertSellRequest(BaseModel):
+    idempotency_key: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9._:/-]+$",
+    )
     reason_code: str | None = None
     qty: float | None = Field(default=None, gt=0)
     sell_price: float | None = Field(default=None, gt=0)

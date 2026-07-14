@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends
 from apps.api.dependencies import AppState, get_app_state
 from domain.entities.models import ResearchRunRequest, ResearchRunResult
 
-
 router = APIRouter(tags=["research"])
 
 

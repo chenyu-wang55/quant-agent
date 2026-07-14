@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
 
-
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 
@@ -213,19 +212,37 @@ def test_api_research_recommendation_and_paper_order_flow() -> None:
     )
     assert mismatched_side_response.status_code == 409
 
-    paper_response = client.post(
-        "/paper-orders",
-        json={
-            "recommendation_id": recommendation_id,
-            "side": "BUY",
-            "qty": 10,
-            "limit_price": None,
-        },
-        headers=AUTH_HEADERS,
-    )
+    idempotency_key = f"integration:{recommendation_id}:paper-buy"
+    paper_payload = {
+        "recommendation_id": recommendation_id,
+        "idempotency_key": idempotency_key,
+        "side": "BUY",
+        "qty": 10,
+        "limit_price": None,
+    }
+    paper_response = client.post("/paper-orders", json=paper_payload, headers=AUTH_HEADERS)
     assert paper_response.status_code == 200
     paper_order = paper_response.json()
     assert paper_order["status"] == "filled"
+    assert paper_order["idempotency_key"] == idempotency_key
+    assert paper_order["client_order_id"].startswith("quant_")
+
+    replay_response = client.post("/paper-orders", json=paper_payload, headers=AUTH_HEADERS)
+    assert replay_response.status_code == 200
+    assert replay_response.json()["id"] == paper_order["id"]
+
+    conflicting_replay = client.post(
+        "/paper-orders",
+        json={**paper_payload, "qty": 11},
+        headers=AUTH_HEADERS,
+    )
+    assert conflicting_replay.status_code == 409
+    assert conflicting_replay.json()["detail"]["reason"] == "idempotency_key_reused_with_different_request"
+    assert "qty" in conflicting_replay.json()["detail"]["conflicting_fields"]
+
+    persisted_by_key = state.paper_order_repo.get_by_idempotency_key(idempotency_key)
+    assert persisted_by_key is not None
+    assert persisted_by_key.id == paper_order["id"]
 
     orders_response = client.get(
         f"/paper-orders?recommendation_id={recommendation_id}&status=filled",

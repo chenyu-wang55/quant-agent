@@ -14,7 +14,6 @@ from domain.entities.models import (
     SourceSnapshotSummary,
 )
 
-
 router = APIRouter(tags=["source-snapshots"])
 
 

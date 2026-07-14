@@ -94,6 +94,27 @@ def test_alpaca_adapter_gets_order_by_client_order_id() -> None:
     assert adapter.calls[0]["query"] == {"client_order_id": "quant_test_456"}
 
 
+def test_alpaca_adapter_submits_native_bracket_protection() -> None:
+    adapter = CapturingAlpacaAdapter()
+    adapter.submit_order(
+        BrokerOrderPlacement(
+            client_order_id="quant_bracket_test",
+            symbol="AAPL",
+            qty=2,
+            side="BUY",
+            limit_price=180,
+            order_class="bracket",
+            take_profit_limit_price=210,
+            stop_loss_price=168,
+        )
+    )
+
+    payload = adapter.calls[0]["payload"]
+    assert payload["order_class"] == "bracket"
+    assert payload["take_profit"] == {"limit_price": "210"}
+    assert payload["stop_loss"] == {"stop_price": "168"}
+
+
 def test_alpaca_adapter_gets_order_by_broker_order_id() -> None:
     adapter = CapturingAlpacaAdapter()
 

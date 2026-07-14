@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
 
 from domain.entities.models import (
     OrderExecutionMode,
@@ -19,14 +18,19 @@ class PaperExecutionRouter:
         recommendation: Recommendation,
         request: PaperOrderRequest,
         positions: dict[str, PositionState],
+        local_order_id: str,
+        client_order_id: str,
     ) -> tuple[PaperOrder, dict[str, PositionState]]:
+        positions = {ticker: position.model_copy(deep=True) for ticker, position in positions.items()}
         submitted_at = datetime.now(timezone.utc)
         entry_mid = (recommendation.entry_zone_low + recommendation.entry_zone_high) / 2
         fill_price = request.limit_price if request.limit_price is not None else entry_mid
 
         order = PaperOrder(
-            id=uuid4().hex[:16],
+            id=local_order_id,
             recommendation_id=request.recommendation_id,
+            client_order_id=client_order_id,
+            idempotency_key=request.idempotency_key,
             source_snapshot_id=recommendation.source_snapshot_id,
             strategy_config_id=recommendation.strategy_config_id,
             side=request.side,
@@ -34,7 +38,7 @@ class PaperExecutionRouter:
             limit_price=request.limit_price,
             execution_mode=OrderExecutionMode.PAPER,
             dry_run=False,
-            broker_order_id=f"paper_{uuid4().hex[:12]}",
+            broker_order_id=f"paper_{local_order_id}",
             adapter_message="paper_fill_simulated",
             submitted_at=submitted_at,
             status=PaperOrderStatus.FILLED,

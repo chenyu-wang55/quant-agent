@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from pathlib import Path
-import os
 import sqlite3
+from contextlib import closing
+from pathlib import Path
+
+from alembic.config import Config
 
 from alembic import command
-from alembic.config import Config
+from infra.config import env_flag
 from infra.db.session import get_database_url
-
 
 REQUIRED_TABLES = {
     "alembic_version",
@@ -21,6 +22,9 @@ REQUIRED_TABLES = {
     "approval_decisions",
     "execution_controls",
     "autopilot_policies",
+    "portfolio_risk_reservations",
+    "operational_metrics",
+    "operational_alerts",
     "market_bars",
     "holding_watches",
     "holding_control_audits",
@@ -32,7 +36,8 @@ REQUIRED_TABLES = {
     "strategy_configs",
     "source_snapshots",
     "snapshot_securities",
-    "snapshot_market_bars",
+    "snapshot_storage_keys",
+    "snapshot_market_bar_refs",
     "snapshot_fundamentals",
     "snapshot_events",
 }
@@ -51,7 +56,7 @@ def _sqlite_path_from_url(db_url: str, root: Path) -> Path | None:
 def _has_required_sqlite_tables(path_obj: Path) -> bool:
     if not path_obj.exists():
         return False
-    with sqlite3.connect(path_obj) as conn:
+    with closing(sqlite3.connect(path_obj)) as conn:
         cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         existing = {row[0] for row in cursor.fetchall()}
     return REQUIRED_TABLES.issubset(existing)
@@ -67,7 +72,7 @@ def init_db() -> None:
     sqlite_path = _sqlite_path_from_url(db_url, root)
 
     def _reset_and_upgrade_if_needed() -> bool:
-        allow_reset = os.getenv("DB_RESET_ON_SCHEMA_CONFLICT", "0") == "1"
+        allow_reset = env_flag("DB_RESET_ON_SCHEMA_CONFLICT")
         if not allow_reset or sqlite_path is None:
             return False
         if sqlite_path.exists():

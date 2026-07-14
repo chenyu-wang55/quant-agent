@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, Query
 from apps.api.dependencies import AppState, get_app_state
 from infra.queue.events import SystemEvent
 
-
 router = APIRouter(tags=["events"])
 
 

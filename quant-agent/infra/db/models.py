@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -119,6 +119,8 @@ class PaperOrderRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     recommendation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     source_snapshot_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     strategy_config_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     side: Mapped[str] = mapped_column(String(8), nullable=False)
@@ -233,6 +235,8 @@ class SellExecutionAuditRecord(Base):
     __tablename__ = "sell_execution_audits"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    client_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, unique=True, index=True)
     ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
     qty: Mapped[float] = mapped_column(Float, nullable=False)
     sell_price: Mapped[float] = mapped_column(Float, nullable=False)
@@ -323,7 +327,7 @@ class AutopilotPolicyRecord(Base):
     enabled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     auto_approve_recommendations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     auto_execute_approved: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    restrict_auto_execution_to_regular_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    restrict_auto_execution_to_regular_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     auto_execution_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="paper")
     auto_approve_min_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.72)
     auto_approve_min_composite: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
@@ -344,6 +348,7 @@ class AutopilotPolicyRecord(Base):
     max_auto_buy_price_drift_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.03)
     require_position_reconciliation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_position_reconciliation_age_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=1440)
+    min_paper_shadow_trading_days: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     account_equity: Mapped[float] = mapped_column(Float, nullable=False, default=100_000.0)
     risk_per_trade_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.01)
     max_position_pct: Mapped[float] = mapped_column(Float, nullable=False, default=0.10)
@@ -354,18 +359,64 @@ class AutopilotPolicyRecord(Base):
     updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
 
 
+class PortfolioRiskReservationRecord(Base):
+    __tablename__ = "portfolio_risk_reservations"
+
+    order_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    requested_notional: Mapped[float] = mapped_column(Float, nullable=False)
+    account_equity: Mapped[float] = mapped_column(Float, nullable=False)
+    max_gross_exposure_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OperationalMetricRecord(Base):
+    __tablename__ = "operational_metrics"
+
+    metric: Mapped[str] = mapped_column(String(128), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
+class OperationalAlertRecord(Base):
+    __tablename__ = "operational_alerts"
+
+    alert_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    category: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    details_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class MarketBarRecord(Base):
     __tablename__ = "market_bars"
+    __table_args__ = (
+        Index("ix_market_bars_ticker_timestamp", "ticker", "timestamp"),
+        Index("uq_market_bars_content_hash", "content_hash", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    ticker: Mapped[str] = mapped_column(String(16), nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     open: Mapped[float] = mapped_column(Float, nullable=False)
     high: Mapped[float] = mapped_column(Float, nullable=False)
     low: Mapped[float] = mapped_column(Float, nullable=False)
     close: Mapped[float] = mapped_column(Float, nullable=False)
     volume: Mapped[float] = mapped_column(Float, nullable=False)
     vendor_id: Mapped[str] = mapped_column(String(64), nullable=False, default="mock-provider")
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    adjusted_close: Mapped[float | None] = mapped_column(Float, nullable=True)
+    dividend: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    split_factor: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    quality_status: Mapped[str] = mapped_column(String(32), nullable=False, default="unverified")
+    provenance_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class SourceSnapshotRecord(Base):
@@ -391,21 +442,21 @@ class SnapshotSecurityRecord(Base):
     avg_dollar_volume: Mapped[float] = mapped_column(Float, nullable=False)
     last_price: Mapped[float] = mapped_column(Float, nullable=False)
     spread_bps: Mapped[float] = mapped_column(Float, nullable=False)
+    provenance_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
-class SnapshotMarketBarRecord(Base):
-    __tablename__ = "snapshot_market_bars"
+class SnapshotStorageKeyRecord(Base):
+    __tablename__ = "snapshot_storage_keys"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    ticker: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-    open: Mapped[float] = mapped_column(Float, nullable=False)
-    high: Mapped[float] = mapped_column(Float, nullable=False)
-    low: Mapped[float] = mapped_column(Float, nullable=False)
-    close: Mapped[float] = mapped_column(Float, nullable=False)
-    volume: Mapped[float] = mapped_column(Float, nullable=False)
-    vendor_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_snapshot_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True, index=True)
+
+
+class SnapshotMarketBarRefRecord(Base):
+    __tablename__ = "snapshot_market_bar_refs"
+
+    snapshot_key: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bar_id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
 
 class SnapshotFundamentalRecord(Base):
@@ -419,6 +470,9 @@ class SnapshotFundamentalRecord(Base):
     roe: Mapped[float] = mapped_column(Float, nullable=False)
     revenue_growth_yoy: Mapped[float] = mapped_column(Float, nullable=False)
     eps_revision_30d: Mapped[float] = mapped_column(Float, nullable=False)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provenance_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class SnapshotEventRecord(Base):
@@ -437,3 +491,4 @@ class SnapshotEventRecord(Base):
     relevance: Mapped[float] = mapped_column(Float, nullable=False)
     horizon: Mapped[str] = mapped_column(String(32), nullable=False)
     source_url: Mapped[str] = mapped_column(Text, nullable=False)
+    provenance_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)

@@ -8,8 +8,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_LABEL = "com.quant-agent.system-cycle-loop"
+
+
+def env_text(name: str, default: str = "") -> str:
+    return (os.getenv(name, default) or "").strip()
 
 
 def repo_root() -> Path:
@@ -78,6 +81,8 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
         str(args.max_auto_buy_price_drift_pct),
         "--max-position-reconciliation-age-minutes",
         str(args.max_position_reconciliation_age_minutes),
+        "--min-paper-shadow-trading-days",
+        str(args.min_paper_shadow_trading_days),
         "--risk-per-trade-pct",
         str(args.risk_per_trade_pct),
         "--max-position-pct",
@@ -113,9 +118,18 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
 def build_plist(args: argparse.Namespace, home: Path | None = None) -> dict[str, Any]:
     label = args.label
     logs = default_log_dir(home=home)
+    structured_log = (
+        Path(args.log_file).expanduser().resolve()
+        if args.log_file
+        else logs / f"{label}.json.log"
+    )
     env = {
         "PYTHONUNBUFFERED": "1",
         "DATA_PROVIDER": args.data_provider,
+        "QUANT_AGENT_LOG_FORMAT": "json",
+        "QUANT_AGENT_LOG_FILE": str(structured_log),
+        "QUANT_AGENT_LOG_MAX_BYTES": str(args.log_max_bytes),
+        "QUANT_AGENT_LOG_BACKUP_COUNT": str(args.log_backup_count),
     }
     if args.access_password:
         env["QUANT_AGENT_ACCESS_PASSWORD"] = args.access_password
@@ -126,8 +140,10 @@ def build_plist(args: argparse.Namespace, home: Path | None = None) -> dict[str,
         "WorkingDirectory": str(Path(args.repo_root).resolve()),
         "RunAtLoad": True,
         "KeepAlive": True,
-        "StandardOutPath": str(logs / f"{label}.out.log"),
-        "StandardErrorPath": str(logs / f"{label}.err.log"),
+        # Worker events are written through RotatingFileHandler. Discard raw
+        # stdout/stderr so launchd cannot grow unbounded log files.
+        "StandardOutPath": "/dev/null",
+        "StandardErrorPath": "/dev/null",
         "EnvironmentVariables": env,
     }
 
@@ -135,6 +151,7 @@ def build_plist(args: argparse.Namespace, home: Path | None = None) -> dict[str,
 def write_plist(plist: dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(plistlib.dumps(plist, sort_keys=False))
+    path.chmod(0o600)
 
 
 def install(args: argparse.Namespace) -> Path:
@@ -176,8 +193,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--plist-path", default=None, help="override plist path; defaults to ~/Library/LaunchAgents")
     parser.add_argument("--repo-root", default=str(repo_root()))
     parser.add_argument("--python", default=sys.executable)
-    parser.add_argument("--data-provider", default=os.getenv("DATA_PROVIDER", "yfinance"))
-    parser.add_argument("--access-password", default=os.getenv("QUANT_AGENT_ACCESS_PASSWORD"))
+    parser.add_argument("--data-provider", default=env_text("DATA_PROVIDER", "yfinance"))
+    parser.add_argument("--access-password", default=env_text("QUANT_AGENT_ACCESS_PASSWORD") or None)
+    parser.add_argument("--log-file", default=None)
+    parser.add_argument("--log-max-bytes", type=int, default=20 * 1024 * 1024)
+    parser.add_argument("--log-backup-count", type=int, default=10)
     parser.add_argument("--top-n", type=int, default=8)
     parser.add_argument("--min-confidence", type=float, default=0.0)
     parser.add_argument("--interval-seconds", type=float, default=300.0)
@@ -208,6 +228,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-auto-buy-price-drift-pct", type=float, default=0.03)
     parser.add_argument("--require-position-reconciliation", action="store_true")
     parser.add_argument("--max-position-reconciliation-age-minutes", type=int, default=1440)
+    parser.add_argument("--min-paper-shadow-trading-days", type=int, default=20)
     parser.add_argument("--risk-per-trade-pct", type=float, default=0.01)
     parser.add_argument("--max-position-pct", type=float, default=0.10)
     parser.add_argument("--max-gross-exposure-pct", type=float, default=1.0)

@@ -11,7 +11,6 @@ from apps.api.main import app
 from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate
 from services.execution.router import ExecutionRouter
 
-
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 
@@ -368,6 +367,7 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
             "execution_mode": "live",
             "dry_run": False,
             "confirm_live": True,
+            "idempotency_key": "portfolio-unconfigured-live-sell",
         },
         headers=AUTH_HEADERS,
     )
@@ -531,6 +531,7 @@ def test_confirmed_live_sell_uses_configured_broker_adapter_and_records_fill() -
                 "execution_mode": "live",
                 "dry_run": False,
                 "confirm_live": True,
+                "idempotency_key": "portfolio-confirmed-live-sell",
                 "reason": "live broker sell test",
             },
             headers=AUTH_HEADERS,
@@ -660,6 +661,7 @@ def test_broker_sell_sync_applies_delayed_fill_once() -> None:
                 "execution_mode": "live",
                 "dry_run": False,
                 "confirm_live": True,
+                "idempotency_key": "portfolio-delayed-live-sell",
                 "reason": sell_reason,
             },
             headers=AUTH_HEADERS,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from apps.api.dependencies import AppState, get_app_state
@@ -7,6 +9,7 @@ from domain.entities.models import (
     BrokerOrderSyncRequest,
     BrokerOrderSyncResult,
     Direction,
+    OrderExecutionMode,
     PaperOrder,
     PaperOrderCancelRequest,
     PaperOrderFillRequest,
@@ -16,7 +19,6 @@ from domain.entities.models import (
     Recommendation,
 )
 from services.execution.broker_adapter import BrokerAdapterError
-
 
 router = APIRouter(tags=["paper-orders"])
 
@@ -36,7 +38,8 @@ def _parse_status(status: str | None) -> PaperOrderStatus | None:
     normalized = status.lower()
     if normalized in {item.value for item in PaperOrderStatus}:
         return PaperOrderStatus(normalized)
-    raise HTTPException(status_code=400, detail="status must be submitted, filled, or canceled")
+    allowed = ", ".join(item.value for item in PaperOrderStatus)
+    raise HTTPException(status_code=400, detail=f"status must be one of: {allowed}")
 
 
 def _get_recommendation_or_404(state: AppState, recommendation_id: str) -> Recommendation:
@@ -46,6 +49,22 @@ def _get_recommendation_or_404(state: AppState, recommendation_id: str) -> Recom
     if recommendation is None:
         raise HTTPException(status_code=404, detail="Recommendation id not found")
     return recommendation
+
+
+def _idempotency_conflicts(order: PaperOrder, request: PaperOrderRequest) -> list[str]:
+    conflicts: list[str] = []
+    comparisons = {
+        "recommendation_id": (order.recommendation_id, request.recommendation_id),
+        "side": (order.side, request.side),
+        "qty": (round(order.qty, 8), round(request.qty, 8)),
+        "limit_price": (order.limit_price, request.limit_price),
+        "execution_mode": (order.execution_mode, request.execution_mode),
+        "dry_run": (order.dry_run, request.dry_run),
+    }
+    for field, (existing, incoming) in comparisons.items():
+        if existing != incoming:
+            conflicts.append(field)
+    return conflicts
 
 
 @router.post("/paper-orders/risk-plan", response_model=PaperOrderRiskPlan)
@@ -83,8 +102,46 @@ def submit_paper_order(
     request: PaperOrderRequest,
     state: AppState = Depends(get_app_state),
 ) -> PaperOrder:
+    existing = state.get_paper_order_by_idempotency_key(request.idempotency_key)
+    if existing is not None:
+        conflicts = _idempotency_conflicts(existing, request)
+        if conflicts:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "idempotency_key_reused_with_different_request",
+                    "idempotency_key": request.idempotency_key,
+                    "existing_order_id": existing.id,
+                    "conflicting_fields": conflicts,
+                },
+            )
+        if existing.status in {
+            PaperOrderStatus.PENDING_SUBMIT,
+            PaperOrderStatus.SUBMIT_UNKNOWN,
+        }:
+            submitted_at = existing.submitted_at
+            if submitted_at.tzinfo is None:
+                submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+            if (
+                existing.status == PaperOrderStatus.PENDING_SUBMIT
+                and datetime.now(timezone.utc) - submitted_at < timedelta(seconds=30)
+            ):
+                return existing
+            try:
+                return state.recover_order_submission(existing)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            except NotImplementedError as exc:
+                raise HTTPException(status_code=501, detail=str(exc)) from exc
+            except BrokerAdapterError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+        return existing
+
     if state.kill_switch.enabled:
         raise HTTPException(status_code=423, detail="Execution is blocked by kill switch")
+
+    if request.execution_mode == OrderExecutionMode.LIVE and not request.idempotency_key:
+        raise HTTPException(status_code=422, detail="Live execution requires idempotency_key")
 
     recommendation = _get_recommendation_or_404(state, request.recommendation_id)
 
@@ -113,10 +170,9 @@ def submit_paper_order(
         raise HTTPException(status_code=409, detail=risk_plan.model_dump(mode="json"))
 
     try:
-        order, updated_positions = state.execution_router.submit(
+        order = state.submit_order(
             recommendation=recommendation,
             request=request,
-            positions=state.positions,
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -124,8 +180,17 @@ def submit_paper_order(
         raise HTTPException(status_code=501, detail=str(exc)) from exc
     except BrokerAdapterError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    state.positions = updated_positions
-    state.record_paper_order(order, recommendation=recommendation)
+    conflicts = _idempotency_conflicts(order, request)
+    if conflicts:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "idempotency_key_reused_with_different_request",
+                "idempotency_key": request.idempotency_key,
+                "existing_order_id": order.id,
+                "conflicting_fields": conflicts,
+            },
+        )
     return order
 
 

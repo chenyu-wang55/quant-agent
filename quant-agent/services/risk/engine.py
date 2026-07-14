@@ -15,6 +15,10 @@ class RiskEngine:
         name_weight: float = 0.0,
         sector_weight: float = 0.0,
         correlated_cluster_weight: float = 0.0,
+        gross_weight: float = 0.0,
+        portfolio_beta: float = 0.0,
+        portfolio_volatility: float = 0.0,
+        max_liquidation_days: float = 0.0,
     ) -> PolicyDecision:
         reason_codes: list[str] = []
         failed_checks: list[str] = []
@@ -78,6 +82,22 @@ class RiskEngine:
         if correlated_cluster_weight > risk_policy.max_correlated_cluster_weight:
             reason_codes.append(RejectionReason.CORRELATED_CLUSTER)
             failed_checks.append("max_correlated_cluster_weight")
+
+        if gross_weight > risk_policy.max_gross_exposure:
+            reason_codes.append(RejectionReason.GROSS_EXPOSURE)
+            failed_checks.append("max_gross_exposure")
+
+        if abs(portfolio_beta) > risk_policy.max_portfolio_beta:
+            reason_codes.append(RejectionReason.PORTFOLIO_BETA)
+            failed_checks.append("max_portfolio_beta")
+
+        if portfolio_volatility > risk_policy.max_portfolio_volatility:
+            reason_codes.append(RejectionReason.PORTFOLIO_VOLATILITY)
+            failed_checks.append("max_portfolio_volatility")
+
+        if max_liquidation_days > risk_policy.max_liquidation_days:
+            reason_codes.append(RejectionReason.LIQUIDITY_STRESS)
+            failed_checks.append("max_liquidation_days")
 
         return PolicyDecision(
             approved=len(reason_codes) == 0,

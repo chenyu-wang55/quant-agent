@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import plistlib
+import stat
 from pathlib import Path
 
 from scripts import manage_launchd
@@ -64,6 +65,8 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
         "--require-position-reconciliation",
         "--max-position-reconciliation-age-minutes",
         "120",
+        "--min-paper-shadow-trading-days",
+        "25",
     )
 
     plist = manage_launchd.build_plist(args, home=tmp_path)
@@ -119,7 +122,17 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert "--require-position-reconciliation" in round_trip["ProgramArguments"]
     assert "--max-position-reconciliation-age-minutes" in round_trip["ProgramArguments"]
     assert "120" in round_trip["ProgramArguments"]
-    assert str(tmp_path / "Library" / "Logs") in round_trip["StandardOutPath"]
+    assert "--min-paper-shadow-trading-days" in round_trip["ProgramArguments"]
+    assert "25" in round_trip["ProgramArguments"]
+    assert round_trip["StandardOutPath"] == "/dev/null"
+    assert round_trip["StandardErrorPath"] == "/dev/null"
+    environment = round_trip["EnvironmentVariables"]
+    assert environment["QUANT_AGENT_LOG_FORMAT"] == "json"
+    assert environment["QUANT_AGENT_LOG_FILE"] == str(
+        tmp_path / "Library" / "Logs" / f"{manage_launchd.DEFAULT_LABEL}.json.log"
+    )
+    assert environment["QUANT_AGENT_LOG_MAX_BYTES"] == str(20 * 1024 * 1024)
+    assert environment["QUANT_AGENT_LOG_BACKUP_COUNT"] == "10"
 
 
 def test_install_and_uninstall_launchd_plist(tmp_path: Path, monkeypatch) -> None:
@@ -145,6 +158,7 @@ def test_install_and_uninstall_launchd_plist(tmp_path: Path, monkeypatch) -> Non
     installed_path = manage_launchd.install(args)
     assert installed_path == plist_path
     assert plist_path.exists()
+    assert stat.S_IMODE(plist_path.stat().st_mode) == 0o600
     assert log_dir.exists()
     assert plistlib.loads(plist_path.read_bytes())["Label"] == "com.example.quant"
 

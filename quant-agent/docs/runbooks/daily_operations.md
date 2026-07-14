@@ -59,6 +59,19 @@ at `GET /operations/system-runs`. Automatic action details are included under
 `broker_order_sync`, `broker_position_reconciliation`, `auto_approval`,
 `auto_execution`, `autopilot_policy`, and `autopilot_preflight` and are also
 persisted in the run metrics JSON.
+The live-readiness paper-shadow counter does not infer success from a generic successful
+cycle. A qualifying cycle must use the persisted autopilot policy in `paper` mode during
+the regular XNYS session, actually enable/evaluate automatic execution, pass snapshot,
+daily-loss, and reconciliation gates, finish without execution errors, and persist
+`paper_shadow_evidence.qualified=true`. Zero routed orders can still qualify when there
+are no approved recommendations or sell alerts; disabled automation, failed gates, legacy
+rows without explicit evidence, and duplicate cycles on the same date do not add days.
+The 20-day threshold blocks switching to automatic `live` mode, not the paper cycles needed
+to accumulate the evidence.
+Poll `GET /execution/paper-shadow-readiness` or inspect the Dashboard's `纸交易影子`
+card to see required, observed, and remaining distinct trading days while the Autopilot
+policy remains safely disabled. The endpoint is read-only and accepts an optional `as_of`
+timestamp for audit reconstruction.
 Automatic approval and execution also require the current source snapshot to pass
 `snapshot_quality_gate`. By default the worker requires 100% captured bar coverage
 and 100% captured fundamental coverage for the tickers that were actually modeled,
@@ -125,6 +138,13 @@ repeated failures activate the kill switch and stop the loop.
 macOS launchd management:
 
 ```bash
+# Authenticated loopback API (persistent across login/reboot)
+export QUANT_AGENT_ACCESS_PASSWORD="a-long-local-password"
+export QUANT_AGENT_AUTH_SIGNING_SECRET="$(openssl rand -hex 32)"
+python scripts/manage_api_launchd.py install --load
+python scripts/manage_api_launchd.py status
+
+# Unattended system-cycle worker (install only after readiness passes)
 python scripts/manage_launchd.py render --use-autopilot-policy --data-provider yfinance
 python scripts/manage_launchd.py install --use-autopilot-policy --data-provider yfinance --load
 python scripts/manage_launchd.py install --auto-approve-recommendations --auto-execute-approved --data-provider yfinance --load
@@ -133,13 +153,21 @@ python scripts/manage_launchd.py uninstall --unload
 ```
 
 The default service label is `com.quant-agent.system-cycle-loop`. The plist lives in
-`~/Library/LaunchAgents`, logs go to `~/Library/Logs`, and the worker command uses
-the current Python executable plus the repository as `WorkingDirectory`.
+`~/Library/LaunchAgents`, and the worker command uses the current Python executable
+plus the repository as `WorkingDirectory`. Structured JSON logs rotate at 20 MiB by
+default with 10 retained files under
+`~/Library/Logs/com.quant-agent.system-cycle-loop.json.log`; override this with
+`--log-file`, `--log-max-bytes`, and `--log-backup-count` when rendering or installing.
+The API service label is `com.quant-agent.api`. Its plist is also written with mode
+`0600`; it refuses non-loopback binding and never disables authentication. Both managers
+discard unbounded raw stdout/stderr and rely on the rotating JSON log instead.
 
 ## API Checks
 
 ```bash
 curl http://localhost:8000/health
+curl http://localhost:8000/health/live
+curl http://localhost:8000/health/ready
 curl http://localhost:8000/recommendations/latest
 curl http://localhost:8000/recommendations/<id>/evidence
 curl http://localhost:8000/source-snapshots
@@ -153,11 +181,14 @@ curl http://localhost:8000/strategy-configs/<strategy_config_id>
 curl http://localhost:8000/dashboard
 curl http://localhost:8000/dashboard/realtime-data
 curl http://localhost:8000/metrics
+curl http://localhost:8000/metrics/prometheus
+curl http://localhost:8000/operations/alerts
 curl http://localhost:8000/operations/control-center
 curl http://localhost:8000/operations/system-runs
 curl -X POST http://localhost:8000/operations/system-cycle -H "Content-Type: application/json" -d '{"top_n":8,"min_confidence":0,"use_autopilot_policy":true}'
 curl http://localhost:8000/execution/kill-switch
 curl http://localhost:8000/execution/autopilot-policy
+curl http://localhost:8000/execution/paper-shadow-readiness
 curl http://localhost:8000/execution/market-session
 curl http://localhost:8000/events/pending
 curl http://localhost:8000/events/consumed
@@ -172,6 +203,17 @@ curl http://localhost:8000/portfolio/sell-executions
 curl http://localhost:8000/portfolio/alerts
 curl http://localhost:8000/portfolio/alert-history
 ```
+
+Use `/health/live` only to decide whether the API process should be restarted.
+Use `/health/ready` before enabling unattended trading: `ready` covers the database,
+market-data provider, and broker connection, while `trading_ready` also requires a
+fresh snapshot, completed reconciliation, an enabled autopilot policy, and a disabled
+kill switch. A live process can therefore be intentionally not ready to trade.
+
+Scrape `/metrics/prometheus` for persistent counters and gauges. Inspect
+`/operations/alerts` when the readiness result degrades or after a worker error;
+provider failures, consecutive cycle failures, database growth, and reconciliation
+differences are recorded in SQLite and remain visible after a process restart.
 
 Replay a previous research snapshot by reusing its `source_snapshot_id` in
 `POST /research/run`. Check `universe_summary.snapshot.operation`; it should show
@@ -502,6 +544,10 @@ curl -X POST http://localhost:8000/execution/kill-switch \
 
 ## Incident Actions
 
+- If `/health/live` fails, restart the supervised process. If only
+  `/health/ready` fails, inspect its component results before changing the kill switch.
+- Review `/operations/alerts`, the Prometheus metrics, and the structured log using
+  the response `x-correlation-id` plus any `run_id` or `order_id` to trace one flow.
 - If recommendation count is unexpectedly low, inspect `rejected_recommendations` reason codes.
 - If sector or correlated-cluster exposure is the limiter, inspect
   `universe_summary.portfolio_exposure` and `universe_summary.rejection_counts`.

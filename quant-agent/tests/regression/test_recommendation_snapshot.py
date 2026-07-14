@@ -9,7 +9,6 @@ from domain.entities.models import PublicationConfig, ResearchRunRequest, RiskPo
 from services.ingestion.mock_provider import MockMarketDataProvider
 from services.ranking.pipeline import ResearchPipeline
 
-
 SNAPSHOT_FILE = Path(__file__).parent / "snapshots" / "recommendations_sp500_2026-04-10.json"
 
 

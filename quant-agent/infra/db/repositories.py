@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from typing import Iterable
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.exc import IntegrityError
 
 from domain.entities.models import (
     ApprovalDecision,
@@ -11,8 +13,8 @@ from domain.entities.models import (
     AutopilotPolicy,
     Direction,
     FeatureSnapshot,
-    HoldingControlAudit,
     FundamentalSnapshot,
+    HoldingControlAudit,
     HoldingStatus,
     HoldingWatch,
     KillSwitchState,
@@ -35,21 +37,23 @@ from domain.entities.models import (
     SellAlertLevel,
     SellExecutionAudit,
     SignalSnapshot,
-    SourceSnapshotExport,
     SourceSnapshotDetail,
+    SourceSnapshotExport,
     SourceSnapshotSummary,
     StrategyConfigSnapshot,
     SystemCycleRun,
     TradeLedgerEntry,
     TradeSide,
 )
+from infra.db.bar_content import market_bar_content_hash
 from infra.db.models import (
     ApprovalDecisionRecord,
     AutopilotPolicyRecord,
     ExecutionControlRecord,
     FeatureSnapshotRecord,
-    HoldingWatchRecord,
     HoldingControlAuditRecord,
+    HoldingWatchRecord,
+    MarketBarRecord,
     PaperOrderRecord,
     PositionReconciliationRecord,
     PositionStateRecord,
@@ -59,8 +63,9 @@ from infra.db.models import (
     SignalSnapshotRecord,
     SnapshotEventRecord,
     SnapshotFundamentalRecord,
-    SnapshotMarketBarRecord,
+    SnapshotMarketBarRefRecord,
     SnapshotSecurityRecord,
+    SnapshotStorageKeyRecord,
     SourceSnapshotRecord,
     StrategyConfigRecord,
     SystemCycleRunRecord,
@@ -124,18 +129,13 @@ class RecommendationRepository:
         strategy_config_id: str | None = None,
     ) -> list[Recommendation]:
         with SessionLocal() as session:
-            stmt = select(RecommendationRecord).where(
-                RecommendationRecord.source_snapshot_id == source_snapshot_id
-            )
+            stmt = select(RecommendationRecord).where(RecommendationRecord.source_snapshot_id == source_snapshot_id)
             if strategy_config_id is not None:
                 stmt = stmt.where(RecommendationRecord.strategy_config_id == strategy_config_id)
-            stmt = (
-                stmt.order_by(
-                    RecommendationRecord.generated_at.desc(),
-                    RecommendationRecord.ticker.asc(),
-                )
-                .limit(limit)
-            )
+            stmt = stmt.order_by(
+                RecommendationRecord.generated_at.desc(),
+                RecommendationRecord.ticker.asc(),
+            ).limit(limit)
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
@@ -201,11 +201,7 @@ class StrategyConfigRepository:
 
     def list_recent(self, limit: int = 50) -> list[StrategyConfigSnapshot]:
         with SessionLocal() as session:
-            stmt = (
-                select(StrategyConfigRecord)
-                .order_by(StrategyConfigRecord.created_at.desc())
-                .limit(limit)
-            )
+            stmt = select(StrategyConfigRecord).order_by(StrategyConfigRecord.created_at.desc()).limit(limit)
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
@@ -333,28 +329,54 @@ class FeatureRepository:
 
 
 class PaperOrderRepository:
+    def reserve_intent(self, order: PaperOrder) -> tuple[PaperOrder, bool]:
+        """Insert an order intent before any broker I/O.
+
+        The unique idempotency/client-order indexes serialize concurrent retries.
+        """
+
+        try:
+            with SessionLocal() as session:
+                session.add(self._to_record(order))
+                session.commit()
+            return order, True
+        except IntegrityError:
+            existing = (
+                self.get_by_idempotency_key(order.idempotency_key)
+                if order.idempotency_key
+                else self.get_by_client_order_id(order.client_order_id or "")
+            )
+            if existing is None:
+                raise
+            return existing, False
+
     def add(self, order: PaperOrder) -> None:
         with SessionLocal() as session:
-            record = PaperOrderRecord(
-                id=order.id,
-                recommendation_id=order.recommendation_id,
-                source_snapshot_id=order.source_snapshot_id,
-                strategy_config_id=order.strategy_config_id,
-                side=order.side.value,
-                qty=order.qty,
-                limit_price=order.limit_price,
-                execution_mode=order.execution_mode.value,
-                dry_run=1 if order.dry_run else 0,
-                broker_order_id=order.broker_order_id,
-                adapter_message=order.adapter_message,
-                submitted_at=order.submitted_at,
-                status=order.status.value,
-                simulated_fill_price=order.simulated_fill_price,
-                filled_at=order.filled_at,
-                cancel_reason=order.cancel_reason,
-            )
-            session.merge(record)
+            session.merge(self._to_record(order))
             session.commit()
+
+    @staticmethod
+    def _to_record(order: PaperOrder) -> PaperOrderRecord:
+        return PaperOrderRecord(
+            id=order.id,
+            recommendation_id=order.recommendation_id,
+            client_order_id=order.client_order_id,
+            idempotency_key=order.idempotency_key,
+            source_snapshot_id=order.source_snapshot_id,
+            strategy_config_id=order.strategy_config_id,
+            side=order.side.value,
+            qty=order.qty,
+            limit_price=order.limit_price,
+            execution_mode=order.execution_mode.value,
+            dry_run=1 if order.dry_run else 0,
+            broker_order_id=order.broker_order_id,
+            adapter_message=order.adapter_message,
+            submitted_at=order.submitted_at,
+            status=order.status.value,
+            simulated_fill_price=order.simulated_fill_price,
+            filled_at=order.filled_at,
+            cancel_reason=order.cancel_reason,
+        )
 
     def get(self, order_id: str) -> PaperOrder | None:
         with SessionLocal() as session:
@@ -371,6 +393,22 @@ class PaperOrderRepository:
                 .order_by(PaperOrderRecord.submitted_at.desc())
                 .limit(1)
             )
+            record = session.execute(stmt).scalars().first()
+            if record is None:
+                return None
+            return self._to_domain(record)
+
+    def get_by_client_order_id(self, client_order_id: str) -> PaperOrder | None:
+        with SessionLocal() as session:
+            stmt = select(PaperOrderRecord).where(PaperOrderRecord.client_order_id == client_order_id).limit(1)
+            record = session.execute(stmt).scalars().first()
+            if record is None:
+                return None
+            return self._to_domain(record)
+
+    def get_by_idempotency_key(self, idempotency_key: str) -> PaperOrder | None:
+        with SessionLocal() as session:
+            stmt = select(PaperOrderRecord).where(PaperOrderRecord.idempotency_key == idempotency_key).limit(1)
             record = session.execute(stmt).scalars().first()
             if record is None:
                 return None
@@ -405,6 +443,8 @@ class PaperOrderRepository:
         return PaperOrder(
             id=record.id,
             recommendation_id=record.recommendation_id,
+            client_order_id=getattr(record, "client_order_id", None),
+            idempotency_key=getattr(record, "idempotency_key", None),
             source_snapshot_id=getattr(record, "source_snapshot_id", None),
             strategy_config_id=getattr(record, "strategy_config_id", None),
             side=Direction(record.side),
@@ -736,34 +776,72 @@ class TradeLedgerRepository:
 
 
 class SellExecutionAuditRepository:
+    def reserve_intent(self, item: SellExecutionAudit) -> tuple[SellExecutionAudit, bool]:
+        try:
+            with SessionLocal() as session:
+                session.add(self._to_record(item))
+                session.commit()
+            return item, True
+        except IntegrityError:
+            existing = (
+                self.get_by_idempotency_key(item.idempotency_key)
+                if item.idempotency_key
+                else self.get_by_client_order_id(item.client_order_id or "")
+            )
+            if existing is None:
+                raise
+            return existing, False
+
     def add(self, item: SellExecutionAudit) -> None:
         with SessionLocal() as session:
-            session.merge(
-                SellExecutionAuditRecord(
-                    id=item.id,
-                    ticker=item.ticker,
-                    qty=item.qty,
-                    sell_price=item.sell_price,
-                    submitted_at=item.submitted_at,
-                    execution_mode=item.execution_mode.value,
-                    dry_run=1 if item.dry_run else 0,
-                    broker_order_id=item.broker_order_id,
-                    adapter_message=item.adapter_message,
-                    applied_to_ledger=1 if item.applied_to_ledger else 0,
-                    status=item.status,
-                    reason=item.reason,
-                    source_recommendation_id=item.source_recommendation_id,
-                    source_snapshot_id=item.source_snapshot_id,
-                    strategy_config_id=item.strategy_config_id,
-                    realized_pnl_delta=item.realized_pnl_delta,
-                    estimated_realized_pnl_delta=item.estimated_realized_pnl_delta,
-                    remaining_qty=item.remaining_qty,
-                    holding_status_after=(
-                        item.holding_status_after.value if item.holding_status_after else None
-                    ),
-                )
-            )
+            session.merge(self._to_record(item))
             session.commit()
+
+    @staticmethod
+    def _to_record(item: SellExecutionAudit) -> SellExecutionAuditRecord:
+        return SellExecutionAuditRecord(
+            id=item.id,
+            client_order_id=item.client_order_id,
+            idempotency_key=item.idempotency_key,
+            ticker=item.ticker,
+            qty=item.qty,
+            sell_price=item.sell_price,
+            submitted_at=item.submitted_at,
+            execution_mode=item.execution_mode.value,
+            dry_run=1 if item.dry_run else 0,
+            broker_order_id=item.broker_order_id,
+            adapter_message=item.adapter_message,
+            applied_to_ledger=1 if item.applied_to_ledger else 0,
+            status=item.status,
+            reason=item.reason,
+            source_recommendation_id=item.source_recommendation_id,
+            source_snapshot_id=item.source_snapshot_id,
+            strategy_config_id=item.strategy_config_id,
+            realized_pnl_delta=item.realized_pnl_delta,
+            estimated_realized_pnl_delta=item.estimated_realized_pnl_delta,
+            remaining_qty=item.remaining_qty,
+            holding_status_after=(item.holding_status_after.value if item.holding_status_after else None),
+        )
+
+    def get_by_idempotency_key(self, idempotency_key: str) -> SellExecutionAudit | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(SellExecutionAuditRecord)
+                .where(SellExecutionAuditRecord.idempotency_key == idempotency_key)
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+            return self._to_domain(record) if record is not None else None
+
+    def get_by_client_order_id(self, client_order_id: str) -> SellExecutionAudit | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(SellExecutionAuditRecord)
+                .where(SellExecutionAuditRecord.client_order_id == client_order_id)
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+            return self._to_domain(record) if record is not None else None
 
     def get(self, execution_id: str) -> SellExecutionAudit | None:
         with SessionLocal() as session:
@@ -799,9 +877,7 @@ class SellExecutionAuditRepository:
             if dry_run is not None:
                 stmt = stmt.where(SellExecutionAuditRecord.dry_run == (1 if dry_run else 0))
             if applied_to_ledger is not None:
-                stmt = stmt.where(
-                    SellExecutionAuditRecord.applied_to_ledger == (1 if applied_to_ledger else 0)
-                )
+                stmt = stmt.where(SellExecutionAuditRecord.applied_to_ledger == (1 if applied_to_ledger else 0))
             stmt = stmt.order_by(SellExecutionAuditRecord.submitted_at.desc()).limit(limit)
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
@@ -815,6 +891,8 @@ class SellExecutionAuditRepository:
     def _to_domain(record: SellExecutionAuditRecord) -> SellExecutionAudit:
         return SellExecutionAudit(
             id=record.id,
+            client_order_id=getattr(record, "client_order_id", None),
+            idempotency_key=getattr(record, "idempotency_key", None),
             ticker=record.ticker,
             qty=record.qty,
             sell_price=record.sell_price,
@@ -832,9 +910,7 @@ class SellExecutionAuditRepository:
             realized_pnl_delta=float(record.realized_pnl_delta or 0.0),
             estimated_realized_pnl_delta=record.estimated_realized_pnl_delta,
             remaining_qty=record.remaining_qty,
-            holding_status_after=(
-                HoldingStatus(record.holding_status_after) if record.holding_status_after else None
-            ),
+            holding_status_after=(HoldingStatus(record.holding_status_after) if record.holding_status_after else None),
         )
 
 
@@ -946,6 +1022,48 @@ class SystemCycleRunRepository:
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
+    def list_successful_paper_shadow_runs(self, as_of: datetime) -> list[datetime]:
+        with SessionLocal() as session:
+            records = list(
+                session.execute(
+                    select(SystemCycleRunRecord)
+                    .where(
+                        SystemCycleRunRecord.status == "success",
+                        SystemCycleRunRecord.started_at <= as_of,
+                    )
+                    .order_by(SystemCycleRunRecord.started_at.asc())
+                ).scalars()
+            )
+        dates: list[datetime] = []
+        for record in records:
+            metrics = dict(record.metrics_json or {})
+            policy = metrics.get("autopilot_policy") or {}
+            execution = metrics.get("auto_execution") or {}
+            snapshot_gate = metrics.get("snapshot_quality_gate") or {}
+            preflight = metrics.get("autopilot_preflight") or {}
+            evidence = metrics.get("paper_shadow_evidence") or {}
+            mode = (policy.get("auto_execution_mode") if isinstance(policy, dict) else None) or (
+                execution.get("mode") if isinstance(execution, dict) else None
+            )
+            if (
+                bool(record.auto_execution_enabled)
+                and isinstance(policy, dict)
+                and policy.get("enabled") is True
+                and policy.get("auto_execute_approved") is True
+                and isinstance(preflight, dict)
+                and preflight.get("can_auto_execute") is True
+                and isinstance(execution, dict)
+                and execution.get("enabled") is True
+                and mode == "paper"
+                and isinstance(snapshot_gate, dict)
+                and snapshot_gate.get("passed") is True
+                and isinstance(evidence, dict)
+                and evidence.get("schema_version") == 1
+                and evidence.get("qualified") is True
+            ):
+                dates.append(_ensure_utc(record.started_at))
+        return dates
+
     def clear_all(self) -> None:
         with SessionLocal() as session:
             session.execute(delete(SystemCycleRunRecord))
@@ -1026,9 +1144,7 @@ class SystemEventRepository:
         with SessionLocal() as session:
             return int(
                 session.scalar(
-                    select(func.count())
-                    .select_from(SystemEventRecord)
-                    .where(SystemEventRecord.status == status.value)
+                    select(func.count()).select_from(SystemEventRecord).where(SystemEventRecord.status == status.value)
                 )
                 or 0
             )
@@ -1139,9 +1255,7 @@ class AutopilotPolicyRepository:
                 enabled=1 if policy.enabled else 0,
                 auto_approve_recommendations=1 if policy.auto_approve_recommendations else 0,
                 auto_execute_approved=1 if policy.auto_execute_approved else 0,
-                restrict_auto_execution_to_regular_hours=(
-                    1 if policy.restrict_auto_execution_to_regular_hours else 0
-                ),
+                restrict_auto_execution_to_regular_hours=(1 if policy.restrict_auto_execution_to_regular_hours else 0),
                 auto_execution_mode=policy.auto_execution_mode.value,
                 auto_approve_min_confidence=policy.auto_approve_min_confidence,
                 auto_approve_min_composite=policy.auto_approve_min_composite,
@@ -1162,6 +1276,7 @@ class AutopilotPolicyRepository:
                 max_auto_buy_price_drift_pct=policy.max_auto_buy_price_drift_pct,
                 require_position_reconciliation=1 if policy.require_position_reconciliation else 0,
                 max_position_reconciliation_age_minutes=policy.max_position_reconciliation_age_minutes,
+                min_paper_shadow_trading_days=policy.min_paper_shadow_trading_days,
                 account_equity=policy.account_equity,
                 risk_per_trade_pct=policy.risk_per_trade_pct,
                 max_position_pct=policy.max_position_pct,
@@ -1189,7 +1304,7 @@ class AutopilotPolicyRepository:
             auto_approve_recommendations=bool(record.auto_approve_recommendations),
             auto_execute_approved=bool(record.auto_execute_approved),
             restrict_auto_execution_to_regular_hours=bool(
-                getattr(record, "restrict_auto_execution_to_regular_hours", 0)
+                getattr(record, "restrict_auto_execution_to_regular_hours", 1)
             ),
             auto_execution_mode=AutoExecutionMode(record.auto_execution_mode),
             auto_approve_min_confidence=record.auto_approve_min_confidence,
@@ -1219,6 +1334,11 @@ class AutopilotPolicyRepository:
                 "max_position_reconciliation_age_minutes",
                 1440,
             ),
+            min_paper_shadow_trading_days=getattr(
+                record,
+                "min_paper_shadow_trading_days",
+                20,
+            ),
             account_equity=record.account_equity,
             risk_per_trade_pct=record.risk_per_trade_pct,
             max_position_pct=record.max_position_pct,
@@ -1231,6 +1351,36 @@ class AutopilotPolicyRepository:
 
 
 class SourceSnapshotRepository:
+    @staticmethod
+    def _snapshot_key(session, source_snapshot_id: str, *, create: bool = False) -> int | None:
+        key = session.scalar(
+            select(SnapshotStorageKeyRecord.id).where(SnapshotStorageKeyRecord.source_snapshot_id == source_snapshot_id)
+        )
+        if key is None and create:
+            record = SnapshotStorageKeyRecord(source_snapshot_id=source_snapshot_id)
+            session.add(record)
+            session.flush()
+            key = record.id
+        return int(key) if key is not None else None
+
+    @staticmethod
+    def _bar_hash(row: dict) -> str:
+        return market_bar_content_hash(
+            vendor_id=row["vendor_id"],
+            ticker=row["ticker"],
+            timestamp=row["timestamp"],
+            open_price=row["open"],
+            high=row["high"],
+            low=row["low"],
+            close=row["close"],
+            volume=row["volume"],
+            adjusted_close=row["adjusted_close"],
+            dividend=row["dividend"],
+            split_factor=row["split_factor"],
+            quality_status=row["quality_status"],
+            provenance=row["provenance_json"],
+        )
+
     def snapshot_exists(self, source_snapshot_id: str) -> bool:
         with SessionLocal() as session:
             stmt = (
@@ -1242,13 +1392,65 @@ class SourceSnapshotRepository:
 
     def list_summaries(self, limit: int = 50) -> list[SourceSnapshotSummary]:
         with SessionLocal() as session:
-            stmt = (
-                select(SourceSnapshotRecord)
-                .order_by(SourceSnapshotRecord.created_at.desc())
-                .limit(limit)
-            )
+            stmt = select(SourceSnapshotRecord).order_by(SourceSnapshotRecord.created_at.desc()).limit(limit)
             records = list(session.execute(stmt).scalars())
-            return [self._to_summary(session, record) for record in records]
+            if not records:
+                return []
+            snapshot_ids = [record.source_snapshot_id for record in records]
+            bar_counts = dict(
+                session.execute(
+                    select(
+                        SnapshotStorageKeyRecord.source_snapshot_id,
+                        func.count(SnapshotMarketBarRefRecord.bar_id),
+                    )
+                    .join(
+                        SnapshotMarketBarRefRecord,
+                        SnapshotMarketBarRefRecord.snapshot_key == SnapshotStorageKeyRecord.id,
+                    )
+                    .where(SnapshotStorageKeyRecord.source_snapshot_id.in_(snapshot_ids))
+                    .group_by(SnapshotStorageKeyRecord.source_snapshot_id)
+                ).all()
+            )
+            fundamental_counts = dict(
+                session.execute(
+                    select(
+                        SnapshotFundamentalRecord.source_snapshot_id,
+                        func.count(SnapshotFundamentalRecord.id),
+                    )
+                    .where(SnapshotFundamentalRecord.source_snapshot_id.in_(snapshot_ids))
+                    .group_by(SnapshotFundamentalRecord.source_snapshot_id)
+                ).all()
+            )
+            event_counts = dict(
+                session.execute(
+                    select(
+                        SnapshotEventRecord.source_snapshot_id,
+                        func.count(SnapshotEventRecord.id),
+                    )
+                    .where(SnapshotEventRecord.source_snapshot_id.in_(snapshot_ids))
+                    .group_by(SnapshotEventRecord.source_snapshot_id)
+                ).all()
+            )
+            recommendation_counts = dict(
+                session.execute(
+                    select(
+                        RecommendationRecord.source_snapshot_id,
+                        func.count(RecommendationRecord.id),
+                    )
+                    .where(RecommendationRecord.source_snapshot_id.in_(snapshot_ids))
+                    .group_by(RecommendationRecord.source_snapshot_id)
+                ).all()
+            )
+            return [
+                self._summary_from_aggregates(
+                    record,
+                    bar_count=int(bar_counts.get(record.source_snapshot_id, 0)),
+                    fundamental_count=int(fundamental_counts.get(record.source_snapshot_id, 0)),
+                    event_count=int(event_counts.get(record.source_snapshot_id, 0)),
+                    recommendation_count=int(recommendation_counts.get(record.source_snapshot_id, 0)),
+                )
+                for record in records
+            ]
 
     def get_summary(self, source_snapshot_id: str) -> SourceSnapshotSummary | None:
         with SessionLocal() as session:
@@ -1296,22 +1498,35 @@ class SourceSnapshotRepository:
         fundamentals_by_ticker: dict[str, FundamentalSnapshot],
         events: Iterable[NewsEvent],
         earnings_minutes_by_ticker: dict[str, int | None],
+        provider_quality: dict[str, object] | None = None,
     ) -> None:
         securities_list = list(securities)
         events_list = list(events)
+        as_of_utc = _ensure_utc(as_of)
+        temporal_violations: list[str] = []
+        for security in securities_list:
+            if security.as_of is not None and _ensure_utc(security.as_of) > as_of_utc:
+                temporal_violations.append(f"security:{security.ticker}")
+        for ticker, bars in bars_by_ticker.items():
+            if any(_ensure_utc(bar.timestamp) > as_of_utc for bar in bars):
+                temporal_violations.append(f"bars:{ticker.upper()}")
+        for ticker, fundamental in fundamentals_by_ticker.items():
+            if _ensure_utc(fundamental.timestamp) > as_of_utc:
+                temporal_violations.append(f"fundamental:{ticker.upper()}")
+            if fundamental.available_at is not None and _ensure_utc(fundamental.available_at) > as_of_utc:
+                temporal_violations.append(f"fundamental_available_at:{ticker.upper()}")
+        for event in events_list:
+            if _ensure_utc(event.published_at) > as_of_utc:
+                temporal_violations.append(f"event_published:{event.source_id}")
+            if _ensure_utc(event.ingested_at) > as_of_utc:
+                temporal_violations.append(f"event_ingested:{event.source_id}")
+        if temporal_violations:
+            raise ValueError("snapshot contains data newer than as_of: " + ", ".join(sorted(set(temporal_violations))))
         tickers = sorted({security.ticker.upper() for security in securities_list})
-        event_tickers = sorted(
-            {
-                ticker.upper()
-                for event in events_list
-                for ticker in event.tickers
-            }
-        )
+        event_tickers = sorted({ticker.upper() for event in events_list for ticker in event.tickers})
         metadata = {
             "earnings_minutes_by_ticker": {
-                ticker.upper(): minutes
-                for ticker, minutes in earnings_minutes_by_ticker.items()
-                if minutes is not None
+                ticker.upper(): minutes for ticker, minutes in earnings_minutes_by_ticker.items() if minutes is not None
             },
             "data_quality": self._build_snapshot_quality(
                 as_of=as_of,
@@ -1325,17 +1540,28 @@ class SourceSnapshotRepository:
                     default=None,
                 ),
                 latest_event_at=max((event.published_at for event in events_list), default=None),
+                provider_quality=provider_quality,
             ),
+            "provider_quality": dict(provider_quality or {}),
+            "storage_counts": {
+                "bar_count": sum(len(bars) for bars in bars_by_ticker.values()),
+                "fundamental_count": len(fundamentals_by_ticker),
+                "event_count": len(events_list),
+            },
         }
 
         with SessionLocal() as session:
+            snapshot_key = self._snapshot_key(session, source_snapshot_id)
             for model in (
                 SnapshotEventRecord,
                 SnapshotFundamentalRecord,
-                SnapshotMarketBarRecord,
                 SnapshotSecurityRecord,
             ):
                 session.execute(delete(model).where(model.source_snapshot_id == source_snapshot_id))
+            if snapshot_key is not None:
+                session.execute(
+                    delete(SnapshotMarketBarRefRecord).where(SnapshotMarketBarRefRecord.snapshot_key == snapshot_key)
+                )
 
             session.merge(
                 SourceSnapshotRecord(
@@ -1348,6 +1574,9 @@ class SourceSnapshotRepository:
                     metadata_json=metadata,
                 )
             )
+            snapshot_key = self._snapshot_key(session, source_snapshot_id, create=True)
+            if snapshot_key is None:
+                raise RuntimeError("failed to allocate snapshot storage key")
 
             for security in securities_list:
                 session.add(
@@ -1359,24 +1588,54 @@ class SourceSnapshotRepository:
                         avg_dollar_volume=security.avg_dollar_volume,
                         last_price=security.last_price,
                         spread_bps=security.spread_bps,
+                        provenance_json={
+                            "as_of": security.as_of.isoformat() if security.as_of else None,
+                            "source": security.source,
+                            "quality_status": security.quality_status,
+                            "fallback_fields": list(security.fallback_fields),
+                        },
                     )
                 )
 
-            for ticker, bars in bars_by_ticker.items():
-                for bar in bars:
-                    session.add(
-                        SnapshotMarketBarRecord(
-                            source_snapshot_id=source_snapshot_id,
-                            ticker=ticker.upper(),
-                            timestamp=bar.timestamp,
-                            open=bar.open,
-                            high=bar.high,
-                            low=bar.low,
-                            close=bar.close,
-                            volume=bar.volume,
-                            vendor_id=provider_name,
-                        )
-                    )
+            bar_rows = [
+                {
+                    "ticker": ticker.upper(),
+                    "timestamp": bar.timestamp,
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                    "vendor_id": provider_name,
+                    "adjusted_close": bar.adjusted_close,
+                    "dividend": bar.dividend,
+                    "split_factor": bar.split_factor,
+                    "quality_status": bar.quality_status,
+                    "provenance_json": {"source": bar.source},
+                }
+                for ticker, bars in bars_by_ticker.items()
+                for bar in bars
+            ]
+            for row in bar_rows:
+                row["content_hash"] = self._bar_hash(row)
+            hash_to_id: dict[str, int] = {}
+            for start in range(0, len(bar_rows), 500):
+                chunk = bar_rows[start : start + 500]
+                insert_stmt = sqlite_insert(MarketBarRecord).values(chunk)
+                session.execute(insert_stmt.on_conflict_do_nothing(index_elements=["content_hash"]))
+                content_hashes = [row["content_hash"] for row in chunk]
+                records = list(
+                    session.execute(
+                        select(MarketBarRecord).where(MarketBarRecord.content_hash.in_(content_hashes))
+                    ).scalars()
+                )
+                for record in records:
+                    hash_to_id[record.content_hash] = record.id
+
+            referenced_bar_ids = {hash_to_id[row["content_hash"]] for row in bar_rows}
+            session.add_all(
+                SnapshotMarketBarRefRecord(snapshot_key=snapshot_key, bar_id=bar_id) for bar_id in referenced_bar_ids
+            )
 
             for ticker, fundamentals in fundamentals_by_ticker.items():
                 session.add(
@@ -1388,6 +1647,13 @@ class SourceSnapshotRepository:
                         roe=fundamentals.roe,
                         revenue_growth_yoy=fundamentals.revenue_growth_yoy,
                         eps_revision_30d=fundamentals.eps_revision_30d,
+                        period_end=fundamentals.period_end,
+                        available_at=fundamentals.available_at,
+                        provenance_json={
+                            "source": fundamentals.source,
+                            "quality_status": fundamentals.quality_status,
+                            "fallback_fields": list(fundamentals.fallback_fields),
+                        },
                     )
                 )
 
@@ -1406,17 +1672,54 @@ class SourceSnapshotRepository:
                         relevance=event.relevance,
                         horizon=event.horizon,
                         source_url=event.source_url,
+                        provenance_json={
+                            "source": event.source,
+                            "quality_status": event.quality_status,
+                        },
                     )
                 )
 
             session.commit()
 
+    @staticmethod
+    def _summary_from_aggregates(
+        record: SourceSnapshotRecord,
+        *,
+        bar_count: int,
+        fundamental_count: int,
+        event_count: int,
+        recommendation_count: int,
+    ) -> SourceSnapshotSummary:
+        tickers = [str(ticker).upper() for ticker in record.tickers or []]
+        metadata = dict(record.metadata_json or {})
+        data_quality = dict(metadata.get("data_quality") or {})
+        if not data_quality:
+            data_quality = {
+                "status": "unknown",
+                "reason": "quality metadata unavailable for legacy snapshot",
+            }
+        return SourceSnapshotSummary(
+            source_snapshot_id=record.source_snapshot_id,
+            created_at=_ensure_utc(record.created_at),
+            as_of=_ensure_utc(record.as_of),
+            universe=record.universe,
+            provider_name=record.provider_name,
+            tickers=tickers,
+            ticker_count=len(tickers),
+            bar_count=bar_count,
+            fundamental_count=fundamental_count,
+            event_count=event_count,
+            recommendation_count=recommendation_count,
+            data_quality=data_quality,
+        )
+
     def _to_summary(self, session, record: SourceSnapshotRecord) -> SourceSnapshotSummary:
         source_snapshot_id = record.source_snapshot_id
+        snapshot_key = self._snapshot_key(session, source_snapshot_id)
         bar_count = session.scalar(
             select(func.count())
-            .select_from(SnapshotMarketBarRecord)
-            .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
+            .select_from(SnapshotMarketBarRefRecord)
+            .where(SnapshotMarketBarRefRecord.snapshot_key == snapshot_key)
         )
         fundamental_count = session.scalar(
             select(func.count())
@@ -1429,12 +1732,15 @@ class SourceSnapshotRepository:
             .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
         )
         latest_bar_at = session.scalar(
-            select(func.max(SnapshotMarketBarRecord.timestamp))
-            .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
+            select(func.max(MarketBarRecord.timestamp))
+            .select_from(SnapshotMarketBarRefRecord)
+            .join(MarketBarRecord, MarketBarRecord.id == SnapshotMarketBarRefRecord.bar_id)
+            .where(SnapshotMarketBarRefRecord.snapshot_key == snapshot_key)
         )
         latest_event_at = session.scalar(
-            select(func.max(SnapshotEventRecord.published_at))
-            .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
+            select(func.max(SnapshotEventRecord.published_at)).where(
+                SnapshotEventRecord.source_snapshot_id == source_snapshot_id
+            )
         )
         recommendation_count = session.scalar(
             select(func.count())
@@ -1444,8 +1750,10 @@ class SourceSnapshotRepository:
         tickers = [str(ticker).upper() for ticker in record.tickers or []]
         bar_tickers = list(
             session.execute(
-                select(SnapshotMarketBarRecord.ticker)
-                .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
+                select(MarketBarRecord.ticker)
+                .select_from(SnapshotMarketBarRefRecord)
+                .join(MarketBarRecord, MarketBarRecord.id == SnapshotMarketBarRefRecord.bar_id)
+                .where(SnapshotMarketBarRefRecord.snapshot_key == snapshot_key)
                 .distinct()
             ).scalars()
         )
@@ -1458,16 +1766,11 @@ class SourceSnapshotRepository:
         )
         event_ticker_rows = list(
             session.execute(
-                select(SnapshotEventRecord.tickers)
-                .where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
+                select(SnapshotEventRecord.tickers).where(SnapshotEventRecord.source_snapshot_id == source_snapshot_id)
             ).scalars()
         )
         event_tickers = sorted(
-            {
-                str(ticker).upper()
-                for tickers_row in event_ticker_rows
-                for ticker in (tickers_row or [])
-            }
+            {str(ticker).upper() for tickers_row in event_ticker_rows for ticker in (tickers_row or [])}
         )
         return SourceSnapshotSummary(
             source_snapshot_id=source_snapshot_id,
@@ -1490,6 +1793,7 @@ class SourceSnapshotRepository:
                 event_count=int(event_count or 0),
                 latest_bar_at=_ensure_utc(latest_bar_at) if latest_bar_at is not None else None,
                 latest_event_at=_ensure_utc(latest_event_at) if latest_event_at is not None else None,
+                provider_quality=dict((record.metadata_json or {}).get("provider_quality") or {}),
             ),
         )
 
@@ -1504,19 +1808,16 @@ class SourceSnapshotRepository:
         event_count: int,
         latest_bar_at: datetime | None = None,
         latest_event_at: datetime | None = None,
+        provider_quality: dict[str, object] | None = None,
     ) -> dict[str, object]:
         as_of_utc = _ensure_utc(as_of)
         latest_bar_utc = _ensure_utc(latest_bar_at) if latest_bar_at is not None else None
         latest_event_utc = _ensure_utc(latest_event_at) if latest_event_at is not None else None
         latest_bar_age_minutes = (
-            max(0, int((as_of_utc - latest_bar_utc).total_seconds() // 60))
-            if latest_bar_utc is not None
-            else None
+            max(0, int((as_of_utc - latest_bar_utc).total_seconds() // 60)) if latest_bar_utc is not None else None
         )
         latest_event_age_minutes = (
-            max(0, int((as_of_utc - latest_event_utc).total_seconds() // 60))
-            if latest_event_utc is not None
-            else None
+            max(0, int((as_of_utc - latest_event_utc).total_seconds() // 60)) if latest_event_utc is not None else None
         )
         universe_set = {ticker.upper() for ticker in tickers}
         bar_set = {ticker.upper() for ticker in bar_tickers}
@@ -1529,12 +1830,32 @@ class SourceSnapshotRepository:
         bar_covered = len(captured_set.intersection(bar_set))
         fundamental_covered = len(captured_set.intersection(fundamental_set))
         event_covered = len(captured_set.intersection(event_set))
+        provider_quality = dict(provider_quality or {})
+        provider_status = str(provider_quality.get("status") or "unverified")
+        raw_provider_issues = provider_quality.get("issues")
+        raw_provider_failures = provider_quality.get("failures")
+        raw_fallback_fields = provider_quality.get("fallback_fields")
+        provider_issues = list(raw_provider_issues) if isinstance(raw_provider_issues, list) else []
+        provider_failures = list(raw_provider_failures) if isinstance(raw_provider_failures, list) else []
+        fallback_fields = list(raw_fallback_fields) if isinstance(raw_fallback_fields, list) else []
+        coverage_complete = expected_count > 0 and not missing_bar_tickers and not missing_fundamental_tickers
+        live_execution_allowed = (
+            coverage_complete
+            and provider_status in {"verified", "mock_verified"}
+            and not provider_issues
+            and not provider_failures
+            and not fallback_fields
+        )
         return {
-            "status": (
-                "complete"
-                if expected_count > 0 and not missing_bar_tickers and not missing_fundamental_tickers
-                else "partial"
-            ),
+            "status": ("complete" if live_execution_allowed else "blocked" if coverage_complete else "partial"),
+            "live_execution_allowed": live_execution_allowed,
+            "provider_status": provider_status,
+            "provider_issue_count": len(provider_issues),
+            "provider_failure_count": len(provider_failures),
+            "fallback_field_count": len(fallback_fields),
+            "provider_issues": provider_issues[:25],
+            "provider_failures": provider_failures[:25],
+            "fallback_fields": fallback_fields[:50],
             "universe_ticker_count": len(universe_set),
             "expected_ticker_count": expected_count,
             "captured_ticker_count": expected_count,
@@ -1544,14 +1865,10 @@ class SourceSnapshotRepository:
             "event_count": int(event_count),
             "latest_bar_at": latest_bar_utc.isoformat() if latest_bar_utc is not None else None,
             "latest_bar_age_minutes": latest_bar_age_minutes,
-            "latest_event_at": (
-                latest_event_utc.isoformat() if latest_event_utc is not None else None
-            ),
+            "latest_event_at": (latest_event_utc.isoformat() if latest_event_utc is not None else None),
             "latest_event_age_minutes": latest_event_age_minutes,
             "bar_coverage": round(bar_covered / expected_count, 6) if expected_count else 0.0,
-            "fundamental_coverage": (
-                round(fundamental_covered / expected_count, 6) if expected_count else 0.0
-            ),
+            "fundamental_coverage": (round(fundamental_covered / expected_count, 6) if expected_count else 0.0),
             "event_ticker_coverage": round(event_covered / expected_count, 6) if expected_count else 0.0,
             "missing_bar_count": len(missing_bar_tickers),
             "missing_fundamental_count": len(missing_fundamental_tickers),
@@ -1562,9 +1879,7 @@ class SourceSnapshotRepository:
 
     def get_metadata(self, source_snapshot_id: str) -> dict:
         with SessionLocal() as session:
-            stmt = select(SourceSnapshotRecord).where(
-                SourceSnapshotRecord.source_snapshot_id == source_snapshot_id
-            )
+            stmt = select(SourceSnapshotRecord).where(SourceSnapshotRecord.source_snapshot_id == source_snapshot_id)
             record = session.execute(stmt).scalars().first()
         if record is None:
             return {}
@@ -1586,6 +1901,14 @@ class SourceSnapshotRepository:
                 avg_dollar_volume=record.avg_dollar_volume,
                 last_price=record.last_price,
                 spread_bps=record.spread_bps,
+                as_of=(
+                    datetime.fromisoformat(str((record.provenance_json or {}).get("as_of")))
+                    if (record.provenance_json or {}).get("as_of")
+                    else None
+                ),
+                source=str((record.provenance_json or {}).get("source") or "unknown"),
+                quality_status=str((record.provenance_json or {}).get("quality_status") or "unverified"),
+                fallback_fields=list((record.provenance_json or {}).get("fallback_fields") or []),
             )
             for record in records
         ]
@@ -1593,13 +1916,18 @@ class SourceSnapshotRepository:
     def get_bars(self, source_snapshot_id: str, ticker: str, limit: int) -> list[MarketBar]:
         ticker_upper = ticker.upper()
         with SessionLocal() as session:
+            snapshot_key = self._snapshot_key(session, source_snapshot_id)
+            if snapshot_key is None:
+                return []
             stmt = (
-                select(SnapshotMarketBarRecord)
+                select(MarketBarRecord)
+                .select_from(SnapshotMarketBarRefRecord)
+                .join(MarketBarRecord, MarketBarRecord.id == SnapshotMarketBarRefRecord.bar_id)
                 .where(
-                    SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id,
-                    SnapshotMarketBarRecord.ticker == ticker_upper,
+                    SnapshotMarketBarRefRecord.snapshot_key == snapshot_key,
+                    MarketBarRecord.ticker == ticker_upper,
                 )
-                .order_by(SnapshotMarketBarRecord.timestamp.desc())
+                .order_by(MarketBarRecord.timestamp.desc())
                 .limit(limit)
             )
             records = list(session.execute(stmt).scalars())
@@ -1613,16 +1941,26 @@ class SourceSnapshotRepository:
                 low=record.low,
                 close=record.close,
                 volume=record.volume,
+                adjusted_close=record.adjusted_close,
+                dividend=record.dividend,
+                split_factor=record.split_factor,
+                source=str((record.provenance_json or {}).get("source") or record.vendor_id),
+                quality_status=record.quality_status,
             )
             for record in records
         ]
 
     def get_bars_by_ticker(self, source_snapshot_id: str) -> dict[str, list[MarketBar]]:
         with SessionLocal() as session:
+            snapshot_key = self._snapshot_key(session, source_snapshot_id)
+            if snapshot_key is None:
+                return {}
             stmt = (
-                select(SnapshotMarketBarRecord)
-                .where(SnapshotMarketBarRecord.source_snapshot_id == source_snapshot_id)
-                .order_by(SnapshotMarketBarRecord.ticker.asc(), SnapshotMarketBarRecord.timestamp.asc())
+                select(MarketBarRecord)
+                .select_from(SnapshotMarketBarRefRecord)
+                .join(MarketBarRecord, MarketBarRecord.id == SnapshotMarketBarRefRecord.bar_id)
+                .where(SnapshotMarketBarRefRecord.snapshot_key == snapshot_key)
+                .order_by(MarketBarRecord.ticker.asc(), MarketBarRecord.timestamp.asc())
             )
             records = list(session.execute(stmt).scalars())
 
@@ -1638,6 +1976,11 @@ class SourceSnapshotRepository:
                     low=record.low,
                     close=record.close,
                     volume=record.volume,
+                    adjusted_close=record.adjusted_close,
+                    dividend=record.dividend,
+                    split_factor=record.split_factor,
+                    source=str((record.provenance_json or {}).get("source") or record.vendor_id),
+                    quality_status=record.quality_status,
                 )
             )
         return bars_by_ticker
@@ -1663,6 +2006,11 @@ class SourceSnapshotRepository:
             roe=record.roe,
             revenue_growth_yoy=record.revenue_growth_yoy,
             eps_revision_30d=record.eps_revision_30d,
+            period_end=_ensure_utc(record.period_end) if record.period_end else None,
+            available_at=_ensure_utc(record.available_at) if record.available_at else None,
+            source=str((record.provenance_json or {}).get("source") or "unknown"),
+            quality_status=str((record.provenance_json or {}).get("quality_status") or "unverified"),
+            fallback_fields=list((record.provenance_json or {}).get("fallback_fields") or []),
         )
 
     def get_fundamentals_by_ticker(self, source_snapshot_id: str) -> dict[str, FundamentalSnapshot]:
@@ -1689,6 +2037,11 @@ class SourceSnapshotRepository:
                     roe=record.roe,
                     revenue_growth_yoy=record.revenue_growth_yoy,
                     eps_revision_30d=record.eps_revision_30d,
+                    period_end=_ensure_utc(record.period_end) if record.period_end else None,
+                    available_at=_ensure_utc(record.available_at) if record.available_at else None,
+                    source=str((record.provenance_json or {}).get("source") or "unknown"),
+                    quality_status=str((record.provenance_json or {}).get("quality_status") or "unverified"),
+                    fallback_fields=list((record.provenance_json or {}).get("fallback_fields") or []),
                 ),
             )
         return fundamentals_by_ticker
@@ -1721,6 +2074,8 @@ class SourceSnapshotRepository:
                     relevance=record.relevance,
                     horizon=record.horizon,
                     source_url=record.source_url,
+                    source=str((record.provenance_json or {}).get("source") or "unknown"),
+                    quality_status=str((record.provenance_json or {}).get("quality_status") or "unverified"),
                 )
             )
         return events

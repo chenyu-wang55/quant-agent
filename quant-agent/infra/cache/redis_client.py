@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import os
 from typing import Any
+
+from infra.config import env_text
 
 
 class CacheClient:
@@ -10,7 +11,7 @@ class CacheClient:
     def __init__(self) -> None:
         self._memory: dict[str, Any] = {}
         self._redis = None
-        redis_url = os.getenv("REDIS_URL")
+        redis_url = env_text("REDIS_URL")
         if redis_url:
             try:
                 import redis  # type: ignore

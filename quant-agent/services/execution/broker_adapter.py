@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import json
-import os
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
+
+from infra.config import CoreSettings, env_float, env_text
 
 
 def _utc_datetime(value: str | None) -> datetime | None:
@@ -35,6 +36,9 @@ class BrokerOrderPlacement:
     side: str
     limit_price: float | None = None
     time_in_force: str = "day"
+    order_class: str | None = None
+    take_profit_limit_price: float | None = None
+    stop_loss_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +84,10 @@ class BrokerAdapterError(RuntimeError):
     pass
 
 
+class BrokerOrderNotFoundError(BrokerAdapterError):
+    """The broker definitively reports that an order identifier does not exist."""
+
+
 class BrokerExecutionAdapter(Protocol):
     name: str
 
@@ -123,10 +131,10 @@ class AlpacaBrokerAdapter:
     @classmethod
     def from_env(cls) -> "AlpacaBrokerAdapter":
         return cls(
-            api_key=os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID") or "",
-            api_secret=os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY") or "",
-            base_url=os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"),
-            timeout_seconds=float(os.environ.get("ALPACA_TIMEOUT_SECONDS", "10")),
+            api_key=env_text("ALPACA_API_KEY") or env_text("APCA_API_KEY_ID"),
+            api_secret=env_text("ALPACA_SECRET_KEY") or env_text("APCA_API_SECRET_KEY"),
+            base_url=env_text("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"),
+            timeout_seconds=env_float("ALPACA_TIMEOUT_SECONDS", 10.0, minimum=0.1),
         )
 
     def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
@@ -141,6 +149,20 @@ class AlpacaBrokerAdapter:
         }
         if placement.limit_price is not None:
             payload["limit_price"] = _clean_decimal(placement.limit_price)
+        if placement.order_class is not None:
+            if placement.order_class not in {"bracket", "oco"}:
+                raise BrokerAdapterError(f"Unsupported Alpaca order_class: {placement.order_class}")
+            if placement.take_profit_limit_price is None or placement.stop_loss_price is None:
+                raise BrokerAdapterError(
+                    "Bracket/OCO orders require take-profit and stop-loss prices"
+                )
+            payload["order_class"] = placement.order_class
+            payload["take_profit"] = {
+                "limit_price": _clean_decimal(placement.take_profit_limit_price)
+            }
+            payload["stop_loss"] = {
+                "stop_price": _clean_decimal(placement.stop_loss_price)
+            }
         response = self._request("POST", "/v2/orders", payload=payload)
         return self._to_update(response)
 
@@ -213,6 +235,8 @@ class AlpacaBrokerAdapter:
                 return json.loads(raw_body)
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
+            if exc.code == 404:
+                raise BrokerOrderNotFoundError(f"Alpaca order not found: {detail}") from exc
             raise BrokerAdapterError(f"Alpaca API error {exc.code}: {detail}") from exc
         except URLError as exc:
             raise BrokerAdapterError(f"Alpaca API request failed: {exc.reason}") from exc
@@ -304,7 +328,7 @@ class AlpacaBrokerAdapter:
 
 
 def build_broker_adapter_from_env() -> BrokerExecutionAdapter | None:
-    adapter_name = os.environ.get("QUANT_BROKER_ADAPTER", "").strip().lower()
+    adapter_name = CoreSettings.from_env().broker_adapter
     if not adapter_name:
         return None
     if adapter_name == "alpaca":

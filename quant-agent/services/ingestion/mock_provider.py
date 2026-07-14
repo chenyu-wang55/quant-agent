@@ -73,6 +73,9 @@ class MockMarketDataProvider:
                     avg_dollar_volume=avg_dollar_volume,
                     last_price=last_price,
                     spread_bps=spread_bps,
+                    as_of=as_of.astimezone(timezone.utc),
+                    source="deterministic_mock",
+                    quality_status="mock_verified",
                 )
             )
 
@@ -114,6 +117,9 @@ class MockMarketDataProvider:
                     low=round(low_px, 4),
                     close=round(close_px, 4),
                     volume=round(volume, 2),
+                    adjusted_close=round(close_px, 4),
+                    source="deterministic_mock",
+                    quality_status="mock_verified",
                 )
             )
             price = close_px
@@ -139,6 +145,10 @@ class MockMarketDataProvider:
             roe=roe,
             revenue_growth_yoy=revenue_growth,
             eps_revision_30d=eps_revision,
+            period_end=as_of.astimezone(timezone.utc),
+            available_at=as_of.astimezone(timezone.utc),
+            source="deterministic_mock",
+            quality_status="mock_verified",
         )
 
     def get_events(
@@ -172,6 +182,8 @@ class MockMarketDataProvider:
                         relevance=relevance,
                         horizon="short",
                         source_url=f"https://example.com/{ticker}/{day_key}/{idx}",
+                        source="deterministic_mock",
+                        quality_status="mock_verified",
                     )
                 )
         return events
@@ -183,3 +195,12 @@ class MockMarketDataProvider:
         if days_to_event < 0:
             return None
         return days_to_event * 24 * 60 + int(rng.random() * 240)
+
+    @staticmethod
+    def get_quality_report() -> dict[str, object]:
+        return {
+            "status": "mock_verified",
+            "issues": [],
+            "failures": [],
+            "fallback_fields": [],
+        }

@@ -6,7 +6,6 @@ from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from infra.queue.events import EventType
 
-
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 

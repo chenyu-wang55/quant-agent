@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, Depends, Query
-
 from apps.api.dependencies import AppState, get_app_state
-from domain.entities.models import AutoExecutionMode, AutopilotPolicy, KillSwitchState, MarketSessionStatus
+from domain.entities.models import (
+    AutoExecutionMode,
+    AutopilotPolicy,
+    KillSwitchState,
+    MarketSessionStatus,
+    PaperShadowReadiness,
+)
 
 
 class KillSwitchUpdateBody(BaseModel):
@@ -69,6 +74,14 @@ def set_kill_switch(
 @router.get("/execution/autopilot-policy", response_model=AutopilotPolicy)
 def get_autopilot_policy(state: AppState = Depends(get_app_state)) -> AutopilotPolicy:
     return state.get_autopilot_policy()
+
+
+@router.get("/execution/paper-shadow-readiness", response_model=PaperShadowReadiness)
+def get_paper_shadow_readiness(
+    as_of: datetime | None = Query(default=None),
+    state: AppState = Depends(get_app_state),
+) -> PaperShadowReadiness:
+    return state.build_paper_shadow_readiness(as_of=as_of)
 
 
 @router.post("/execution/autopilot-policy", response_model=AutopilotPolicy)

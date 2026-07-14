@@ -18,7 +18,6 @@ from infra.queue.events import EventType
 from services.execution.broker_adapter import BrokerOrderPlacement, BrokerOrderUpdate
 from services.execution.router import ExecutionRouter
 
-
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 
@@ -65,7 +64,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
     assert default_policy["enabled"] is False
     assert default_policy["auto_approve_recommendations"] is False
     assert default_policy["auto_execute_approved"] is False
-    assert default_policy["restrict_auto_execution_to_regular_hours"] is False
+    assert default_policy["restrict_auto_execution_to_regular_hours"] is True
     assert default_policy["auto_execution_mode"] == "paper"
     assert default_policy["max_daily_auto_approvals"] == 3
     assert default_policy["max_daily_auto_buys"] == 3
@@ -88,6 +87,7 @@ def test_autopilot_policy_api_persists_latest_policy() -> None:
             "enabled": True,
             "auto_approve_recommendations": True,
             "auto_execute_approved": True,
+            "restrict_auto_execution_to_regular_hours": False,
             "auto_execution_mode": "live_dry_run",
             "auto_approve_min_confidence": 0.81,
             "auto_approve_min_composite": 0.35,
@@ -181,6 +181,7 @@ def test_autopilot_preflight_blocks_auto_execute_without_required_reconciliation
         json={
             "enabled": True,
             "auto_execute_approved": True,
+            "restrict_auto_execution_to_regular_hours": False,
             "max_auto_buys": 1,
             "max_auto_sells": 1,
             "require_position_reconciliation": True,
@@ -217,6 +218,7 @@ def test_autopilot_live_mode_requires_runtime_allow(monkeypatch) -> None:
             "enabled": True,
             "auto_execute_approved": True,
             "auto_execution_mode": "live",
+            "restrict_auto_execution_to_regular_hours": False,
             "max_auto_buys": 1,
             "max_auto_sells": 1,
             "reason": "live-mode-runtime-allow-test",
@@ -279,6 +281,38 @@ def test_market_session_endpoint_reports_regular_hours() -> None:
     closed_session = closed_response.json()
     assert closed_session["status"] == "closed"
     assert closed_session["is_regular_session"] is False
+
+    good_friday = client.get(
+        "/execution/market-session?as_of=2026-04-03T14:00:00Z",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert good_friday["is_trading_day"] is False
+    assert good_friday["holiday_name"] == "Good Friday"
+
+    independence_observed = client.get(
+        "/execution/market-session?as_of=2026-07-03T14:00:00Z",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert independence_observed["status"] == "closed"
+    assert independence_observed["is_trading_day"] is False
+    assert independence_observed["holiday_name"] == "July 4th"
+
+    early_open = client.get(
+        "/execution/market-session?as_of=2026-11-27T17:30:00Z",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert early_open["status"] == "early_close"
+    assert early_open["is_regular_session"] is True
+    assert early_open["is_early_close"] is True
+    assert early_open["regular_close_time"] == "13:00"
+
+    early_closed = client.get(
+        "/execution/market-session?as_of=2026-11-27T18:30:00Z",
+        headers=AUTH_HEADERS,
+    ).json()
+    assert early_closed["status"] == "closed"
+    assert early_closed["is_regular_session"] is False
+    assert early_closed["is_early_close"] is True
 
 
 def test_kill_switch_blocks_paper_orders() -> None:
@@ -464,6 +498,7 @@ def test_kill_switch_blocks_paper_orders() -> None:
             "execution_mode": "live",
             "dry_run": False,
             "confirm_live": False,
+            "idempotency_key": "execution-controls-blocked-live-order",
         },
         headers=AUTH_HEADERS,
     )
@@ -480,6 +515,7 @@ def test_kill_switch_blocks_paper_orders() -> None:
             "execution_mode": "live",
             "dry_run": False,
             "confirm_live": True,
+            "idempotency_key": "execution-controls-unconfigured-live-order",
         },
         headers=AUTH_HEADERS,
     )
@@ -495,6 +531,7 @@ def test_kill_switch_blocks_paper_orders() -> None:
             "limit_price": None,
             "execution_mode": "live",
             "dry_run": True,
+            "idempotency_key": "execution-controls-live-dry-run-first",
         },
         headers=AUTH_HEADERS,
     )
@@ -555,6 +592,7 @@ def test_kill_switch_blocks_paper_orders() -> None:
             "limit_price": None,
             "execution_mode": "live",
             "dry_run": True,
+            "idempotency_key": "execution-controls-live-dry-run-second",
         },
         headers=AUTH_HEADERS,
     )
@@ -751,6 +789,7 @@ def test_confirmed_live_buy_uses_configured_broker_adapter_and_records_fill() ->
                 "execution_mode": "live",
                 "dry_run": False,
                 "confirm_live": True,
+                "idempotency_key": "execution-controls-live-filled-buy",
             },
             headers=AUTH_HEADERS,
         )
@@ -772,6 +811,9 @@ def test_confirmed_live_buy_uses_configured_broker_adapter_and_records_fill() ->
     assert placement.qty == 1
     assert placement.limit_price == recommendation["entry_zone_high"]
     assert placement.client_order_id.startswith("quant_")
+    assert placement.order_class == "bracket"
+    assert placement.stop_loss_price == recommendation["stop_loss"]
+    assert placement.take_profit_limit_price == recommendation["tp2"]
 
     holdings = client.get("/portfolio/holdings", headers=AUTH_HEADERS)
     assert holdings.status_code == 200
@@ -853,6 +895,7 @@ def test_live_submitted_buy_cancel_calls_broker_before_local_cancel() -> None:
                 "execution_mode": "live",
                 "dry_run": False,
                 "confirm_live": True,
+                "idempotency_key": "execution-controls-live-submitted-buy",
             },
             headers=AUTH_HEADERS,
         )

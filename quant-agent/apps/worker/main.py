@@ -1,48 +1,43 @@
 from __future__ import annotations
 
-import argparse
 import json
-import os
+import logging
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from apps.api.dependencies import get_app_state
+from apps.worker.automation import (
+    _auto_approval_report,
+    _auto_approve_cycle,
+    _auto_execute_cycle,
+    _auto_execution_report,
+)
+from apps.worker.broker_cycles import (
+    _auto_broker_sync_cycle,
+    _auto_position_reconciliation_cycle,
+)
 from domain.entities.models import (
-    ApprovalDecision,
-    AutopilotPreflight,
     AutopilotPolicy,
-    BrokerOrderStatusSnapshot,
-    BrokerOrderSyncRequest,
-    BrokerOrderSyncStatus,
-    BrokerPositionSnapshot,
+    AutopilotPreflight,
     BacktestRunRequest,
-    Direction,
-    HoldingControlUpdateRequest,
-    ManualSellRequest,
-    OrderExecutionMode,
-    PaperOrderRequest,
-    PaperOrderStatus,
-    PositionReconciliationRequest,
+    MarketSessionStatus,
     PublicationConfig,
-    Recommendation,
     ResearchRunRequest,
     RiskPolicy,
-    SellAlert,
     RunType,
     SnapshotMode,
     SystemCycleRun,
 )
-from domain.policies.approval import ApprovalDecisionRequest
+from infra.observability.health import HealthEvaluator
+from infra.observability.logging import configure_logging
 from infra.queue.events import EventType
-from services.execution.broker_adapter import (
-    BrokerAccountSnapshot,
-    BrokerAdapterError,
-    BrokerOrderUpdate,
-    BrokerPositionUpdate,
-)
+
+configure_logging()
+logger = logging.getLogger(__name__)
 
 
 def _run_research_job(job_name: str) -> None:
@@ -98,7 +93,7 @@ def nightly_backtest_batch() -> None:
 
 def daily_metrics_aggregation() -> None:
     state = get_app_state()
-    metrics = state.metrics_store.dump()
+    metrics: dict[str, Any] = dict(state.metrics_store.dump())
     print(f"daily_metrics_aggregation: {metrics}")
 
 
@@ -128,1340 +123,6 @@ def _event_type_counts(events: list[Any]) -> dict[str, int]:
     return type_counts
 
 
-def _broker_sync_status(raw_status: str) -> BrokerOrderSyncStatus:
-    normalized = raw_status.strip().lower().replace(" ", "_")
-    if normalized == "filled":
-        return BrokerOrderSyncStatus.FILLED
-    if normalized == "partially_filled":
-        return BrokerOrderSyncStatus.PARTIALLY_FILLED
-    if normalized in {"canceled", "cancelled", "expired"}:
-        return BrokerOrderSyncStatus.CANCELED
-    if normalized == "rejected":
-        return BrokerOrderSyncStatus.REJECTED
-    return BrokerOrderSyncStatus.SUBMITTED
-
-
-def _broker_status_snapshot(
-    *,
-    local_order_id: str,
-    fallback_broker_order_id: str,
-    update: BrokerOrderUpdate,
-) -> BrokerOrderStatusSnapshot:
-    status = _broker_sync_status(update.raw_status)
-    fill_price = None
-    if status in {BrokerOrderSyncStatus.FILLED, BrokerOrderSyncStatus.PARTIALLY_FILLED}:
-        if update.filled_avg_price is None:
-            raise ValueError("broker fill status is missing filled_avg_price")
-        fill_price = float(update.filled_avg_price)
-    return BrokerOrderStatusSnapshot(
-        order_id=local_order_id,
-        broker_order_id=update.broker_order_id or fallback_broker_order_id,
-        status=status,
-        fill_price=fill_price,
-        filled_qty=update.filled_qty,
-        filled_at=update.filled_at,
-        reason=update.message,
-        broker_message=update.message or f"raw_status={update.raw_status}",
-    )
-
-
-def _auto_broker_sync_cycle(
-    *,
-    enabled: bool,
-    checked_at: datetime,
-    max_items: int,
-) -> dict[str, Any]:
-    state = get_app_state()
-    item_limit = max(0, max_items)
-    pending_buy_orders = [
-        order
-        for order in state.list_paper_orders(
-            limit=max(1, item_limit),
-            side=Direction.BUY,
-            status=PaperOrderStatus.SUBMITTED,
-        )
-        if order.execution_mode == OrderExecutionMode.LIVE
-        and not order.dry_run
-        and order.broker_order_id
-    ][:item_limit]
-    pending_sell_audits = [
-        audit
-        for audit in state.list_sell_execution_audits(limit=max(1, item_limit))
-        if audit.execution_mode == OrderExecutionMode.LIVE
-        and not audit.dry_run
-        and audit.broker_order_id
-        and audit.status in {"submitted", "partially_filled"}
-    ][:item_limit]
-    report: dict[str, Any] = {
-        "enabled": enabled,
-        "broker": None,
-        "checked_at": checked_at.isoformat(),
-        "pending_buy_order_count": len(pending_buy_orders),
-        "pending_sell_execution_count": len(pending_sell_audits),
-        "queried_count": 0,
-        "error_count": 0,
-        "buy_order_sync": None,
-        "sell_execution_sync": None,
-        "actions": [],
-    }
-    if not enabled:
-        report["reason"] = "auto_broker_sync_disabled"
-        return report
-    if not pending_buy_orders and not pending_sell_audits:
-        report["reason"] = "no_pending_live_broker_orders"
-        return report
-
-    broker_adapter = state.execution_router.broker_adapter
-    if broker_adapter is None:
-        report["enabled"] = False
-        report["reason"] = "broker_adapter_not_configured"
-        return report
-    report["broker"] = broker_adapter.name
-
-    buy_snapshots: list[BrokerOrderStatusSnapshot] = []
-    sell_snapshots: list[BrokerOrderStatusSnapshot] = []
-
-    def query_order(resource: str, local_order_id: str, broker_order_id: str) -> BrokerOrderStatusSnapshot | None:
-        try:
-            update = broker_adapter.get_order_by_id(broker_order_id)
-            report["queried_count"] += 1
-            snapshot = _broker_status_snapshot(
-                local_order_id=local_order_id,
-                fallback_broker_order_id=broker_order_id,
-                update=update,
-            )
-            report["actions"].append(
-                {
-                    "resource": resource,
-                    "status": "queried",
-                    "order_id": local_order_id,
-                    "broker_order_id": snapshot.broker_order_id,
-                    "broker_status": snapshot.status.value,
-                }
-            )
-            return snapshot
-        except (BrokerAdapterError, ValueError) as exc:
-            report["error_count"] += 1
-            report["actions"].append(
-                {
-                    "resource": resource,
-                    "status": "error",
-                    "order_id": local_order_id,
-                    "broker_order_id": broker_order_id,
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                }
-            )
-            return None
-        except Exception as exc:
-            report["error_count"] += 1
-            report["actions"].append(
-                {
-                    "resource": resource,
-                    "status": "error",
-                    "order_id": local_order_id,
-                    "broker_order_id": broker_order_id,
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                }
-            )
-            return None
-
-    for order in pending_buy_orders:
-        if order.broker_order_id is None:
-            continue
-        snapshot = query_order("paper_orders", order.id, order.broker_order_id)
-        if snapshot is not None:
-            buy_snapshots.append(snapshot)
-
-    for audit in pending_sell_audits:
-        if audit.broker_order_id is None:
-            continue
-        snapshot = query_order("sell_executions", audit.id, audit.broker_order_id)
-        if snapshot is not None:
-            sell_snapshots.append(snapshot)
-
-    if buy_snapshots:
-        try:
-            result = state.sync_broker_order_statuses(
-                BrokerOrderSyncRequest(
-                    broker=broker_adapter.name,
-                    checked_at=checked_at,
-                    updated_by="system_cycle:auto_broker_sync",
-                    statuses=buy_snapshots,
-                )
-            )
-            report["buy_order_sync"] = result.model_dump(mode="json")
-        except Exception as exc:
-            report["error_count"] += 1
-            report["actions"].append(
-                {
-                    "resource": "paper_orders",
-                    "status": "sync_error",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                }
-            )
-
-    if sell_snapshots:
-        try:
-            result = state.sync_broker_sell_statuses(
-                BrokerOrderSyncRequest(
-                    broker=broker_adapter.name,
-                    checked_at=checked_at,
-                    updated_by="system_cycle:auto_broker_sync",
-                    statuses=sell_snapshots,
-                )
-            )
-            report["sell_execution_sync"] = result.model_dump(mode="json")
-        except Exception as exc:
-            report["error_count"] += 1
-            report["actions"].append(
-                {
-                    "resource": "sell_executions",
-                    "status": "sync_error",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                }
-            )
-
-    if report["error_count"]:
-        report["reason"] = "broker_sync_errors"
-    else:
-        report["reason"] = "synced"
-    return report
-
-
-def _broker_position_snapshot(update: BrokerPositionUpdate) -> BrokerPositionSnapshot:
-    avg_price = update.avg_price if update.avg_price is not None and update.avg_price > 0 else None
-    market_price = update.market_price if update.market_price is not None and update.market_price > 0 else None
-    return BrokerPositionSnapshot(
-        ticker=update.symbol,
-        qty=update.qty,
-        avg_price=avg_price,
-        market_price=market_price,
-        broker_position_id=update.broker_position_id,
-    )
-
-
-def _auto_position_reconciliation_cycle(
-    *,
-    enabled: bool,
-    checked_at: datetime,
-    qty_tolerance: float,
-) -> dict[str, Any]:
-    state = get_app_state()
-    report: dict[str, Any] = {
-        "enabled": enabled,
-        "broker": None,
-        "checked_at": checked_at.isoformat(),
-        "position_count": 0,
-        "error_count": 0,
-        "reconciliation": None,
-        "actions": [],
-    }
-    if not enabled:
-        report["reason"] = "auto_position_reconciliation_disabled"
-        return report
-
-    broker_adapter = state.execution_router.broker_adapter
-    if broker_adapter is None:
-        report["enabled"] = False
-        report["reason"] = "broker_adapter_not_configured"
-        return report
-    report["broker"] = broker_adapter.name
-
-    list_positions = getattr(broker_adapter, "list_positions", None)
-    if not callable(list_positions):
-        report["enabled"] = False
-        report["reason"] = "broker_position_reconciliation_not_supported"
-        return report
-
-    try:
-        broker_positions = list_positions()
-        snapshots = [_broker_position_snapshot(position) for position in broker_positions]
-        report["position_count"] = len(snapshots)
-        reconciliation = state.reconcile_broker_positions(
-            PositionReconciliationRequest(
-                broker=broker_adapter.name,
-                as_of=checked_at,
-                qty_tolerance=qty_tolerance,
-                positions=snapshots,
-                note="system_cycle:auto_position_reconciliation",
-            )
-        )
-        report["reconciliation"] = reconciliation.model_dump(mode="json")
-        report["reason"] = "reconciled"
-        report["actions"].append(
-            {
-                "status": "reconciled",
-                "position_count": reconciliation.broker_position_count,
-                "reconciliation_id": reconciliation.reconciliation_id,
-                "reconciliation_status": reconciliation.status,
-                "blocks_auto_execution": reconciliation.blocks_auto_execution,
-            }
-        )
-    except (BrokerAdapterError, ValueError) as exc:
-        report["error_count"] += 1
-        report["reason"] = "position_reconciliation_error"
-        report["actions"].append(
-            {
-                "status": "error",
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-            }
-        )
-    except Exception as exc:
-        report["error_count"] += 1
-        report["reason"] = "position_reconciliation_error"
-        report["actions"].append(
-            {
-                "status": "error",
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-            }
-        )
-    return report
-
-
-def _broker_account_snapshot_payload(snapshot: BrokerAccountSnapshot) -> dict[str, Any]:
-    return {
-        "account_id": snapshot.account_id,
-        "status": snapshot.status,
-        "currency": snapshot.currency,
-        "cash": snapshot.cash,
-        "buying_power": snapshot.buying_power,
-        "equity": snapshot.equity,
-        "portfolio_value": snapshot.portfolio_value,
-        "trading_blocked": snapshot.trading_blocked,
-        "account_blocked": snapshot.account_blocked,
-        "transfers_blocked": snapshot.transfers_blocked,
-        "pattern_day_trader": snapshot.pattern_day_trader,
-        "raw_payload_keys": sorted(snapshot.raw_payload.keys()) if snapshot.raw_payload else [],
-    }
-
-
-def _auto_live_broker_account_gate(*, required: bool, checked_at: datetime) -> dict[str, Any]:
-    state = get_app_state()
-    report: dict[str, Any] = {
-        "required": required,
-        "passed": True,
-        "broker": None,
-        "checked_at": checked_at.isoformat(),
-        "reason": "not_required",
-        "account": None,
-        "buying_power_check": None,
-    }
-    if not required:
-        return report
-
-    report["passed"] = False
-    broker_adapter = state.execution_router.broker_adapter
-    if broker_adapter is None:
-        report["reason"] = "broker_adapter_not_configured"
-        return report
-    report["broker"] = broker_adapter.name
-
-    get_account = getattr(broker_adapter, "get_account", None)
-    if not callable(get_account):
-        report["reason"] = "broker_account_snapshot_not_supported"
-        return report
-
-    try:
-        snapshot = get_account()
-    except (BrokerAdapterError, ValueError) as exc:
-        report["reason"] = "broker_account_snapshot_error"
-        report["error"] = str(exc)
-        report["error_type"] = type(exc).__name__
-        return report
-    except Exception as exc:
-        report["reason"] = "broker_account_snapshot_error"
-        report["error"] = str(exc)
-        report["error_type"] = type(exc).__name__
-        return report
-
-    account = _broker_account_snapshot_payload(snapshot)
-    buying_power = snapshot.buying_power
-    if buying_power is None:
-        buying_power_check = {"passed": False, "reason": "broker_buying_power_missing"}
-    elif buying_power <= 0:
-        buying_power_check = {
-            "passed": False,
-            "reason": "broker_buying_power_empty",
-            "buying_power": buying_power,
-        }
-    else:
-        buying_power_check = {
-            "passed": True,
-            "reason": None,
-            "buying_power": buying_power,
-        }
-    report["account"] = account
-    report["buying_power_check"] = buying_power_check
-
-    status = (snapshot.status or "").strip().upper()
-    if snapshot.account_blocked:
-        report["reason"] = "broker_account_blocked"
-        return report
-    if snapshot.trading_blocked:
-        report["reason"] = "broker_trading_blocked"
-        return report
-    if status and status != "ACTIVE":
-        report["reason"] = "broker_account_not_active"
-        return report
-
-    report["passed"] = True
-    report["reason"] = "broker_account_ready"
-    return report
-
-
-def _auto_live_buying_power_gate(
-    *,
-    broker_account_gate: dict[str, Any] | None,
-    requested_notional: float,
-) -> dict[str, Any]:
-    if not broker_account_gate or not broker_account_gate.get("required"):
-        return {
-            "passed": True,
-            "reason": "not_required",
-            "requested_notional": round(requested_notional, 6),
-        }
-    account = broker_account_gate.get("account") or {}
-    buying_power = account.get("buying_power")
-    gate = {
-        "passed": False,
-        "requested_notional": round(requested_notional, 6),
-        "buying_power": buying_power,
-    }
-    if buying_power is None:
-        gate["reason"] = "broker_buying_power_missing"
-        return gate
-    if float(buying_power) + 1e-9 < requested_notional:
-        gate["reason"] = "broker_buying_power_insufficient"
-        return gate
-    gate["passed"] = True
-    gate["reason"] = None
-    return gate
-
-
-def _positive_float(value: Any) -> float | None:
-    if value in (None, ""):
-        return None
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed > 0 else None
-
-
-def _auto_live_account_equity_gate(
-    *,
-    broker_account_gate: dict[str, Any] | None,
-    configured_account_equity: float,
-) -> dict[str, Any]:
-    report: dict[str, Any] = {
-        "required": bool(broker_account_gate and broker_account_gate.get("required")),
-        "passed": True,
-        "reason": "not_required",
-        "configured_account_equity": round(configured_account_equity, 6),
-        "effective_account_equity": round(configured_account_equity, 6),
-        "source": "configured_account_equity",
-    }
-    if not report["required"]:
-        return report
-
-    account = (broker_account_gate or {}).get("account") or {}
-    equity = _positive_float(account.get("equity"))
-    portfolio_value = _positive_float(account.get("portfolio_value"))
-    if equity is not None:
-        report.update(
-            {
-                "passed": True,
-                "reason": None,
-                "effective_account_equity": round(equity, 6),
-                "source": "broker_equity",
-            }
-        )
-        return report
-    if portfolio_value is not None:
-        report.update(
-            {
-                "passed": True,
-                "reason": None,
-                "effective_account_equity": round(portfolio_value, 6),
-                "source": "broker_portfolio_value",
-            }
-        )
-        return report
-
-    report.update(
-        {
-            "passed": False,
-            "reason": "broker_account_equity_missing",
-            "effective_account_equity": None,
-            "source": None,
-        }
-    )
-    return report
-
-
-def _truthy_env_flag(name: str) -> bool:
-    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _auto_execution_mode(mode: str) -> tuple[OrderExecutionMode, bool, bool]:
-    normalized = mode.lower()
-    if normalized == "paper":
-        return OrderExecutionMode.PAPER, False, False
-    if normalized == "live_dry_run":
-        return OrderExecutionMode.LIVE, True, False
-    if normalized == "live":
-        return OrderExecutionMode.LIVE, False, True
-    raise ValueError("auto execution mode must be paper, live_dry_run, or live")
-
-
-def _auto_approve_cycle(
-    *,
-    recommendations: list[Recommendation],
-    max_auto_approvals: int,
-    min_confidence: float,
-    min_composite: float,
-    order_dedupe_minutes: int,
-    as_of: datetime,
-) -> dict[str, Any]:
-    state = get_app_state()
-    actions: list[dict[str, Any]] = []
-    approval_count = 0
-    open_tickers = {holding.ticker.upper() for holding in state.list_open_holdings()}
-
-    if state.kill_switch.enabled:
-        actions.append(
-            {
-                "action": "approve_recommendation",
-                "status": "skipped",
-                "reason": "kill_switch_enabled",
-                "message_cn": f"Kill switch 已开启：{state.kill_switch.reason or '未提供原因'}。",
-            }
-        )
-        return _auto_approval_report(enabled=True, actions=actions)
-
-    for recommendation in recommendations:
-        ticker = recommendation.ticker.upper()
-        composite = float(recommendation.score_vector.get("composite", 0.0))
-        if approval_count >= max_auto_approvals:
-            actions.append(
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "max_auto_approvals_reached",
-                }
-            )
-            continue
-        if state.get_latest_approval(recommendation.id) is not None:
-            actions.append(
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "already_decided",
-                }
-            )
-            continue
-        if ticker in open_tickers:
-            actions.append(
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "already_open_holding",
-                }
-            )
-            continue
-        recent_buy_order_gate = state.get_recent_buy_order_gate(
-            ticker=recommendation.ticker,
-            recommendation_id=recommendation.id,
-            order_dedupe_minutes=order_dedupe_minutes,
-            as_of=as_of,
-        )
-        if not recent_buy_order_gate["passed"]:
-            actions.append(
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "recent_buy_order_gate_failed",
-                    "recent_buy_order_gate": recent_buy_order_gate,
-                }
-            )
-            continue
-        if recommendation.direction != Direction.BUY:
-            actions.append(
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "unsupported_direction",
-                }
-            )
-            continue
-        if recommendation.confidence < min_confidence:
-            actions.append(
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "below_min_confidence",
-                    "confidence": recommendation.confidence,
-                    "min_confidence": min_confidence,
-                }
-            )
-            continue
-        if composite < min_composite:
-            actions.append(
-                {
-                    "action": "approve_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "below_min_composite",
-                    "composite": composite,
-                    "min_composite": min_composite,
-                }
-            )
-            continue
-
-        approval = state.decide_recommendation(
-            ApprovalDecisionRequest(
-                recommendation_id=recommendation.id,
-                decision=ApprovalDecision.APPROVED.value,
-                approver="system_cycle:auto_approval",
-                notes=(
-                    f"auto-approved confidence={recommendation.confidence:.4f}, "
-                    f"composite={composite:.4f}"
-                ),
-            )
-        )
-        approval_count += 1
-        actions.append(
-            {
-                "action": "approve_recommendation",
-                "status": "approved",
-                "ticker": recommendation.ticker,
-                "recommendation_id": recommendation.id,
-                "decision_id": approval.decision_id,
-                "confidence": recommendation.confidence,
-                "composite": composite,
-            }
-        )
-
-    return _auto_approval_report(enabled=True, actions=actions)
-
-
-def _auto_approval_report(*, enabled: bool, actions: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "enabled": enabled,
-        "action_count": len(actions),
-        "approved_count": sum(1 for item in actions if item.get("status") == "approved"),
-        "skipped_count": sum(1 for item in actions if item.get("status") == "skipped"),
-        "error_count": sum(1 for item in actions if item.get("status") == "error"),
-        "actions": actions,
-    }
-
-
-def _auto_execute_cycle(
-    *,
-    recommendations: list[Recommendation],
-    alerts: list[SellAlert],
-    run_id: str,
-    execution_mode: str,
-    max_auto_buys: int,
-    max_auto_sells: int,
-    order_dedupe_minutes: int,
-    sell_alert_cooldown_minutes: int,
-    rebuy_cooldown_minutes: int,
-    as_of: datetime,
-    account_equity: float,
-    max_open_risk_pct: float,
-    max_daily_realized_loss_pct: float,
-    max_auto_buy_price_drift_pct: float,
-    allow_auto_live_execution: bool | None,
-    risk_per_trade_pct: float,
-    max_position_pct: float,
-    max_gross_exposure_pct: float,
-    max_sector_exposure_pct: float,
-) -> dict[str, Any]:
-    state = get_app_state()
-    order_mode, dry_run, confirm_live = _auto_execution_mode(execution_mode)
-    live_allowed = (
-        _truthy_env_flag("QUANT_ALLOW_AUTOPILOT_LIVE")
-        if allow_auto_live_execution is None
-        else allow_auto_live_execution
-    )
-    live_execution_requested = order_mode == OrderExecutionMode.LIVE and not dry_run
-    live_execution_gate = {
-        "passed": (not live_execution_requested) or live_allowed,
-        "requested": live_execution_requested,
-        "allow_auto_live_execution": live_allowed,
-        "reason": None if (not live_execution_requested or live_allowed) else "auto_live_execution_not_allowed",
-        "required_runtime_flag": "--allow-auto-live-execution",
-        "required_env_var": "QUANT_ALLOW_AUTOPILOT_LIVE=1",
-    }
-    actions: list[dict[str, Any]] = []
-    sell_blocked_tickers: set[str] = set()
-    broker_account_gate: dict[str, Any] | None = None
-    account_equity_gate: dict[str, Any] | None = None
-
-    if state.kill_switch.enabled:
-        actions.append(
-            {
-                "action": "auto_execution",
-                "status": "skipped",
-                "reason": "kill_switch_enabled",
-                "message_cn": f"Kill switch 已开启：{state.kill_switch.reason or '未提供原因'}。",
-            }
-        )
-        return _auto_execution_report(
-            enabled=True,
-            mode=execution_mode,
-            actions=actions,
-            live_execution_gate=live_execution_gate,
-        )
-    if not live_execution_gate["passed"]:
-        actions.append(
-            {
-                "action": "auto_execution",
-                "status": "skipped",
-                "reason": "auto_live_execution_not_allowed",
-                "live_execution_gate": live_execution_gate,
-                "message_cn": "自动实盘执行需要显式传入 allow_auto_live_execution 或设置 QUANT_ALLOW_AUTOPILOT_LIVE=1。",
-            }
-        )
-        return _auto_execution_report(
-            enabled=True,
-            mode=execution_mode,
-            actions=actions,
-            live_execution_gate=live_execution_gate,
-        )
-
-    broker_account_gate = _auto_live_broker_account_gate(
-        required=live_execution_requested,
-        checked_at=as_of,
-    )
-    if live_execution_requested and not broker_account_gate["passed"]:
-        actions.append(
-            {
-                "action": "auto_execution",
-                "status": "skipped",
-                "reason": "broker_account_gate_failed",
-                "broker_account_gate": broker_account_gate,
-                "message_cn": "自动实盘执行前的 broker 账户快照门禁未通过，本轮不会提交 broker 订单。",
-            }
-        )
-        return _auto_execution_report(
-            enabled=True,
-            mode=execution_mode,
-            actions=actions,
-            live_execution_gate=live_execution_gate,
-            broker_account_gate=broker_account_gate,
-        )
-
-    account_equity_gate = _auto_live_account_equity_gate(
-        broker_account_gate=broker_account_gate,
-        configured_account_equity=account_equity,
-    )
-    effective_account_equity = float(account_equity_gate.get("effective_account_equity") or account_equity)
-
-    for alert in alerts:
-        if len([item for item in actions if item.get("action") == "sell_alert"]) >= max_auto_sells:
-            actions.append(
-                {
-                    "action": "sell_alert",
-                    "status": "skipped",
-                    "ticker": alert.ticker,
-                    "reason": "max_auto_sells_reached",
-                }
-            )
-            continue
-        try:
-            holding = state.holding_watch_repo.get(alert.ticker)
-            if holding is None:
-                actions.append(
-                    {
-                        "action": "sell_alert",
-                        "status": "skipped",
-                        "ticker": alert.ticker,
-                        "reason": "open_holding_not_found",
-                    }
-                )
-                continue
-            pending_sell_order_gate = state.get_pending_sell_order_gate(
-                ticker=alert.ticker,
-                reason_code=alert.reason_code,
-            )
-            if not pending_sell_order_gate["passed"]:
-                actions.append(
-                    {
-                        "action": "sell_alert",
-                        "status": "skipped",
-                        "ticker": alert.ticker,
-                        "reason_code": alert.reason_code,
-                        "reason": "pending_sell_order_gate_failed",
-                        "pending_sell_order_gate": pending_sell_order_gate,
-                    }
-                )
-                continue
-            cooldown = state.get_sell_alert_cooldown(
-                ticker=alert.ticker,
-                reason_code=alert.reason_code,
-                cooldown_minutes=sell_alert_cooldown_minutes,
-                as_of=as_of,
-            )
-            if cooldown.get("active"):
-                actions.append(
-                    {
-                        "action": "sell_alert",
-                        "status": "skipped",
-                        "ticker": alert.ticker,
-                        "reason_code": alert.reason_code,
-                        "reason": "sell_alert_cooldown_active",
-                        "cooldown": cooldown,
-                    }
-                )
-                continue
-            default_qty, default_action_cn = state._alert_default_sell_qty(alert, holding)
-            execution = state.sell_holding(
-                ticker=alert.ticker,
-                request=ManualSellRequest(
-                    qty=default_qty,
-                    sell_price=alert.current_price,
-                    reason=f"system_cycle:{run_id}:alert:{alert.reason_code}",
-                    execution_mode=order_mode,
-                    dry_run=dry_run,
-                    confirm_live=confirm_live,
-                ),
-            )
-            control_adjustment = _post_sell_control_adjustment(
-                alert=alert,
-                execution=execution,
-                run_id=run_id,
-            )
-            sell_blocked_tickers.add(alert.ticker.upper())
-            actions.append(
-                {
-                    "action": "sell_alert",
-                    "status": "executed",
-                    "ticker": alert.ticker,
-                    "reason_code": alert.reason_code,
-                    "source_recommendation_id": alert.source_recommendation_id,
-                    "source_snapshot_id": alert.source_snapshot_id,
-                    "strategy_config_id": alert.strategy_config_id,
-                    "execution_mode": execution.execution_mode.value,
-                    "dry_run": execution.dry_run,
-                    "sell_execution_id": execution.sell_execution_id,
-                    "sold_qty": execution.sold_qty,
-                    "sell_price": execution.sell_price,
-                    "remaining_qty": execution.remaining_qty,
-                    "message_cn": execution.message_cn,
-                    "default_action_cn": default_action_cn,
-                    "control_adjustment": control_adjustment,
-                }
-            )
-        except Exception as exc:
-            actions.append(
-                {
-                    "action": "sell_alert",
-                    "status": "error",
-                    "ticker": alert.ticker,
-                    "reason_code": alert.reason_code,
-                    "error": str(exc),
-                }
-            )
-
-    portfolio_summary = state.get_portfolio_summary(as_of=as_of)
-    open_risk_pct = (
-        round(portfolio_summary.open_risk_to_stop / effective_account_equity, 6)
-        if effective_account_equity > 0
-        else 1.0
-    )
-    portfolio_risk_gate = {
-        "passed": open_risk_pct <= max_open_risk_pct,
-        "reason": None if open_risk_pct <= max_open_risk_pct else "open_risk_above_policy_limit",
-        "open_risk_to_stop": portfolio_summary.open_risk_to_stop,
-        "open_risk_pct": open_risk_pct,
-        "max_open_risk_pct": max_open_risk_pct,
-        "account_equity": effective_account_equity,
-        "configured_account_equity": account_equity,
-        "account_equity_gate": account_equity_gate,
-        "open_holding_count": portfolio_summary.open_holding_count,
-    }
-    daily_loss_gate = state.get_autopilot_daily_loss_gate(
-        as_of=as_of,
-        account_equity=effective_account_equity,
-        max_daily_realized_loss_pct=max_daily_realized_loss_pct,
-    )
-
-    open_tickers = {holding.ticker.upper() for holding in state.list_open_holdings()}
-    buy_count = 0
-    for recommendation in recommendations:
-        ticker = recommendation.ticker.upper()
-        if buy_count >= max_auto_buys:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "max_auto_buys_reached",
-                }
-            )
-            continue
-        if live_execution_requested and account_equity_gate and not account_equity_gate["passed"]:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "broker_account_equity_gate_failed",
-                    "account_equity_gate": account_equity_gate,
-                    "broker_account_gate": broker_account_gate,
-                    "message_cn": "Broker account equity/portfolio value 不可用，自动实盘买入已跳过。",
-                }
-            )
-            continue
-        if not daily_loss_gate["passed"]:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "daily_loss_gate_failed",
-                    "daily_loss_gate": daily_loss_gate,
-                }
-            )
-            continue
-        if not portfolio_risk_gate["passed"]:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "portfolio_open_risk_gate_failed",
-                    "portfolio_risk_gate": portfolio_risk_gate,
-                }
-            )
-            continue
-        pending_buy_order_gate = state.get_pending_buy_order_gate(
-            ticker=recommendation.ticker,
-            recommendation_id=recommendation.id,
-        )
-        if not pending_buy_order_gate["passed"]:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "pending_buy_order_gate_failed",
-                    "pending_buy_order_gate": pending_buy_order_gate,
-                }
-            )
-            continue
-        recent_buy_order_gate = state.get_recent_buy_order_gate(
-            ticker=recommendation.ticker,
-            recommendation_id=recommendation.id,
-            order_dedupe_minutes=order_dedupe_minutes,
-            as_of=as_of,
-        )
-        if not recent_buy_order_gate["passed"]:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "recent_buy_order_gate_failed",
-                    "recent_buy_order_gate": recent_buy_order_gate,
-                }
-            )
-            continue
-        if ticker in sell_blocked_tickers:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "sell_alert_same_cycle",
-                }
-            )
-            continue
-        if ticker in open_tickers:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "already_open_holding",
-                }
-            )
-            continue
-        cooldown = state.get_rebuy_cooldown(
-            ticker=recommendation.ticker,
-            cooldown_minutes=rebuy_cooldown_minutes,
-            as_of=as_of,
-        )
-        if cooldown.get("active"):
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "rebuy_cooldown_active",
-                    "cooldown": cooldown,
-                }
-            )
-            continue
-        if recommendation.direction != Direction.BUY:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "unsupported_direction",
-                }
-            )
-            continue
-        approval = state.get_latest_approval(recommendation.id)
-        if approval is None or approval.decision != ApprovalDecision.APPROVED:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "approval_required",
-                }
-            )
-            continue
-        price_drift_gate = _auto_buy_price_drift_gate(
-            recommendation=recommendation,
-            max_drift_pct=max_auto_buy_price_drift_pct,
-            as_of=as_of,
-        )
-        if not price_drift_gate["passed"]:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "skipped",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "reason": "price_drift_gate_failed",
-                    "price_drift_gate": price_drift_gate,
-                }
-            )
-            continue
-
-        try:
-            probe_request = PaperOrderRequest(
-                recommendation_id=recommendation.id,
-                side=Direction.BUY,
-                qty=1,
-                limit_price=recommendation.entry_zone_high,
-                execution_mode=order_mode,
-                dry_run=dry_run,
-                confirm_live=confirm_live,
-                account_equity=effective_account_equity,
-                risk_per_trade_pct=risk_per_trade_pct,
-                max_position_pct=max_position_pct,
-                max_gross_exposure_pct=max_gross_exposure_pct,
-                max_sector_exposure_pct=max_sector_exposure_pct,
-            )
-            probe_plan = state.build_paper_order_risk_plan(
-                recommendation=recommendation,
-                request=probe_request,
-            )
-            qty = int(probe_plan.recommended_qty)
-            if qty <= 0:
-                actions.append(
-                    {
-                        "action": "buy_recommendation",
-                        "status": "skipped",
-                        "ticker": recommendation.ticker,
-                        "recommendation_id": recommendation.id,
-                        "reason": "risk_plan_zero_qty",
-                        "message_cn": probe_plan.message_cn,
-                    }
-                )
-                continue
-            request = probe_request.model_copy(update={"qty": float(qty)})
-            risk_plan = state.build_paper_order_risk_plan(recommendation=recommendation, request=request)
-            if not risk_plan.is_within_limits:
-                actions.append(
-                    {
-                        "action": "buy_recommendation",
-                        "status": "skipped",
-                        "ticker": recommendation.ticker,
-                        "recommendation_id": recommendation.id,
-                        "reason": "risk_plan_violation",
-                        "violations": risk_plan.violations,
-                        "message_cn": risk_plan.message_cn,
-                    }
-                )
-                continue
-            buying_power_gate = _auto_live_buying_power_gate(
-                broker_account_gate=broker_account_gate,
-                requested_notional=risk_plan.requested_notional,
-            )
-            if not buying_power_gate["passed"]:
-                actions.append(
-                    {
-                        "action": "buy_recommendation",
-                        "status": "skipped",
-                        "ticker": recommendation.ticker,
-                        "recommendation_id": recommendation.id,
-                        "reason": buying_power_gate["reason"],
-                        "broker_buying_power_gate": buying_power_gate,
-                        "broker_account_gate": broker_account_gate,
-                        "message_cn": "Broker buying power 不足或不可用，自动实盘买入已跳过。",
-                    }
-                )
-                continue
-            order, updated_positions = state.execution_router.submit(
-                recommendation=recommendation,
-                request=request,
-                positions=state.positions,
-            )
-            state.positions = updated_positions
-            state.record_paper_order(order, recommendation=recommendation)
-            open_tickers.add(ticker)
-            buy_count += 1
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "executed",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "source_snapshot_id": recommendation.source_snapshot_id,
-                    "strategy_config_id": recommendation.strategy_config_id,
-                    "execution_mode": order.execution_mode.value,
-                    "dry_run": order.dry_run,
-                    "order_id": order.id,
-                    "qty": order.qty,
-                    "limit_price": order.limit_price,
-                    "simulated_fill_price": order.simulated_fill_price,
-                    "account_equity_gate": account_equity_gate,
-                    "message_cn": risk_plan.message_cn,
-                }
-            )
-        except Exception as exc:
-            actions.append(
-                {
-                    "action": "buy_recommendation",
-                    "status": "error",
-                    "ticker": recommendation.ticker,
-                    "recommendation_id": recommendation.id,
-                    "error": str(exc),
-                }
-            )
-
-    return _auto_execution_report(
-        enabled=True,
-        mode=execution_mode,
-        actions=actions,
-        portfolio_risk_gate=portfolio_risk_gate,
-        daily_loss_gate=daily_loss_gate,
-        live_execution_gate=live_execution_gate,
-        broker_account_gate=broker_account_gate,
-        account_equity_gate=account_equity_gate,
-    )
-
-
-def _auto_buy_price_drift_gate(
-    *,
-    recommendation: Recommendation,
-    max_drift_pct: float,
-    as_of: datetime,
-) -> dict[str, Any]:
-    ticker = recommendation.ticker.upper()
-    if max_drift_pct <= 0:
-        return {
-            "passed": True,
-            "ticker": ticker,
-            "recommendation_id": recommendation.id,
-            "max_drift_pct": max_drift_pct,
-            "reason": "disabled",
-        }
-
-    state = get_app_state()
-    try:
-        latest_price = state.provider.get_latest_price(ticker, as_of)
-    except Exception as exc:
-        return {
-            "passed": False,
-            "ticker": ticker,
-            "recommendation_id": recommendation.id,
-            "reason": "latest_price_unavailable",
-            "error": str(exc),
-            "max_drift_pct": max_drift_pct,
-        }
-    if latest_price is None or latest_price <= 0:
-        return {
-            "passed": False,
-            "ticker": ticker,
-            "recommendation_id": recommendation.id,
-            "reason": "latest_price_missing",
-            "latest_price": latest_price,
-            "max_drift_pct": max_drift_pct,
-        }
-
-    latest = float(latest_price)
-    entry_low = float(recommendation.entry_zone_low)
-    entry_high = float(recommendation.entry_zone_high)
-    if entry_low <= 0 or entry_high <= 0 or entry_low > entry_high:
-        return {
-            "passed": False,
-            "ticker": ticker,
-            "recommendation_id": recommendation.id,
-            "reason": "invalid_entry_zone",
-            "entry_zone_low": entry_low,
-            "entry_zone_high": entry_high,
-            "latest_price": latest,
-            "max_drift_pct": max_drift_pct,
-        }
-
-    if entry_low <= latest <= entry_high:
-        drift_pct = 0.0
-        reason = None
-        passed = True
-    elif latest > entry_high:
-        drift_pct = round((latest - entry_high) / entry_high, 6)
-        reason = "latest_price_above_entry_zone"
-        passed = drift_pct <= max_drift_pct
-    else:
-        drift_pct = round((entry_low - latest) / entry_low, 6)
-        reason = "latest_price_below_entry_zone"
-        passed = drift_pct <= max_drift_pct
-
-    return {
-        "passed": passed,
-        "ticker": ticker,
-        "recommendation_id": recommendation.id,
-        "reason": None if passed else reason,
-        "latest_price": round(latest, 6),
-        "entry_zone_low": entry_low,
-        "entry_zone_high": entry_high,
-        "drift_pct": drift_pct,
-        "max_drift_pct": max_drift_pct,
-    }
-
-
-def _post_sell_control_adjustment(
-    *,
-    alert: SellAlert,
-    execution: Any,
-    run_id: str,
-) -> dict[str, Any] | None:
-    if alert.reason_code != "take_profit1_hit":
-        return None
-    if not execution.applied_to_ledger or execution.dry_run or execution.remaining_qty <= 0:
-        return {
-            "status": "skipped",
-            "reason": "sell_not_applied_to_open_holding",
-        }
-
-    holding = execution.holding
-    desired_stop = max(holding.stop_loss, holding.avg_buy_price)
-    stop_ceiling = max(0.000001, holding.take_profit1 * 0.999)
-    new_stop = round(min(desired_stop, stop_ceiling), 6)
-    if new_stop <= holding.stop_loss + 1e-9:
-        return {
-            "status": "skipped",
-            "reason": "stop_already_at_or_above_target",
-            "current_stop_loss": holding.stop_loss,
-            "target_stop_loss": new_stop,
-        }
-    if not new_stop < holding.take_profit1:
-        return {
-            "status": "skipped",
-            "reason": "target_stop_not_below_take_profit1",
-            "target_stop_loss": new_stop,
-            "take_profit1": holding.take_profit1,
-        }
-
-    state = get_app_state()
-    try:
-        result = state.update_holding_controls(
-            alert.ticker,
-            HoldingControlUpdateRequest(
-                stop_loss=new_stop,
-                reason=f"system_cycle:{run_id}:post_take_profit1_stop_tighten",
-                updated_by="system_cycle:auto_sell",
-            ),
-        )
-    except Exception as exc:
-        return {
-            "status": "error",
-            "reason": "holding_control_update_failed",
-            "error": str(exc),
-        }
-    return {
-        "status": "updated",
-        "audit_id": result.audit.id,
-        "old_stop_loss": result.audit.old_stop_loss,
-        "new_stop_loss": result.audit.new_stop_loss,
-        "message_cn": result.message_cn,
-    }
-
-
-def _auto_execution_report(
-    *,
-    enabled: bool,
-    mode: str,
-    actions: list[dict[str, Any]],
-    portfolio_risk_gate: dict[str, Any] | None = None,
-    daily_loss_gate: dict[str, Any] | None = None,
-    live_execution_gate: dict[str, Any] | None = None,
-    broker_account_gate: dict[str, Any] | None = None,
-    account_equity_gate: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "enabled": enabled,
-        "mode": mode,
-        "portfolio_risk_gate": portfolio_risk_gate,
-        "daily_loss_gate": daily_loss_gate,
-        "live_execution_gate": live_execution_gate,
-        "broker_account_gate": broker_account_gate,
-        "account_equity_gate": account_equity_gate,
-        "action_count": len(actions),
-        "buy_order_count": sum(
-            1
-            for item in actions
-            if item.get("action") == "buy_recommendation" and item.get("status") == "executed"
-        ),
-        "sell_order_count": sum(
-            1
-            for item in actions
-            if item.get("action") == "sell_alert" and item.get("status") == "executed"
-        ),
-        "skipped_count": sum(1 for item in actions if item.get("status") == "skipped"),
-        "error_count": sum(1 for item in actions if item.get("status") == "error"),
-        "actions": actions,
-    }
-
-
 def _snapshot_quality_gate(
     *,
     source_snapshot_id: str,
@@ -1488,6 +149,8 @@ def _snapshot_quality_gate(
     fundamental_coverage = float(quality.get("fundamental_coverage") or 0.0)
     latest_bar_age_minutes = quality.get("latest_bar_age_minutes")
     reasons: list[str] = []
+    if not bool(quality.get("live_execution_allowed")):
+        reasons.append("snapshot_provider_quality_blocked")
     if bar_coverage < min_bar_coverage:
         reasons.append("snapshot_bar_coverage_below_threshold")
     if fundamental_coverage < min_fundamental_coverage:
@@ -1534,6 +197,7 @@ def _apply_autopilot_policy(
                 int(daily_usage.get("remaining_approvals", policy.max_auto_approvals)),
             ),
             "auto_execution_mode": policy.auto_execution_mode.value,
+            "restrict_auto_execution_to_regular_hours": policy.restrict_auto_execution_to_regular_hours,
             "max_auto_buys": min(
                 policy.max_auto_buys,
                 int(daily_usage.get("remaining_buys", policy.max_auto_buys)),
@@ -1553,6 +217,7 @@ def _apply_autopilot_policy(
             "max_auto_buy_price_drift_pct": policy.max_auto_buy_price_drift_pct,
             "require_position_reconciliation": policy.require_position_reconciliation,
             "max_position_reconciliation_age_minutes": policy.max_position_reconciliation_age_minutes,
+            "min_paper_shadow_trading_days": policy.min_paper_shadow_trading_days,
             "account_equity": policy.account_equity,
             "risk_per_trade_pct": policy.risk_per_trade_pct,
             "max_position_pct": policy.max_position_pct,
@@ -1561,6 +226,55 @@ def _apply_autopilot_policy(
         }
     )
     return updates
+
+
+def _paper_shadow_evidence(
+    *,
+    use_autopilot_policy: bool,
+    autopilot_policy: dict[str, Any] | None,
+    autopilot_preflight: dict[str, Any] | None,
+    auto_execution: dict[str, Any],
+    auto_execution_enabled: bool,
+    snapshot_quality_gate: dict[str, Any],
+    daily_loss_gate: dict[str, Any],
+    position_reconciliation_gate: dict[str, Any],
+    market_session: MarketSessionStatus,
+) -> dict[str, Any]:
+    """Build explicit, fail-closed evidence for one paper-shadow trading day."""
+
+    policy = autopilot_policy or {}
+    preflight = autopilot_preflight or {}
+    mode = str(auto_execution.get("mode") or policy.get("auto_execution_mode") or "").lower()
+    reasons: list[str] = []
+    checks = {
+        "autopilot_policy_used": use_autopilot_policy,
+        "autopilot_policy_enabled": policy.get("enabled") is True,
+        "policy_auto_execution_enabled": policy.get("auto_execute_approved") is True,
+        "paper_mode": mode == "paper",
+        "preflight_can_auto_execute": preflight.get("can_auto_execute") is True,
+        "auto_execution_path_enabled": auto_execution.get("enabled") is True,
+        "effective_auto_execution_enabled": auto_execution_enabled,
+        "snapshot_quality_passed": snapshot_quality_gate.get("passed") is True,
+        "daily_loss_gate_passed": daily_loss_gate.get("passed") is True,
+        "position_reconciliation_passed": position_reconciliation_gate.get("passed") is True,
+        "regular_xnys_session": market_session.is_regular_session,
+        "execution_completed_without_errors": int(auto_execution.get("error_count") or 0) == 0,
+    }
+    for name, passed in checks.items():
+        if not passed:
+            reasons.append(name)
+    return {
+        "schema_version": 1,
+        "qualified": not reasons,
+        "mode": mode or None,
+        "checks": checks,
+        "reasons": reasons,
+        "action_count": int(auto_execution.get("action_count") or 0),
+        "buy_order_count": int(auto_execution.get("buy_order_count") or 0),
+        "sell_order_count": int(auto_execution.get("sell_order_count") or 0),
+        "error_count": int(auto_execution.get("error_count") or 0),
+        "xnys_session_date": (market_session.as_of.astimezone(ZoneInfo("America/New_York")).date().isoformat()),
+    }
 
 
 def system_cycle(
@@ -1579,6 +293,7 @@ def system_cycle(
     auto_approve_min_composite: float = 0.0,
     max_auto_approvals: int = 1,
     auto_execution_mode: str = "paper",
+    restrict_auto_execution_to_regular_hours: bool = True,
     allow_auto_live_execution: bool | None = None,
     max_auto_buys: int = 1,
     max_auto_sells: int = 10,
@@ -1594,6 +309,7 @@ def system_cycle(
     max_auto_buy_price_drift_pct: float = 0.03,
     require_position_reconciliation: bool = False,
     max_position_reconciliation_age_minutes: int = 1440,
+    min_paper_shadow_trading_days: int = 20,
     risk_per_trade_pct: float = 0.01,
     max_position_pct: float = 0.10,
     max_gross_exposure_pct: float = 1.0,
@@ -1601,6 +317,11 @@ def system_cycle(
 ) -> dict[str, Any]:
     state = get_app_state()
     started_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    run_id = uuid4().hex[:16]
+    logger.info(
+        "system cycle started",
+        extra={"event": "system_cycle_started", "run_id": run_id, "started_at": started_at.isoformat()},
+    )
     broker_order_sync = _auto_broker_sync_cycle(
         enabled=auto_sync_broker_statuses,
         checked_at=started_at,
@@ -1630,6 +351,7 @@ def system_cycle(
                 "auto_approve_min_composite": auto_approve_min_composite,
                 "max_auto_approvals": max_auto_approvals,
                 "auto_execution_mode": auto_execution_mode,
+                "restrict_auto_execution_to_regular_hours": restrict_auto_execution_to_regular_hours,
                 "max_auto_buys": max_auto_buys,
                 "max_auto_sells": max_auto_sells,
                 "order_dedupe_minutes": order_dedupe_minutes,
@@ -1644,6 +366,7 @@ def system_cycle(
                 "max_auto_buy_price_drift_pct": max_auto_buy_price_drift_pct,
                 "require_position_reconciliation": require_position_reconciliation,
                 "max_position_reconciliation_age_minutes": max_position_reconciliation_age_minutes,
+                "min_paper_shadow_trading_days": min_paper_shadow_trading_days,
                 "risk_per_trade_pct": risk_per_trade_pct,
                 "max_position_pct": max_position_pct,
                 "max_gross_exposure_pct": max_gross_exposure_pct,
@@ -1658,6 +381,7 @@ def system_cycle(
         auto_approve_min_composite = policy_values["auto_approve_min_composite"]
         max_auto_approvals = policy_values["max_auto_approvals"]
         auto_execution_mode = policy_values["auto_execution_mode"]
+        restrict_auto_execution_to_regular_hours = policy_values["restrict_auto_execution_to_regular_hours"]
         max_auto_buys = policy_values["max_auto_buys"]
         max_auto_sells = policy_values["max_auto_sells"]
         order_dedupe_minutes = policy_values["order_dedupe_minutes"]
@@ -1672,12 +396,12 @@ def system_cycle(
         max_auto_buy_price_drift_pct = policy_values["max_auto_buy_price_drift_pct"]
         require_position_reconciliation = policy_values["require_position_reconciliation"]
         max_position_reconciliation_age_minutes = policy_values["max_position_reconciliation_age_minutes"]
+        min_paper_shadow_trading_days = policy_values["min_paper_shadow_trading_days"]
         risk_per_trade_pct = policy_values["risk_per_trade_pct"]
         max_position_pct = policy_values["max_position_pct"]
         max_gross_exposure_pct = policy_values["max_gross_exposure_pct"]
         max_sector_exposure_pct = policy_values["max_sector_exposure_pct"]
 
-    run_id = uuid4().hex[:16]
     request = ResearchRunRequest(
         run_type=RunType.RESEARCH_BATCH,
         objective="Scheduled full system cycle",
@@ -1702,6 +426,11 @@ def system_cycle(
     )
     daily_loss_passed = bool(daily_loss_gate.get("passed"))
     live_auto_execution_requested = auto_execute_approved and auto_execution_mode.lower() == "live"
+    paper_shadow_gate = state.get_paper_shadow_gate(
+        required_trading_days=min_paper_shadow_trading_days,
+        as_of=started_at,
+    )
+    market_session = state.get_market_session_status(as_of=started_at)
     position_reconciliation_gate = state.get_position_reconciliation_gate(
         require_position_reconciliation=require_position_reconciliation or live_auto_execution_requested,
         max_age_minutes=max_position_reconciliation_age_minutes,
@@ -1750,12 +479,30 @@ def system_cycle(
             "reason": "snapshot_quality_gate_failed",
             "snapshot_quality_gate": snapshot_quality_gate,
         }
+    elif live_auto_execution_requested and not paper_shadow_gate["passed"]:
+        auto_execution_block = {
+            "action": "auto_execution",
+            "status": "skipped",
+            "reason": "paper_shadow_period_incomplete",
+            "paper_shadow_gate": paper_shadow_gate,
+        }
     elif not position_reconciliation_passed:
         auto_execution_block = {
             "action": "auto_execution",
             "status": "skipped",
             "reason": "position_reconciliation_gate_failed",
             "position_reconciliation_gate": position_reconciliation_gate,
+        }
+    elif (
+        live_auto_execution_requested
+        and restrict_auto_execution_to_regular_hours
+        and not market_session.is_regular_session
+    ):
+        auto_execution_block = {
+            "action": "auto_execution",
+            "status": "skipped",
+            "reason": "market_session_closed",
+            "market_session": market_session.model_dump(mode="json"),
         }
     auto_execution = (
         _auto_execute_cycle(
@@ -1793,11 +540,23 @@ def system_cycle(
     auto_execution_equity_gate = auto_execution.get("account_equity_gate") or {}
     effective_auto_execute_approved = (
         auto_execute_approved
+        and auto_execution_block is None
         and snapshot_quality_passed
         and position_reconciliation_passed
         and bool(auto_execution_live_gate.get("passed", True))
         and bool(auto_execution_account_gate.get("passed", True))
         and bool(auto_execution_equity_gate.get("passed", True))
+    )
+    paper_shadow_evidence = _paper_shadow_evidence(
+        use_autopilot_policy=use_autopilot_policy,
+        autopilot_policy=autopilot_policy,
+        autopilot_preflight=autopilot_preflight,
+        auto_execution=auto_execution,
+        auto_execution_enabled=effective_auto_execute_approved,
+        snapshot_quality_gate=snapshot_quality_gate,
+        daily_loss_gate=daily_loss_gate,
+        position_reconciliation_gate=position_reconciliation_gate,
+        market_session=market_session,
     )
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()
@@ -1828,7 +587,7 @@ def system_cycle(
         for alert in alerts
     ]
     consumed_type_counts = _event_type_counts(consumed_events)
-    metrics = state.metrics_store.dump()
+    metrics: dict[str, Any] = dict(state.metrics_store.dump())
     metrics["auto_approval"] = auto_approval
     metrics["auto_execution"] = auto_execution
     metrics["autopilot_policy"] = autopilot_policy
@@ -1838,6 +597,8 @@ def system_cycle(
     metrics["snapshot_quality_gate"] = snapshot_quality_gate
     metrics["daily_loss_gate"] = daily_loss_gate
     metrics["position_reconciliation_gate"] = position_reconciliation_gate
+    metrics["paper_shadow_gate"] = paper_shadow_gate
+    metrics["paper_shadow_evidence"] = paper_shadow_evidence
     run = SystemCycleRun(
         id=run_id,
         started_at=started_at,
@@ -1855,6 +616,7 @@ def system_cycle(
         metrics=metrics,
     )
     state.record_system_cycle_run(run)
+    operational_health = HealthEvaluator(state).evaluate(external_probe=False)
     summary = {
         "system_cycle_run_id": run.id,
         "job": "system_cycle",
@@ -1879,11 +641,28 @@ def system_cycle(
         "position_reconciliation_gate": position_reconciliation_gate,
         "auto_approval": auto_approval,
         "auto_execution": auto_execution,
+        "paper_shadow_evidence": paper_shadow_evidence,
         "consumed_event_count": len(consumed_events),
         "consumed_event_type_counts": consumed_type_counts,
         "pending_event_count": pending_event_count,
         "metrics": run.metrics,
+        "operational_health": {
+            "ready": operational_health["ready"],
+            "trading_ready": operational_health["trading_ready"],
+            "trading_blockers": operational_health["trading_blockers"],
+            "active_alert_count": len(operational_health["active_alerts"]),
+        },
     }
+    logger.info(
+        "system cycle completed",
+        extra={
+            "event": "system_cycle_completed",
+            "run_id": run.id,
+            "status": run.status,
+            "recommendation_count": len(output.result.recommendations),
+            "sell_alert_count": len(alerts),
+        },
+    )
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
     return summary
 
@@ -1947,7 +726,19 @@ def system_cycle_loop(
                     error_message=error_message,
                 )
             )
+            HealthEvaluator(state).evaluate(external_probe=False)
             consecutive_error_count += 1
+            state.metrics_store.inc("system_cycle_errors")
+            state.metrics_store.set_gauge("worker_consecutive_errors", consecutive_error_count)
+            logger.exception(
+                "system cycle failed",
+                extra={
+                    "event": "system_cycle_failed",
+                    "run_id": error_run_id,
+                    "cycle": cycle_index,
+                    "consecutive_error_count": consecutive_error_count,
+                },
+            )
             error = {
                 "cycle": cycle_index,
                 "status": "error",
@@ -1991,11 +782,7 @@ def system_cycle_loop(
         "kill_switch_activated": kill_switch_activated,
         "stopped_reason": stopped_reason,
         "last_system_cycle_run_id": next(
-            (
-                item.get("system_cycle_run_id")
-                for item in reversed(cycles)
-                if item.get("system_cycle_run_id")
-            ),
+            (item.get("system_cycle_run_id") for item in reversed(cycles) if item.get("system_cycle_run_id")),
             None,
         ),
         "cycles": cycles,
@@ -2006,305 +793,9 @@ def system_cycle_loop(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Quant agent worker jobs")
-    parser.add_argument(
-        "job",
-        choices=[
-            "pre_market_ingestion",
-            "intraday_refresh",
-            "end_of_day_reconciliation",
-            "nightly_backtest_batch",
-            "daily_metrics_aggregation",
-            "process_event_queue",
-            "monitor_positions_alerts",
-            "system_cycle",
-            "system_cycle_loop",
-        ],
-    )
-    parser.add_argument("--top-n", type=int, default=8, help="system_cycle recommendation publication size")
-    parser.add_argument(
-        "--min-confidence",
-        type=float,
-        default=None,
-        help="optional system_cycle risk-policy min confidence override",
-    )
-    parser.add_argument(
-        "--consume-events",
-        action="store_true",
-        help="system_cycle should consume pending events after publishing its summary inputs",
-    )
-    parser.add_argument(
-        "--as-of",
-        default=None,
-        help="optional ISO timestamp for deterministic system_cycle replay, defaults to now",
-    )
-    parser.add_argument(
-        "--disable-auto-broker-sync",
-        action="store_true",
-        help="disable automatic broker status polling at the start of system_cycle",
-    )
-    parser.add_argument(
-        "--max-broker-sync-items",
-        type=int,
-        default=50,
-        help="maximum pending live buy orders and live sell executions to poll per cycle",
-    )
-    parser.add_argument(
-        "--disable-auto-position-reconciliation",
-        action="store_true",
-        help="disable automatic broker position reconciliation at the start of system_cycle",
-    )
-    parser.add_argument(
-        "--position-reconciliation-qty-tolerance",
-        type=float,
-        default=1e-6,
-        help="quantity tolerance for automatic broker position reconciliation",
-    )
-    parser.add_argument(
-        "--use-autopilot-policy",
-        action="store_true",
-        help="load the latest persisted autopilot policy and use it for auto approval/execution controls",
-    )
-    parser.add_argument(
-        "--auto-execute-approved",
-        action="store_true",
-        help="system_cycle should auto-route approved buys and active sell alerts through existing execution gates",
-    )
-    parser.add_argument(
-        "--auto-approve-recommendations",
-        action="store_true",
-        help="system_cycle should auto-approve recommendations that pass the configured thresholds",
-    )
-    parser.add_argument(
-        "--auto-approve-min-confidence",
-        type=float,
-        default=0.72,
-        help="minimum recommendation confidence for automatic approval",
-    )
-    parser.add_argument(
-        "--auto-approve-min-composite",
-        type=float,
-        default=0.0,
-        help="minimum composite score for automatic approval",
-    )
-    parser.add_argument("--max-auto-approvals", type=int, default=1, help="maximum auto approvals per cycle")
-    parser.add_argument(
-        "--auto-execution-mode",
-        choices=["paper", "live_dry_run", "live"],
-        default="paper",
-        help="execution mode for automatic actions",
-    )
-    parser.add_argument(
-        "--allow-auto-live-execution",
-        action="store_true",
-        help="explicitly allow autopilot live broker order submission when auto-execution-mode=live",
-    )
-    parser.add_argument("--max-auto-buys", type=int, default=1, help="maximum approved buys per cycle")
-    parser.add_argument("--max-auto-sells", type=int, default=10, help="maximum sell alerts to execute per cycle")
-    parser.add_argument(
-        "--order-dedupe-minutes",
-        type=int,
-        default=1440,
-        help="minutes to block repeat auto buys for the same recommendation or ticker after a routed buy order",
-    )
-    parser.add_argument(
-        "--sell-alert-cooldown-minutes",
-        type=int,
-        default=60,
-        help="minutes to block repeat auto sells for the same ticker and alert reason",
-    )
-    parser.add_argument(
-        "--rebuy-cooldown-minutes",
-        type=int,
-        default=240,
-        help="minutes to block automatic rebuy after the latest sell for the same ticker; set 0 to disable",
-    )
-    parser.add_argument(
-        "--min-snapshot-bar-coverage",
-        type=float,
-        default=1.0,
-        help="minimum source snapshot bar coverage required before automatic approval/execution",
-    )
-    parser.add_argument(
-        "--min-snapshot-fundamental-coverage",
-        type=float,
-        default=1.0,
-        help="minimum source snapshot fundamental coverage required before automatic approval/execution",
-    )
-    parser.add_argument(
-        "--max-snapshot-bar-age-minutes",
-        type=int,
-        default=4320,
-        help="maximum age of the latest captured source snapshot bar before automatic approval/execution is blocked",
-    )
-    parser.add_argument("--account-equity", type=float, default=100_000.0, help="account equity for auto buy risk sizing")
-    parser.add_argument(
-        "--max-open-risk-pct",
-        type=float,
-        default=0.06,
-        help="maximum current open risk to stop as a fraction of account equity before auto buys are blocked",
-    )
-    parser.add_argument(
-        "--max-daily-realized-loss-pct",
-        type=float,
-        default=0.03,
-        help="maximum same-day realized loss as a fraction of account equity before auto approvals/buys are blocked",
-    )
-    parser.add_argument(
-        "--max-auto-buy-price-drift-pct",
-        type=float,
-        default=0.03,
-        help="maximum latest-price drift from the recommendation entry zone before auto buys are blocked",
-    )
-    parser.add_argument(
-        "--require-position-reconciliation",
-        action="store_true",
-        help="require the latest position reconciliation report to pass before automatic execution",
-    )
-    parser.add_argument(
-        "--max-position-reconciliation-age-minutes",
-        type=int,
-        default=1440,
-        help="maximum age of the latest position reconciliation report before automatic execution is blocked",
-    )
-    parser.add_argument(
-        "--risk-per-trade-pct",
-        type=float,
-        default=0.01,
-        help="fractional per-trade risk budget for auto buy sizing",
-    )
-    parser.add_argument(
-        "--max-position-pct",
-        type=float,
-        default=0.10,
-        help="fractional per-ticker position cap for auto buy sizing",
-    )
-    parser.add_argument(
-        "--max-gross-exposure-pct",
-        type=float,
-        default=1.0,
-        help="fractional gross exposure cap for auto buy sizing",
-    )
-    parser.add_argument(
-        "--max-sector-exposure-pct",
-        type=float,
-        default=0.30,
-        help="fractional sector exposure cap for auto buy sizing",
-    )
-    parser.add_argument(
-        "--interval-seconds",
-        type=float,
-        default=300.0,
-        help="system_cycle_loop sleep interval between cycles",
-    )
-    parser.add_argument(
-        "--max-cycles",
-        type=int,
-        default=None,
-        help="optional system_cycle_loop cycle cap; omit for continuous operation",
-    )
-    parser.add_argument(
-        "--stop-on-error",
-        action="store_true",
-        help="system_cycle_loop should stop after the first cycle error",
-    )
-    parser.add_argument(
-        "--max-consecutive-errors",
-        type=int,
-        default=0,
-        help="activate kill switch and stop system_cycle_loop after this many consecutive errors; set 0 to disable",
-    )
-    args = parser.parse_args()
-    as_of = datetime.fromisoformat(args.as_of) if args.as_of else None
-    if as_of is not None and as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=timezone.utc)
+    from apps.worker.cli import main as run_cli
 
-    dispatch = {
-        "pre_market_ingestion": pre_market_ingestion,
-        "intraday_refresh": intraday_refresh,
-        "end_of_day_reconciliation": end_of_day_reconciliation,
-        "nightly_backtest_batch": nightly_backtest_batch,
-        "daily_metrics_aggregation": daily_metrics_aggregation,
-        "process_event_queue": process_event_queue,
-        "monitor_positions_alerts": monitor_positions_alerts,
-        "system_cycle": lambda: system_cycle(
-            top_n=args.top_n,
-            min_confidence=args.min_confidence,
-            consume_events=args.consume_events,
-            as_of=as_of,
-            auto_sync_broker_statuses=not args.disable_auto_broker_sync,
-            max_broker_sync_items=args.max_broker_sync_items,
-            auto_reconcile_broker_positions=not args.disable_auto_position_reconciliation,
-            position_reconciliation_qty_tolerance=args.position_reconciliation_qty_tolerance,
-            use_autopilot_policy=args.use_autopilot_policy,
-            auto_execute_approved=args.auto_execute_approved,
-            auto_approve_recommendations=args.auto_approve_recommendations,
-            auto_approve_min_confidence=args.auto_approve_min_confidence,
-            auto_approve_min_composite=args.auto_approve_min_composite,
-            max_auto_approvals=args.max_auto_approvals,
-            auto_execution_mode=args.auto_execution_mode,
-            allow_auto_live_execution=True if args.allow_auto_live_execution else None,
-            max_auto_buys=args.max_auto_buys,
-            max_auto_sells=args.max_auto_sells,
-            order_dedupe_minutes=args.order_dedupe_minutes,
-            sell_alert_cooldown_minutes=args.sell_alert_cooldown_minutes,
-            rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
-            min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
-            min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
-            max_snapshot_bar_age_minutes=args.max_snapshot_bar_age_minutes,
-            account_equity=args.account_equity,
-            max_open_risk_pct=args.max_open_risk_pct,
-            max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
-            max_auto_buy_price_drift_pct=args.max_auto_buy_price_drift_pct,
-            require_position_reconciliation=args.require_position_reconciliation,
-            max_position_reconciliation_age_minutes=args.max_position_reconciliation_age_minutes,
-            risk_per_trade_pct=args.risk_per_trade_pct,
-            max_position_pct=args.max_position_pct,
-            max_gross_exposure_pct=args.max_gross_exposure_pct,
-            max_sector_exposure_pct=args.max_sector_exposure_pct,
-        ),
-        "system_cycle_loop": lambda: system_cycle_loop(
-            interval_seconds=args.interval_seconds,
-            max_cycles=args.max_cycles,
-            stop_on_error=args.stop_on_error,
-            max_consecutive_errors=args.max_consecutive_errors,
-            top_n=args.top_n,
-            min_confidence=args.min_confidence,
-            consume_events=args.consume_events,
-            as_of=as_of,
-            auto_sync_broker_statuses=not args.disable_auto_broker_sync,
-            max_broker_sync_items=args.max_broker_sync_items,
-            auto_reconcile_broker_positions=not args.disable_auto_position_reconciliation,
-            position_reconciliation_qty_tolerance=args.position_reconciliation_qty_tolerance,
-            use_autopilot_policy=args.use_autopilot_policy,
-            auto_execute_approved=args.auto_execute_approved,
-            auto_approve_recommendations=args.auto_approve_recommendations,
-            auto_approve_min_confidence=args.auto_approve_min_confidence,
-            auto_approve_min_composite=args.auto_approve_min_composite,
-            max_auto_approvals=args.max_auto_approvals,
-            auto_execution_mode=args.auto_execution_mode,
-            allow_auto_live_execution=True if args.allow_auto_live_execution else None,
-            max_auto_buys=args.max_auto_buys,
-            max_auto_sells=args.max_auto_sells,
-            order_dedupe_minutes=args.order_dedupe_minutes,
-            sell_alert_cooldown_minutes=args.sell_alert_cooldown_minutes,
-            rebuy_cooldown_minutes=args.rebuy_cooldown_minutes,
-            min_snapshot_bar_coverage=args.min_snapshot_bar_coverage,
-            min_snapshot_fundamental_coverage=args.min_snapshot_fundamental_coverage,
-            max_snapshot_bar_age_minutes=args.max_snapshot_bar_age_minutes,
-            account_equity=args.account_equity,
-            max_open_risk_pct=args.max_open_risk_pct,
-            max_daily_realized_loss_pct=args.max_daily_realized_loss_pct,
-            max_auto_buy_price_drift_pct=args.max_auto_buy_price_drift_pct,
-            require_position_reconciliation=args.require_position_reconciliation,
-            max_position_reconciliation_age_minutes=args.max_position_reconciliation_age_minutes,
-            risk_per_trade_pct=args.risk_per_trade_pct,
-            max_position_pct=args.max_position_pct,
-            max_gross_exposure_pct=args.max_gross_exposure_pct,
-            max_sector_exposure_pct=args.max_sector_exposure_pct,
-        ),
-    }
-    dispatch[args.job]()
+    run_cli()
 
 
 if __name__ == "__main__":
