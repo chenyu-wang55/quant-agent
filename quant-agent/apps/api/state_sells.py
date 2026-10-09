@@ -163,7 +163,13 @@ class SellExecutionStateMixin:
             message_cn=f"{audit.ticker} 卖出请求已按幂等键处理；状态 {audit.status}。",
         )
 
-    def sell_holding(self, ticker: str, request: ManualSellRequest) -> SellExecutionResult:
+    def sell_holding(
+        self,
+        ticker: str,
+        request: ManualSellRequest,
+        *,
+        automatic: bool = False,
+    ) -> SellExecutionResult:
         ticker_upper = ticker.upper()
         existing_audit: SellExecutionAudit | None = None
         if request.idempotency_key:
@@ -200,6 +206,11 @@ class SellExecutionStateMixin:
             if not request.dry_run and not request.confirm_live:
                 raise ValueError("Live sell execution requires dry_run=true or confirm_live=true")
             if not request.dry_run:
+                self.require_execution_readiness(
+                    recommendation_id=holding.source_recommendation_id,
+                    source_snapshot_id=provenance["source_snapshot_id"],
+                    automatic=automatic,
+                )
                 if not request.idempotency_key:
                     raise ValueError("Live sell execution requires idempotency_key")
                 if self.execution_router.broker_adapter is None:

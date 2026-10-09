@@ -371,8 +371,9 @@ def test_execute_sell_alert_closes_holding_and_records_trade() -> None:
         },
         headers=AUTH_HEADERS,
     )
-    assert unconfigured_live_sell.status_code == 501
-    assert "Live broker sell adapter is not configured" in unconfigured_live_sell.json()["detail"]
+    assert unconfigured_live_sell.status_code == 400
+    assert "Live execution readiness gate failed" in unconfigured_live_sell.json()["detail"]
+    assert "mock_provider_not_allowed_for_live_execution" in unconfigured_live_sell.json()["detail"]
 
     dry_run_baseline_trades = client.get(f"/portfolio/trades?ticker={ticker}&side=sell", headers=AUTH_HEADERS)
     assert dry_run_baseline_trades.status_code == 200
@@ -501,6 +502,12 @@ def test_confirmed_live_sell_uses_configured_broker_adapter_and_records_fill() -
     recommendation = run_response.json()["recommendations"][0]
     ticker = recommendation["ticker"]
     state.close_holding(ticker)
+    approval_response = client.post(
+        f"/recommendations/{recommendation['id']}/approval",
+        json={"decision": "approved", "approver": "qa", "notes": "live sell test"},
+        headers=AUTH_HEADERS,
+    )
+    assert approval_response.status_code == 200
 
     buy_price = recommendation["entry_zone_high"]
     buy_response = client.post(
@@ -626,6 +633,12 @@ def test_broker_sell_sync_applies_delayed_fill_once() -> None:
     recommendation = run_response.json()["recommendations"][0]
     ticker = recommendation["ticker"]
     state.close_holding(ticker)
+    approval_response = client.post(
+        f"/recommendations/{recommendation['id']}/approval",
+        json={"decision": "approved", "approver": "qa", "notes": "broker sell sync test"},
+        headers=AUTH_HEADERS,
+    )
+    assert approval_response.status_code == 200
 
     buy_price = recommendation["entry_zone_high"]
     buy_response = client.post(

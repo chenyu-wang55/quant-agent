@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from domain.entities.models import (
     Direction,
@@ -85,9 +85,9 @@ class OrderUnitOfWork:
 
             if (
                 recommendation is not None
-                and order.status == PaperOrderStatus.FILLED
                 and order.side == Direction.BUY
                 and order.simulated_fill_price is not None
+                and (order.filled_qty > 0 or order.status == PaperOrderStatus.FILLED)
             ):
                 holding, ledger_applied = self._apply_buy_fill(
                     session=session,
@@ -113,28 +113,39 @@ class OrderUnitOfWork:
 
     @staticmethod
     def _apply_buy_fill(*, session, order: PaperOrder, recommendation: Recommendation) -> tuple[HoldingWatch, bool]:
-        trade_id = f"order_fill_{order.id}"
-        existing_trade = session.get(TradeLedgerRecord, trade_id)
+        fill_reason = f"paper_order_fill:{order.id}"
+        target_filled_qty = order.filled_qty if order.filled_qty > 0 else order.qty
+        prior_trades = list(
+            session.execute(
+                select(TradeLedgerRecord).where(TradeLedgerRecord.reason == fill_reason)
+            ).scalars()
+        )
+        applied_qty = sum(float(item.qty) for item in prior_trades)
+        fill_qty = round(target_filled_qty - applied_qty, 6)
         existing = session.get(HoldingWatchRecord, recommendation.ticker.upper())
-        if existing_trade is not None:
+        if fill_qty <= 1e-9:
             if existing is None:
-                raise RuntimeError(f"Order {order.id} has a trade ledger row but no holding row")
+                raise RuntimeError(f"Order {order.id} has applied fills but no holding row")
             return OrderUnitOfWork._holding_to_domain(existing), False
 
         ticker = recommendation.ticker.upper()
-        fill_price = round(float(order.simulated_fill_price or 0.0), 6)
+        cumulative_cost = float(order.simulated_fill_price or 0.0) * target_filled_qty
+        prior_cost = sum(float(item.qty) * float(item.price) for item in prior_trades)
+        fill_price = round((cumulative_cost - prior_cost) / max(fill_qty, 1e-9), 6)
+        if fill_price <= 0:
+            raise RuntimeError(f"Order {order.id} produced a non-positive incremental fill price")
         fill_time = order.filled_at or order.submitted_at
         now = datetime.now(timezone.utc)
         if existing is not None and existing.status == HoldingStatus.OPEN.value:
-            new_qty = round(existing.qty + order.qty, 6)
+            new_qty = round(existing.qty + fill_qty, 6)
             avg_buy_price = round(
-                (existing.avg_buy_price * existing.qty + fill_price * order.qty) / max(new_qty, 1e-9),
+                (existing.avg_buy_price * existing.qty + fill_price * fill_qty) / max(new_qty, 1e-9),
                 6,
             )
             bought_at = existing.bought_at
             realized_pnl = float(existing.realized_pnl or 0.0)
         else:
-            new_qty = round(order.qty, 6)
+            new_qty = fill_qty
             avg_buy_price = fill_price
             bought_at = fill_time
             realized_pnl = 0.0
@@ -157,18 +168,19 @@ class OrderUnitOfWork:
             last_sell_reason=existing.last_sell_reason if existing is not None else None,
         )
         session.merge(holding_record)
+        cumulative_key = str(round(target_filled_qty, 6)).replace(".", "_")
         session.add(
             TradeLedgerRecord(
-                trade_id=trade_id,
+                trade_id=f"order_fill_{order.id}_{cumulative_key}",
                 ticker=ticker,
                 side="buy",
-                qty=round(order.qty, 6),
+                qty=fill_qty,
                 price=fill_price,
                 executed_at=fill_time,
                 source_recommendation_id=recommendation.id,
                 source_snapshot_id=recommendation.source_snapshot_id,
                 strategy_config_id=recommendation.strategy_config_id,
-                reason=f"paper_order_fill:{order.id}",
+                reason=fill_reason,
                 realized_pnl_delta=0.0,
                 holding_status_after=HoldingStatus.OPEN.value,
                 created_at=now,

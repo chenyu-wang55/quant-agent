@@ -25,6 +25,26 @@ python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 --use-aut
 python -m apps.worker.main system_cycle_loop --interval-seconds 300 --use-autopilot-policy
 ```
 
+Run commands from the locked repository environment (`.venv/bin/python`). Before any persistent
+paper or live process, export the reviewed `.env.local` values and require a successful preflight:
+
+```bash
+set -a
+source .env.local
+set +a
+.venv/bin/python scripts/preflight.py --target paper
+```
+
+Do not load a LaunchAgent when the report says `blocked`. The report must prove authentication,
+all four PIT sources and their retained validation fingerprint, the absolute SQLite database and
+current Alembic revision, safe kill-switch state, Paper Broker endpoint, and writable structured
+logging. Use `--target live` only during a separately approved live-enablement review.
+
+Before live review, `GET /backtests/runs` must show a retained run with `acceptance.passed=true`.
+The run must use the same strategy configuration ID and dataset fingerprint as the current trusted
+snapshot; otherwise the central live-readiness gate reports
+`accepted_out_of_sample_backtest_missing` before any Broker account call.
+
 `system_cycle` is the preferred schedulable loop for local operation. It records/replays
 the latest market snapshot, generates recommendations, refreshes sell alerts, prints a
 JSON health summary, and leaves order execution to the approval/dashboard flow unless
@@ -42,6 +62,11 @@ broker `equity` or `portfolio_value` for sizing plus `buying_power` to cover the
 risk-plan notional for that order. Add
 `--consume-events` only when a downstream event sink has already captured the printed
 summary and you want pending durable system events marked consumed.
+Confirmed and automatic live buys/sells, plus recovery of ambiguous submissions, also pass the
+central live-readiness gate before the Broker adapter can be called. Mock/unverified data,
+incomplete or stale snapshots, missing fingerprints/approval, an active kill switch, stale or
+failed reconciliation, an unsafe Broker account, or incomplete paper-shadow evidence all stop
+execution.
 Add `--auto-approve-recommendations` only when the machine should also approve fresh
 recommendations without a human click. It still writes normal approval audit rows and
 requires `--auto-approve-min-confidence`, `--auto-approve-min-composite`, and
@@ -141,20 +166,22 @@ macOS launchd management:
 # Authenticated loopback API (persistent across login/reboot)
 export QUANT_AGENT_ACCESS_PASSWORD="a-long-local-password"
 export QUANT_AGENT_AUTH_SIGNING_SECRET="$(openssl rand -hex 32)"
-python scripts/manage_api_launchd.py install --load
-python scripts/manage_api_launchd.py status
+.venv/bin/python scripts/manage_api_launchd.py install --load
+.venv/bin/python scripts/manage_api_launchd.py status
 
 # Unattended system-cycle worker (install only after readiness passes)
-python scripts/manage_launchd.py render --use-autopilot-policy --data-provider yfinance
-python scripts/manage_launchd.py install --use-autopilot-policy --data-provider yfinance --load
-python scripts/manage_launchd.py install --auto-approve-recommendations --auto-execute-approved --data-provider yfinance --load
-python scripts/manage_launchd.py status
-python scripts/manage_launchd.py uninstall --unload
+.venv/bin/python scripts/manage_launchd.py render --use-autopilot-policy --data-provider yfinance
+.venv/bin/python scripts/manage_launchd.py install --use-autopilot-policy --data-provider yfinance --load
+.venv/bin/python scripts/manage_launchd.py install --auto-approve-recommendations --auto-execute-approved --data-provider yfinance --load
+.venv/bin/python scripts/manage_launchd.py status
+.venv/bin/python scripts/manage_launchd.py uninstall --unload
 ```
 
 The default service label is `com.quant-agent.system-cycle-loop`. The plist lives in
-`~/Library/LaunchAgents`, and the worker command uses the current Python executable
-plus the repository as `WorkingDirectory`. Structured JSON logs rotate at 20 MiB by
+`~/Library/LaunchAgents`, and both services default to the repository `.venv/bin/python`, an
+absolute database URL, and the repository as `WorkingDirectory`. The four PIT file paths, retained
+validation report, and configured Broker settings are passed to both services. Structured JSON
+logs rotate at 20 MiB by
 default with 10 retained files under
 `~/Library/Logs/com.quant-agent.system-cycle-loop.json.log`; override this with
 `--log-file`, `--log-max-bytes`, and `--log-backup-count` when rendering or installing.

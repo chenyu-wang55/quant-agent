@@ -34,6 +34,7 @@ REQUIRED_TABLES = {
     "sell_alert_audits",
     "system_cycle_runs",
     "strategy_configs",
+    "backtest_runs",
     "source_snapshots",
     "snapshot_securities",
     "snapshot_storage_keys",

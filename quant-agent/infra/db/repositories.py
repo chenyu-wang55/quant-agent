@@ -11,6 +11,7 @@ from domain.entities.models import (
     ApprovalDecision,
     AutoExecutionMode,
     AutopilotPolicy,
+    BacktestRunResult,
     Direction,
     FeatureSnapshot,
     FundamentalSnapshot,
@@ -49,6 +50,7 @@ from infra.db.bar_content import market_bar_content_hash
 from infra.db.models import (
     ApprovalDecisionRecord,
     AutopilotPolicyRecord,
+    BacktestRunRecord,
     ExecutionControlRecord,
     FeatureSnapshotRecord,
     HoldingControlAuditRecord,
@@ -233,6 +235,55 @@ class StrategyConfigRepository:
         )
 
 
+class BacktestRunRepository:
+    def upsert(self, item: BacktestRunResult) -> None:
+        payload = item.model_dump(mode="json")
+        with SessionLocal() as session:
+            session.merge(
+                BacktestRunRecord(
+                    run_id=item.run_id,
+                    created_at=item.created_at,
+                    config_hash=item.config_hash,
+                    strategy_config_id=item.strategy_config_id,
+                    dataset_fingerprint=item.dataset_fingerprint,
+                    accepted=int(bool(item.acceptance.get("passed"))),
+                    result_json=payload,
+                )
+            )
+            session.commit()
+
+    def list_recent(self, limit: int = 100) -> list[BacktestRunResult]:
+        with SessionLocal() as session:
+            stmt = select(BacktestRunRecord).order_by(BacktestRunRecord.created_at.desc()).limit(limit)
+            records = list(session.execute(stmt).scalars())
+        return [BacktestRunResult.model_validate(record.result_json) for record in records]
+
+    def latest_accepted(
+        self,
+        *,
+        strategy_config_id: str,
+        dataset_fingerprint: str,
+    ) -> BacktestRunResult | None:
+        with SessionLocal() as session:
+            stmt = (
+                select(BacktestRunRecord)
+                .where(
+                    BacktestRunRecord.strategy_config_id == strategy_config_id,
+                    BacktestRunRecord.dataset_fingerprint == dataset_fingerprint,
+                    BacktestRunRecord.accepted == 1,
+                )
+                .order_by(BacktestRunRecord.created_at.desc())
+                .limit(1)
+            )
+            record = session.execute(stmt).scalars().first()
+        return BacktestRunResult.model_validate(record.result_json) if record is not None else None
+
+    def clear_all(self) -> None:
+        with SessionLocal() as session:
+            session.execute(delete(BacktestRunRecord))
+            session.commit()
+
+
 class SignalRepository:
     def upsert_many(self, signals: Iterable[SignalSnapshot]) -> None:
         with SessionLocal() as session:
@@ -374,8 +425,10 @@ class PaperOrderRepository:
             submitted_at=order.submitted_at,
             status=order.status.value,
             simulated_fill_price=order.simulated_fill_price,
+            filled_qty=order.filled_qty,
             filled_at=order.filled_at,
             cancel_reason=order.cancel_reason,
+            broker_protection_json=order.broker_protection,
         )
 
     def get(self, order_id: str) -> PaperOrder | None:
@@ -457,8 +510,10 @@ class PaperOrderRepository:
             submitted_at=_ensure_utc(record.submitted_at),
             status=PaperOrderStatus(record.status),
             simulated_fill_price=record.simulated_fill_price,
+            filled_qty=float(getattr(record, "filled_qty", 0.0) or 0.0),
             filled_at=_ensure_utc(record.filled_at) if record.filled_at else None,
             cancel_reason=record.cancel_reason,
+            broker_protection=list(getattr(record, "broker_protection_json", None) or []),
         )
 
 
@@ -1835,11 +1890,29 @@ class SourceSnapshotRepository:
         raw_provider_issues = provider_quality.get("issues")
         raw_provider_failures = provider_quality.get("failures")
         raw_fallback_fields = provider_quality.get("fallback_fields")
+        raw_point_in_time_validation = provider_quality.get("point_in_time_validation")
+        point_in_time_validation = (
+            dict(raw_point_in_time_validation) if isinstance(raw_point_in_time_validation, dict) else {}
+        )
+        raw_backtest_validation = point_in_time_validation.get("backtest_range")
+        backtest_validation = dict(raw_backtest_validation) if isinstance(raw_backtest_validation, dict) else {}
+        dataset_fingerprint = (
+            provider_quality.get("dataset_fingerprint")
+            or point_in_time_validation.get("dataset_fingerprint")
+            or backtest_validation.get("dataset_fingerprint")
+        )
         provider_issues = list(raw_provider_issues) if isinstance(raw_provider_issues, list) else []
         provider_failures = list(raw_provider_failures) if isinstance(raw_provider_failures, list) else []
         fallback_fields = list(raw_fallback_fields) if isinstance(raw_fallback_fields, list) else []
         coverage_complete = expected_count > 0 and not missing_bar_tickers and not missing_fundamental_tickers
         live_execution_allowed = (
+            coverage_complete
+            and provider_status == "verified"
+            and not provider_issues
+            and not provider_failures
+            and not fallback_fields
+        )
+        data_complete = (
             coverage_complete
             and provider_status in {"verified", "mock_verified"}
             and not provider_issues
@@ -1847,7 +1920,7 @@ class SourceSnapshotRepository:
             and not fallback_fields
         )
         return {
-            "status": ("complete" if live_execution_allowed else "blocked" if coverage_complete else "partial"),
+            "status": ("complete" if data_complete else "blocked" if coverage_complete else "partial"),
             "live_execution_allowed": live_execution_allowed,
             "provider_status": provider_status,
             "provider_issue_count": len(provider_issues),
@@ -1856,6 +1929,7 @@ class SourceSnapshotRepository:
             "provider_issues": provider_issues[:25],
             "provider_failures": provider_failures[:25],
             "fallback_fields": fallback_fields[:50],
+            "dataset_fingerprint": str(dataset_fingerprint) if dataset_fingerprint else None,
             "universe_ticker_count": len(universe_set),
             "expected_ticker_count": expected_count,
             "captured_ticker_count": expected_count,

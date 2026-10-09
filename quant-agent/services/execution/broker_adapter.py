@@ -51,6 +51,7 @@ class BrokerOrderUpdate:
     filled_avg_price: float | None = None
     filled_qty: float | None = None
     message: str | None = None
+    protection_legs: tuple[dict[str, Any], ...] = ()
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -170,24 +171,26 @@ class AlpacaBrokerAdapter:
         response = self._request(
             "GET",
             "/v2/orders:by_client_order_id",
-            query={"client_order_id": client_order_id},
+            query={"client_order_id": client_order_id, "nested": "true"},
         )
         return self._to_update(response)
 
     def get_order_by_id(self, broker_order_id: str) -> BrokerOrderUpdate:
-        response = self._request("GET", f"/v2/orders/{quote(broker_order_id, safe='')}")
+        response = self._request(
+            "GET",
+            f"/v2/orders/{quote(broker_order_id, safe='')}",
+            query={"nested": "true"},
+        )
         return self._to_update(response)
 
     def cancel_order(self, broker_order_id: str) -> BrokerOrderUpdate:
         response = self._request("DELETE", f"/v2/orders/{quote(broker_order_id, safe='')}")
         if isinstance(response, dict) and response:
             return self._to_update(response)
-        return BrokerOrderUpdate(
-            broker_order_id=broker_order_id,
-            raw_status="canceled",
-            message="cancel request accepted",
-            raw_payload=response if isinstance(response, dict) else {},
-        )
+        # Alpaca normally answers DELETE with 204. Query the parent immediately
+        # so a partially-filled or pending-cancel order is never marked canceled
+        # locally on the strength of an empty HTTP response alone.
+        return self.get_order_by_id(broker_order_id)
 
     def list_positions(self) -> list[BrokerPositionUpdate]:
         response = self._request("GET", "/v2/positions")
@@ -259,8 +262,38 @@ class AlpacaBrokerAdapter:
             filled_avg_price=float(filled_avg_price) if filled_avg_price not in (None, "") else None,
             filled_qty=float(filled_qty) if filled_qty not in (None, "") else None,
             message=payload.get("message") or payload.get("reject_reason"),
+            protection_legs=AlpacaBrokerAdapter._protection_legs(payload),
             raw_payload=payload,
         )
+
+    @staticmethod
+    def _protection_legs(payload: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+        raw_legs = payload.get("legs")
+        if raw_legs in (None, ""):
+            return ()
+        if not isinstance(raw_legs, list):
+            raise BrokerAdapterError("Alpaca order legs response was not a list")
+        legs: list[dict[str, Any]] = []
+        for raw in raw_legs:
+            if not isinstance(raw, dict):
+                raise BrokerAdapterError("Alpaca order legs response included a non-object item")
+            broker_order_id = str(raw.get("id") or raw.get("order_id") or "")
+            if not broker_order_id:
+                raise BrokerAdapterError("Alpaca protection leg did not include an order id")
+            legs.append(
+                {
+                    "broker_order_id": broker_order_id,
+                    "client_order_id": raw.get("client_order_id"),
+                    "status": str(raw.get("status") or "unknown").lower(),
+                    "order_type": str(raw.get("type") or "unknown").lower(),
+                    "side": str(raw.get("side") or "").lower() or None,
+                    "qty": AlpacaBrokerAdapter._optional_float(raw.get("qty")),
+                    "filled_qty": AlpacaBrokerAdapter._optional_float(raw.get("filled_qty")),
+                    "limit_price": AlpacaBrokerAdapter._optional_float(raw.get("limit_price")),
+                    "stop_price": AlpacaBrokerAdapter._optional_float(raw.get("stop_price")),
+                }
+            )
+        return tuple(legs)
 
     @staticmethod
     def _to_position(payload: dict[str, Any]) -> BrokerPositionUpdate:

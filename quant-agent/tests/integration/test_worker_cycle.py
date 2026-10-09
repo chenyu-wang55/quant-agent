@@ -1899,15 +1899,32 @@ def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
     state = get_app_state()
     state.reset()
     state.consume_events(limit=1000)
-    state.close_holding("AAPL")
+    seed_result = system_cycle(
+        top_n=1,
+        min_confidence=0.0,
+        consume_events=False,
+        as_of=datetime(2026, 4, 10, 9, 30, tzinfo=timezone.utc),
+    )
+    seed_recommendation = seed_result["top_recommendations"][0]
+    ticker = seed_recommendation["ticker"]
+    state.close_holding(ticker)
+    state.decide_recommendation(
+        ApprovalDecisionRequest(
+            recommendation_id=seed_recommendation["id"],
+            decision="approved",
+            approver="worker-test",
+            notes="allow pending live sell gate test",
+        )
+    )
     state.record_manual_buy(
         ManualBuyRequest(
-            ticker="AAPL",
+            ticker=ticker,
             qty=8,
             buy_price=100,
             stop_loss=1,
             take_profit1=2,
             take_profit2=999999,
+            source_recommendation_id=seed_recommendation["id"],
             note="worker pending live sell gate setup",
         )
     )
@@ -1916,7 +1933,7 @@ def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
         raw_status="accepted",
         broker_positions=[
             BrokerPositionUpdate(
-                symbol="AAPL",
+                symbol=ticker,
                 qty=8,
                 avg_price=100,
                 market_price=509,
@@ -1965,11 +1982,11 @@ def test_system_cycle_skips_auto_sell_when_live_sell_order_is_pending() -> None:
     assert first["auto_execution"]["sell_order_count"] == 1
     first_sell = next(item for item in first["auto_execution"]["actions"] if item["action"] == "sell_alert")
     assert first_sell["status"] == "executed"
-    audit = state.list_sell_execution_audits(limit=1, ticker="AAPL")[0]
+    audit = state.list_sell_execution_audits(limit=1, ticker=ticker)[0]
     assert audit.id == first_sell["sell_execution_id"]
     assert audit.status == "submitted"
     assert audit.applied_to_ledger is False
-    holding_after_first = state.holding_watch_repo.get("AAPL")
+    holding_after_first = state.holding_watch_repo.get(ticker)
     assert holding_after_first is not None
     assert holding_after_first.qty == 8
 

@@ -43,7 +43,9 @@ def _broker_status_snapshot(
 ) -> BrokerOrderStatusSnapshot:
     status = _broker_sync_status(update.raw_status)
     fill_price = None
-    if status in {BrokerOrderSyncStatus.FILLED, BrokerOrderSyncStatus.PARTIALLY_FILLED}:
+    if status in {BrokerOrderSyncStatus.FILLED, BrokerOrderSyncStatus.PARTIALLY_FILLED} or (
+        update.filled_qty is not None and update.filled_qty > 0
+    ):
         if update.filled_avg_price is None:
             raise ValueError("broker fill status is missing filled_avg_price")
         fill_price = float(update.filled_avg_price)
@@ -56,6 +58,7 @@ def _broker_status_snapshot(
         filled_at=update.filled_at,
         reason=update.message,
         broker_message=update.message or f"raw_status={update.raw_status}",
+        broker_protection=list(update.protection_legs),
     )
 
 
@@ -98,6 +101,19 @@ def _auto_broker_sync_cycle(
         and order.broker_order_id
         and order.status == PaperOrderStatus.SUBMITTED
     ][:item_limit]
+    protected_buy_orders = [
+        order
+        for order in recent_buy_orders
+        if order.execution_mode == OrderExecutionMode.LIVE
+        and not order.dry_run
+        and order.broker_order_id
+        and order.status == PaperOrderStatus.FILLED
+        and (recommendation := state._get_recommendation_by_id(order.recommendation_id)) is not None
+        and any(
+            holding.ticker.upper() == recommendation.ticker.upper()
+            for holding in state.list_open_holdings()
+        )
+    ][:item_limit]
     pending_sell_audits = [
         audit
         for audit in state.list_sell_execution_audits(limit=max(1, item_limit))
@@ -131,6 +147,7 @@ def _auto_broker_sync_cycle(
         "checked_at": checked_at.isoformat(),
         "recoverable_buy_order_count": len(recoverable_buy_orders),
         "pending_buy_order_count": len(pending_buy_orders),
+        "protected_buy_order_count": len(protected_buy_orders),
         "recoverable_sell_execution_count": len(recoverable_sell_audits),
         "pending_sell_execution_count": len(pending_sell_audits),
         "queried_count": 0,
@@ -145,6 +162,7 @@ def _auto_broker_sync_cycle(
     if (
         not recoverable_buy_orders
         and not pending_buy_orders
+        and not protected_buy_orders
         and not recoverable_sell_audits
         and not pending_sell_audits
     ):
@@ -265,6 +283,13 @@ def _auto_broker_sync_cycle(
         if order.broker_order_id is None:
             continue
         snapshot = query_order("paper_orders", order.id, order.broker_order_id)
+        if snapshot is not None:
+            buy_snapshots.append(snapshot)
+
+    for order in protected_buy_orders:
+        if order.broker_order_id is None:
+            continue
+        snapshot = query_order("protected_paper_orders", order.id, order.broker_order_id)
         if snapshot is not None:
             buy_snapshots.append(snapshot)
 

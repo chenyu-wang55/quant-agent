@@ -17,7 +17,6 @@ from apps.api.state_trading import TradingStateMixin
 from domain.entities.models import (
     ApprovalDecision,
     AutopilotPolicy,
-    BacktestRunResult,
     FeatureSnapshot,
     HoldingWatch,
     KillSwitchState,
@@ -46,6 +45,7 @@ from infra.db.portfolio_risk_reservation import PortfolioRiskReservationReposito
 from infra.db.repositories import (
     ApprovalRepository,
     AutopilotPolicyRepository,
+    BacktestRunRepository,
     ExecutionControlRepository,
     FeatureRepository,
     HoldingControlAuditRepository,
@@ -118,6 +118,7 @@ class AppState(
     approval_repo: ApprovalRepository = field(default_factory=ApprovalRepository)
     execution_control_repo: ExecutionControlRepository = field(default_factory=ExecutionControlRepository)
     autopilot_policy_repo: AutopilotPolicyRepository = field(default_factory=AutopilotPolicyRepository)
+    backtest_run_repo: BacktestRunRepository = field(default_factory=BacktestRunRepository)
     source_snapshot_repo: SourceSnapshotRepository = field(default_factory=SourceSnapshotRepository)
     strategy_config_repo: StrategyConfigRepository = field(default_factory=StrategyConfigRepository)
     system_cycle_run_repo: SystemCycleRunRepository = field(default_factory=SystemCycleRunRepository)
@@ -136,7 +137,6 @@ class AppState(
     paper_orders: list[PaperOrder] = field(default_factory=list)
     positions: dict[str, PositionState] = field(default_factory=dict)
     holdings_by_ticker: dict[str, HoldingWatch] = field(default_factory=dict)
-    backtest_runs: list[BacktestRunResult] = field(default_factory=list)
     approvals_by_recommendation_id: dict[str, RecommendationApproval] = field(default_factory=dict)
     kill_switch: KillSwitchState = field(default_factory=lambda: KillSwitchState(enabled=False))
     autopilot_policy: AutopilotPolicy = field(default_factory=AutopilotPolicy)
@@ -486,7 +486,6 @@ class AppState(
         self.paper_orders.clear()
         self.positions.clear()
         self.holdings_by_ticker.clear()
-        self.backtest_runs.clear()
         self.approvals_by_recommendation_id.clear()
         self.recent_sell_alerts.clear()
         self.event_queue = InMemoryEventQueue()
@@ -498,6 +497,7 @@ class AppState(
         self.sell_alert_audit_repo.clear_all()
         self.approval_repo.clear_all()
         self.autopilot_policy_repo.clear_all()
+        self.backtest_run_repo.clear_all()
         self.portfolio_risk_reservation_repo.clear_all()
         self.system_cycle_run_repo.clear_all()
         self.system_event_repo.clear_all()

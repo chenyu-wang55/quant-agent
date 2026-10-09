@@ -53,6 +53,85 @@ class FakeBrokerAdapter:
         )
 
 
+class ProductionShapeRecordingBroker:
+    name = "alpaca"
+
+    def __init__(self) -> None:
+        self.account_calls = 0
+        self.placements: list[BrokerOrderPlacement] = []
+
+    def get_account(self):
+        self.account_calls += 1
+        raise AssertionError("mock evidence must be rejected before broker account I/O")
+
+    def submit_order(self, placement: BrokerOrderPlacement) -> BrokerOrderUpdate:
+        self.placements.append(placement)
+        raise AssertionError("mock evidence must never reach broker submit")
+
+
+def test_confirmed_live_buy_rejects_mock_snapshot_before_any_broker_io() -> None:
+    state = get_app_state()
+    state.reset()
+    original_router = state.execution_router
+    client = TestClient(app)
+    run_response = client.post(
+        "/research/run",
+        json={
+            "run_type": "research_batch",
+            "objective": "mock-live-readiness-block",
+            "as_of": "2026-04-10T09:30:00Z",
+            "snapshot_mode": "point_in_time",
+            "publication": {"top_n": 1, "output_channels": ["api"]},
+            "risk_policy": {
+                "min_confidence": 0.0,
+                "earnings_blackout_minutes": 0,
+                "reject_on_material_evidence_conflict": False,
+                "event_trading_enabled": True,
+            },
+            "universe_rules": {
+                "min_price": 1,
+                "min_avg_dollar_volume": 1_000_000,
+                "max_spread_bps": 100,
+                "min_market_cap_usd": 100_000_000,
+                "max_candidates_after_filter": 50,
+            },
+        },
+        headers=AUTH_HEADERS,
+    )
+    assert run_response.status_code == 200
+    recommendation = run_response.json()["recommendations"][0]
+    approval = client.post(
+        f"/recommendations/{recommendation['id']}/approval",
+        json={"decision": "approved", "approver": "qa", "notes": "negative live gate test"},
+        headers=AUTH_HEADERS,
+    )
+    assert approval.status_code == 200
+
+    broker = ProductionShapeRecordingBroker()
+    state.execution_router = ExecutionRouter(broker_adapter=broker)
+    try:
+        response = client.post(
+            "/paper-orders",
+            json={
+                "recommendation_id": recommendation["id"],
+                "side": "BUY",
+                "qty": 1,
+                "execution_mode": "live",
+                "dry_run": False,
+                "confirm_live": True,
+                "idempotency_key": "mock-live-readiness-block",
+            },
+            headers=AUTH_HEADERS,
+        )
+    finally:
+        state.execution_router = original_router
+
+    assert response.status_code == 409
+    assert "mock_provider_not_allowed_for_live_execution" in response.json()["detail"]
+    assert broker.account_calls == 0
+    assert broker.placements == []
+
+
 def test_autopilot_policy_api_persists_latest_policy() -> None:
     state = get_app_state()
     state.reset()
@@ -519,8 +598,9 @@ def test_kill_switch_blocks_paper_orders() -> None:
         },
         headers=AUTH_HEADERS,
     )
-    assert unconfigured_live_order.status_code == 501
-    assert "Live broker execution adapter is not configured" in unconfigured_live_order.json()["detail"]
+    assert unconfigured_live_order.status_code == 409
+    assert "Live execution readiness gate failed" in unconfigured_live_order.json()["detail"]
+    assert "mock_provider_not_allowed_for_live_execution" in unconfigured_live_order.json()["detail"]
 
     live_dry_run = client.post(
         "/paper-orders",

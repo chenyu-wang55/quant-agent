@@ -9,6 +9,11 @@ from fastapi.testclient import TestClient
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from domain.entities.models import (
+    Direction,
+    ManualBuyRequest,
+    OrderExecutionMode,
+    PaperOrder,
+    PaperOrderStatus,
     PositionReconciliationReport,
     SourceSnapshotSummary,
     SystemCycleRun,
@@ -83,6 +88,9 @@ def test_health_separates_liveness_readiness_and_trading_state() -> None:
         "broker",
         "source_snapshot",
         "position_reconciliation",
+        "paper_shadow",
+        "strategy_acceptance",
+        "broker_protection",
     }
 
 
@@ -157,6 +165,7 @@ def test_operational_alerts_cover_provider_failure_and_reconciliation(monkeypatc
             "updated_by": "observability-test",
         }
     )
+    monkeypatch.setenv("QUANT_AGENT_TEST_MODE", "0")
 
     report = HealthEvaluator(state).evaluate(external_probe=False)
     categories = {item["category"] for item in report["active_alerts"]}
@@ -164,6 +173,8 @@ def test_operational_alerts_cover_provider_failure_and_reconciliation(monkeypatc
     assert "reconciliation" in categories
     assert report["ready"] is False
     assert "position_reconciliation_not_ready" in report["trading_blockers"]
+    assert "paper_shadow_period_incomplete" in report["trading_blockers"]
+    assert "accepted_out_of_sample_backtest_missing" in report["trading_blockers"]
 
 
 def test_prometheus_endpoint_returns_text_format() -> None:
@@ -173,3 +184,69 @@ def test_prometheus_endpoint_returns_text_format() -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
     assert "quant_agent_test_health_value 1" in response.text
+
+
+def test_live_health_requires_active_native_bracket_for_open_holdings() -> None:
+    state = get_app_state()
+    state.reset()
+    holding = state.record_manual_buy(
+        ManualBuyRequest(
+            ticker="PROT",
+            qty=1,
+            buy_price=100,
+            stop_loss=90,
+            take_profit1=110,
+            take_profit2=120,
+            source_recommendation_id="rec-protected",
+        )
+    )
+    now = datetime.now(timezone.utc)
+    order = PaperOrder(
+        id="protected-live-order",
+        recommendation_id=holding.source_recommendation_id or "missing",
+        side=Direction.BUY,
+        qty=1,
+        limit_price=None,
+        execution_mode=OrderExecutionMode.LIVE,
+        broker_order_id="broker-parent",
+        submitted_at=now,
+        status=PaperOrderStatus.FILLED,
+        simulated_fill_price=100,
+        filled_qty=1,
+        filled_at=now,
+        broker_protection=[
+            {
+                "broker_order_id": "tp",
+                "status": "new",
+                "order_type": "limit",
+                "side": "sell",
+                "limit_price": 120,
+            },
+            {
+                "broker_order_id": "sl",
+                "status": "new",
+                "order_type": "stop",
+                "side": "sell",
+                "stop_price": 90,
+            },
+        ],
+    )
+    state.record_paper_order(order)
+
+    ready, details = HealthEvaluator(state)._broker_protection_check(True)
+    assert ready is True
+    assert details["protected_holding_count"] == 1
+
+    state.record_paper_order(
+        order.model_copy(
+            update={
+                "broker_protection": [
+                    {**order.broker_protection[0], "status": "filled"},
+                    {**order.broker_protection[1], "status": "canceled"},
+                ]
+            }
+        )
+    )
+    ready, details = HealthEvaluator(state)._broker_protection_check(True)
+    assert ready is False
+    assert details["failures"][0]["reason"] == "active_native_bracket_missing"

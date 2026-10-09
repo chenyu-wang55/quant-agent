@@ -33,7 +33,7 @@ def test_migration_graph_has_one_head_and_fresh_database_reaches_it(
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
     heads = ScriptDirectory.from_config(config).get_heads()
 
-    assert heads == ["20260411_0035"]
+    assert heads == ["20260721_0037"]
     command.upgrade(config, "head")
     assert _revision(database_path) == heads[0]
     with closing(sqlite3.connect(database_path)) as connection:
@@ -48,6 +48,7 @@ def test_migration_graph_has_one_head_and_fresh_database_reaches_it(
             "operational_alerts",
             "portfolio_risk_reservations",
             "snapshot_market_bar_refs",
+            "backtest_runs",
         }.issubset(tables)
         columns = {
             row[1] for row in connection.execute("PRAGMA table_info(market_bars)")
@@ -83,6 +84,6 @@ def test_observability_migrations_round_trip_from_previous_release(
         assert "min_paper_shadow_trading_days" not in policy_columns
 
     command.upgrade(config, "head")
-    assert _revision(database_path) == "20260411_0035"
+    assert _revision(database_path) == "20260721_0037"
     with closing(sqlite3.connect(database_path)) as connection:
         assert connection.execute("PRAGMA quick_check").fetchone()[0] == "ok"

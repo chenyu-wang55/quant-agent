@@ -84,6 +84,7 @@ from domain.entities.models import (
     TradeSide,
 )
 from domain.policies.approval import ApprovalDecisionRequest, ApprovalPolicy
+from infra.config import CoreSettings
 from infra.db.init_db import init_db
 from infra.db.order_unit_of_work import OrderUnitOfWork
 from infra.db.portfolio_risk_reservation import PortfolioRiskReservationRepository
@@ -118,6 +119,7 @@ from services.execution.broker_adapter import (
     BrokerOrderPlacement,
 )
 from services.execution.market_calendar import xnys_session
+from services.execution.readiness import ExecutionReadinessGate, ExecutionReadinessResult
 from services.execution.router import ExecutionRouter
 from services.ingestion.interfaces import DataProvider
 from services.ingestion.provider_factory import build_data_provider
@@ -129,6 +131,114 @@ logger = logging.getLogger(__name__)
 
 
 class TradingStateMixin:
+    def build_execution_readiness(
+        self,
+        *,
+        recommendation_id: str | None,
+        source_snapshot_id: str | None,
+        automatic: bool = False,
+        checked_at: datetime | None = None,
+    ) -> ExecutionReadinessResult:
+        policy = self.get_autopilot_policy()
+        snapshot = self.source_snapshot_repo.get_summary(source_snapshot_id) if source_snapshot_id else None
+        recommendation = self._get_recommendation_by_id(recommendation_id)
+        approval = self.get_latest_approval(recommendation_id) if recommendation_id else None
+        approval_granted = approval is not None and approval.decision == ApprovalDecision.APPROVED
+        settings = CoreSettings.from_env()
+        adapter = self.execution_router.broker_adapter
+        adapter_name = str(getattr(adapter, "name", "") or "").lower()
+        fake_test_execution = settings.test_mode and adapter_name not in {"", "alpaca"}
+        reconciliation = (
+            {
+                "passed": True,
+                "required": True,
+                "reason": None,
+                "test_fake_adapter_bypass": True,
+            }
+            if fake_test_execution
+            else self.get_position_reconciliation_gate(
+                require_position_reconciliation=True,
+                max_age_minutes=policy.max_position_reconciliation_age_minutes,
+                as_of=checked_at,
+            )
+        )
+        strategy_config_id = recommendation.strategy_config_id if recommendation is not None else None
+        dataset_fingerprint = (
+            str((snapshot.data_quality or {}).get("dataset_fingerprint") or "")
+            if snapshot is not None
+            else ""
+        )
+        accepted_backtest = (
+            None
+            if fake_test_execution or not strategy_config_id or not dataset_fingerprint
+            else self.backtest_run_repo.latest_accepted(
+                strategy_config_id=strategy_config_id,
+                dataset_fingerprint=dataset_fingerprint,
+            )
+        )
+        strategy_validation = (
+            {
+                "passed": True,
+                "strategy_config_id": strategy_config_id,
+                "dataset_fingerprint": dataset_fingerprint or None,
+                "test_fake_adapter_bypass": True,
+            }
+            if fake_test_execution
+            else {
+                "passed": accepted_backtest is not None,
+                "strategy_config_id": strategy_config_id,
+                "dataset_fingerprint": dataset_fingerprint or None,
+                "backtest_run_id": accepted_backtest.run_id if accepted_backtest is not None else None,
+                "reason": (
+                    None
+                    if accepted_backtest is not None
+                    else "accepted_out_of_sample_backtest_missing"
+                ),
+            }
+        )
+        paper_shadow = (
+            self.get_paper_shadow_gate(
+                required_trading_days=policy.min_paper_shadow_trading_days,
+                as_of=checked_at,
+            )
+            if automatic
+            else None
+        )
+        return ExecutionReadinessGate(
+            max_snapshot_age_minutes=policy.max_snapshot_bar_age_minutes,
+            min_bar_coverage=1.0,
+            min_fundamental_coverage=1.0,
+        ).evaluate(
+            source_snapshot_id=source_snapshot_id,
+            snapshot=snapshot,
+            kill_switch_enabled=self.kill_switch.enabled,
+            approval_granted=approval_granted,
+            broker_adapter=adapter,
+            position_reconciliation=reconciliation,
+            strategy_validation=strategy_validation,
+            paper_shadow=paper_shadow,
+            automatic=automatic,
+            checked_at=checked_at,
+            test_mode=settings.test_mode,
+        )
+
+    def require_execution_readiness(
+        self,
+        *,
+        recommendation_id: str | None,
+        source_snapshot_id: str | None,
+        automatic: bool = False,
+        checked_at: datetime | None = None,
+    ) -> ExecutionReadinessResult:
+        result = self.build_execution_readiness(
+            recommendation_id=recommendation_id,
+            source_snapshot_id=source_snapshot_id,
+            automatic=automatic,
+            checked_at=checked_at,
+        )
+        result.require()
+        return result
+
     def publish_event(self, event_type: EventType, payload: dict) -> None:
         event = SystemEvent(event_type=event_type, payload=payload)
         self.event_queue.publish(event)

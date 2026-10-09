@@ -33,6 +33,8 @@ def test_build_secure_loopback_api_plist(tmp_path: Path) -> None:
     args = _args(
         "--point-in-time-universe-csv",
         "/licensed/universe.csv",
+        "--point-in-time-validation-report",
+        "/licensed/validation.json",
         "--broker-adapter",
         "alpaca",
         "--alpaca-base-url",
@@ -67,8 +69,33 @@ def test_build_secure_loopback_api_plist(tmp_path: Path) -> None:
     assert environment["QUANT_AGENT_COOKIE_SECURE"] == "0"
     assert "QUANT_AGENT_DISABLE_AUTH" not in environment
     assert environment["POINT_IN_TIME_UNIVERSE_CSV"] == "/licensed/universe.csv"
+    assert environment["POINT_IN_TIME_VALIDATION_REPORT"] == "/licensed/validation.json"
     assert environment["QUANT_BROKER_ADAPTER"] == "alpaca"
     assert environment["ALPACA_BASE_URL"] == "https://paper-api.alpaca.markets"
+
+
+def test_api_defaults_to_repo_venv() -> None:
+    args = manage_api_launchd.build_parser().parse_args(
+        [
+            "render",
+            "--access-password",
+            "local-password-123",
+            "--auth-signing-secret",
+            "signing-secret-with-at-least-32-characters",
+        ]
+    )
+
+    assert manage_api_launchd.build_program_arguments(args)[0] == str(
+        manage_api_launchd.default_python()
+    )
+
+
+def test_api_resolves_relative_sqlite_database_against_repo() -> None:
+    args = _args("--database-url", "sqlite:///runtime/quant.db")
+
+    database_url = manage_api_launchd.build_plist(args)["EnvironmentVariables"]["DATABASE_URL"]
+
+    assert database_url == f"sqlite:///{Path('/tmp/quant-agent/runtime/quant.db').resolve()}"
 
 
 @pytest.mark.parametrize(

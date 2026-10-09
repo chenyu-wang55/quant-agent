@@ -24,6 +24,26 @@ def _args(*extra: str):
 
 def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     args = _args(
+        "--database-url",
+        "sqlite:////var/lib/quant-agent.db",
+        "--point-in-time-universe-csv",
+        "/licensed/universe.csv",
+        "--point-in-time-fundamentals-csv",
+        "/licensed/fundamentals.csv",
+        "--point-in-time-events-csv",
+        "/licensed/events.csv",
+        "--point-in-time-earnings-csv",
+        "/licensed/earnings.csv",
+        "--point-in-time-validation-report",
+        "/licensed/validation.json",
+        "--broker-adapter",
+        "alpaca",
+        "--alpaca-base-url",
+        "https://paper-api.alpaca.markets",
+        "--alpaca-api-key",
+        "paper-key",
+        "--alpaca-secret-key",
+        "paper-secret",
         "--use-autopilot-policy",
         "--auto-approve-recommendations",
         "--auto-approve-min-confidence",
@@ -127,12 +147,43 @@ def test_build_launchd_plist_for_system_cycle_loop(tmp_path: Path) -> None:
     assert round_trip["StandardOutPath"] == "/dev/null"
     assert round_trip["StandardErrorPath"] == "/dev/null"
     environment = round_trip["EnvironmentVariables"]
+    assert environment["PYTHONPATH"] == str(Path("/tmp/quant-agent").resolve())
+    assert environment["DATABASE_URL"] == f"sqlite:///{Path('/var/lib/quant-agent.db').resolve()}"
+    assert environment["POINT_IN_TIME_UNIVERSE_CSV"] == "/licensed/universe.csv"
+    assert environment["POINT_IN_TIME_FUNDAMENTALS_CSV"] == "/licensed/fundamentals.csv"
+    assert environment["POINT_IN_TIME_EVENTS_CSV"] == "/licensed/events.csv"
+    assert environment["POINT_IN_TIME_EARNINGS_CSV"] == "/licensed/earnings.csv"
+    assert environment["POINT_IN_TIME_VALIDATION_REPORT"] == "/licensed/validation.json"
+    assert environment["QUANT_BROKER_ADAPTER"] == "alpaca"
+    assert environment["ALPACA_BASE_URL"] == "https://paper-api.alpaca.markets"
+    assert environment["ALPACA_API_KEY"] == "paper-key"
+    assert environment["ALPACA_SECRET_KEY"] == "paper-secret"
     assert environment["QUANT_AGENT_LOG_FORMAT"] == "json"
     assert environment["QUANT_AGENT_LOG_FILE"] == str(
         tmp_path / "Library" / "Logs" / f"{manage_launchd.DEFAULT_LABEL}.json.log"
     )
     assert environment["QUANT_AGENT_LOG_MAX_BYTES"] == str(20 * 1024 * 1024)
     assert environment["QUANT_AGENT_LOG_BACKUP_COUNT"] == "10"
+
+
+def test_worker_defaults_to_repo_venv_and_absolute_database(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    args = manage_launchd.build_parser().parse_args(["render"])
+
+    plist = manage_launchd.build_plist(args)
+
+    assert plist["ProgramArguments"][0] == str(manage_launchd.default_python())
+    assert plist["EnvironmentVariables"]["DATABASE_URL"] == (
+        f"sqlite:///{manage_launchd.repo_root() / 'quant_agent_v2.db'}"
+    )
+
+
+def test_worker_resolves_relative_sqlite_database_against_repo() -> None:
+    args = _args("--database-url", "sqlite:///runtime/quant.db")
+
+    database_url = manage_launchd.build_plist(args)["EnvironmentVariables"]["DATABASE_URL"]
+
+    assert database_url == f"sqlite:///{Path('/tmp/quant-agent/runtime/quant.db').resolve()}"
 
 
 def test_install_and_uninstall_launchd_plist(tmp_path: Path, monkeypatch) -> None:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import unquote
+
 import pytest
 
 from services.execution.broker_adapter import AlpacaBrokerAdapter, BrokerAdapterError, BrokerOrderPlacement
@@ -13,7 +15,11 @@ class CapturingAlpacaAdapter(AlpacaBrokerAdapter):
     def _request(self, method, path, *, payload=None, query=None):  # type: ignore[no-untyped-def]
         self.calls.append({"method": method, "path": path, "payload": payload, "query": query})
         if method == "DELETE":
-            return {}
+            return {
+                "id": unquote(path.rsplit("/", 1)[-1]),
+                "status": "canceled",
+                "message": "cancel request accepted",
+            }
         if path == "/v2/account":
             return {
                 "id": "acct_123",
@@ -47,6 +53,24 @@ class CapturingAlpacaAdapter(AlpacaBrokerAdapter):
                 else (query or {}).get("client_order_id")
             ),
             "submitted_at": "2026-04-10T15:30:00Z",
+        }
+
+
+class EmptyDeleteAlpacaAdapter(AlpacaBrokerAdapter):
+    def __init__(self) -> None:
+        super().__init__(api_key="key", api_secret="secret")
+        self.calls: list[tuple[str, str, dict | None]] = []
+
+    def _request(self, method, path, *, payload=None, query=None):  # type: ignore[no-untyped-def]
+        _ = payload
+        self.calls.append((method, path, query))
+        if method == "DELETE":
+            return {}
+        return {
+            "id": "cancel-after-204",
+            "status": "partially_filled",
+            "filled_qty": "1",
+            "filled_avg_price": "180",
         }
 
 
@@ -91,7 +115,7 @@ def test_alpaca_adapter_gets_order_by_client_order_id() -> None:
     assert update.client_order_id == "quant_test_456"
     assert adapter.calls[0]["method"] == "GET"
     assert adapter.calls[0]["path"] == "/v2/orders:by_client_order_id"
-    assert adapter.calls[0]["query"] == {"client_order_id": "quant_test_456"}
+    assert adapter.calls[0]["query"] == {"client_order_id": "quant_test_456", "nested": "true"}
 
 
 def test_alpaca_adapter_submits_native_bracket_protection() -> None:
@@ -123,7 +147,7 @@ def test_alpaca_adapter_gets_order_by_broker_order_id() -> None:
     assert update.broker_order_id == "alpaca_order_123"
     assert adapter.calls[0]["method"] == "GET"
     assert adapter.calls[0]["path"] == "/v2/orders/alpaca%2Forder%20456"
-    assert adapter.calls[0]["query"] is None
+    assert adapter.calls[0]["query"] == {"nested": "true"}
 
 
 def test_alpaca_adapter_cancels_order_by_broker_order_id() -> None:
@@ -137,6 +161,58 @@ def test_alpaca_adapter_cancels_order_by_broker_order_id() -> None:
     assert adapter.calls[0]["method"] == "DELETE"
     assert adapter.calls[0]["path"] == "/v2/orders/alpaca%2Forder%20789"
     assert adapter.calls[0]["query"] is None
+
+
+def test_alpaca_empty_cancel_response_is_followed_by_authoritative_order_query() -> None:
+    adapter = EmptyDeleteAlpacaAdapter()
+
+    update = adapter.cancel_order("cancel-after-204")
+
+    assert update.raw_status == "partially_filled"
+    assert update.filled_qty == 1
+    assert adapter.calls == [
+        ("DELETE", "/v2/orders/cancel-after-204", None),
+        ("GET", "/v2/orders/cancel-after-204", {"nested": "true"}),
+    ]
+
+
+def test_alpaca_adapter_parses_nested_bracket_protection() -> None:
+    update = AlpacaBrokerAdapter._to_update(
+        {
+            "id": "parent-buy",
+            "status": "filled",
+            "filled_qty": "2",
+            "filled_avg_price": "180",
+            "legs": [
+                {
+                    "id": "take-profit-leg",
+                    "status": "new",
+                    "type": "limit",
+                    "side": "sell",
+                    "qty": "2",
+                    "filled_qty": "0",
+                    "limit_price": "210",
+                },
+                {
+                    "id": "stop-loss-leg",
+                    "status": "new",
+                    "type": "stop",
+                    "side": "sell",
+                    "qty": "2",
+                    "filled_qty": "0",
+                    "stop_price": "168",
+                },
+            ],
+        }
+    )
+
+    assert update.filled_qty == 2
+    assert [leg["broker_order_id"] for leg in update.protection_legs] == [
+        "take-profit-leg",
+        "stop-loss-leg",
+    ]
+    assert update.protection_legs[0]["limit_price"] == 210
+    assert update.protection_legs[1]["stop_price"] == 168
 
 
 def test_alpaca_adapter_lists_positions() -> None:

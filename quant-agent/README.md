@@ -30,12 +30,13 @@ and the Dashboard HTML asset is isolated from its data API.
 ## Quick Start
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.lock
-pip install --no-deps -e .
+.venv/bin/python -m pip install -r requirements.lock
+.venv/bin/python -m pip install --no-deps -e .
 export QUANT_AGENT_ACCESS_PASSWORD="replace-with-a-local-secret"
-uvicorn apps.api.main:app --reload
+export QUANT_AGENT_AUTH_SIGNING_SECRET="replace-with-at-least-32-random-characters"
+.venv/bin/uvicorn apps.api.main:app --reload
 ```
 
 Health endpoints:
@@ -49,14 +50,15 @@ For a persistent loopback-only API on macOS, install the authenticated LaunchAge
 ```bash
 export QUANT_AGENT_ACCESS_PASSWORD="a-long-local-password"
 export QUANT_AGENT_AUTH_SIGNING_SECRET="$(openssl rand -hex 32)"
-python scripts/manage_api_launchd.py install --load
-python scripts/manage_api_launchd.py status
+.venv/bin/python scripts/manage_api_launchd.py install --load
+.venv/bin/python scripts/manage_api_launchd.py status
 ```
 
 The generated plist is mode `0600`, binds only to `127.0.0.1`, keeps authentication
 enabled, uses an absolute production database path, starts at login, and writes through
 the rotating structured-log handler. A non-loopback host, short password, or short signing
-secret is rejected. Use `python scripts/manage_api_launchd.py uninstall --unload` to remove it.
+secret is rejected. Use `.venv/bin/python scripts/manage_api_launchd.py uninstall --unload` to
+remove it.
 
 ## Authentication and execution roles
 
@@ -179,6 +181,30 @@ Real-provider backtests invoke the same full-range validator automatically befor
 simulation work. The dataset fingerprint is included in the backtest configuration hash and
 daily snapshot IDs, so changed source files cannot silently replay snapshots from an older
 export with the same strategy parameters.
+
+Before rendering or loading either LaunchAgent, copy `.env.example` to an untracked
+`.env.local`, replace every placeholder, export those values into the current shell, and run:
+
+```bash
+set -a
+source .env.local
+set +a
+.venv/bin/python scripts/preflight.py --target paper
+```
+
+The fail-closed preflight verifies the repository virtual environment and exact lockfile,
+authentication, all four licensed PIT files, the retained report's source hashes and dataset
+fingerprint, SQLite integrity and Alembic head, the requested kill-switch state, the Broker
+endpoint/credentials, and the structured-log directory. It exits with status `2` and
+`status=blocked` until every requirement passes. `--target live` additionally rejects the Alpaca
+paper endpoint; keep using `--target paper` throughout paper acceptance.
+
+Every confirmed or automatic live buy/sell, including recovery and resubmission, re-runs one
+central live-readiness gate before Broker I/O. A recommendation must be approved and tied to a
+fresh, complete, verified non-Mock snapshot with a matching dataset fingerprint and
+`live_execution_allowed=true`; the kill switch, Broker account, recent reconciliation, and the
+20-day paper-shadow gate must also pass. Mock snapshots remain usable for tests and replay but can
+never authorize live execution.
 
 ## Source Snapshots and Replay
 
@@ -570,19 +596,21 @@ stop the loop after repeated failures.
 On macOS, render or install a user LaunchAgent for the same loop:
 
 ```bash
-python scripts/manage_launchd.py render --use-autopilot-policy --data-provider yfinance
-python scripts/manage_launchd.py install --use-autopilot-policy --data-provider yfinance --load
-python scripts/manage_launchd.py install --auto-approve-recommendations \
+.venv/bin/python scripts/manage_launchd.py render --use-autopilot-policy --data-provider yfinance
+.venv/bin/python scripts/manage_launchd.py install --use-autopilot-policy --data-provider yfinance --load
+.venv/bin/python scripts/manage_launchd.py install --auto-approve-recommendations \
   --auto-execute-approved --data-provider yfinance --load
-python scripts/manage_launchd.py status
-python scripts/manage_launchd.py uninstall --unload
+.venv/bin/python scripts/manage_launchd.py status
+.venv/bin/python scripts/manage_launchd.py uninstall --unload
 ```
 
 The LaunchAgent writes structured JSON to
 `~/Library/Logs/com.quant-agent.system-cycle-loop.json.log`, rotates at 20 MiB, and keeps ten
 archives by default. Override this with `--log-file`, `--log-max-bytes`, and
 `--log-backup-count`. Raw launchd stdout/stderr is discarded so it cannot grow without bounds.
-The worker remains managed by `launchd`.
+Both managers default to the repository `.venv/bin/python`, use an absolute database URL, and
+copy the four PIT paths plus `POINT_IN_TIME_VALIDATION_REPORT` into the private mode-`0600` plist.
+Broker settings are copied when configured. The worker remains managed by `launchd`.
 
 ## Observability and alerts
 
@@ -609,12 +637,12 @@ The repository contains an exact `requirements.lock` and GitHub Actions runs on 
 3.13 for every pull request. Run the same gates locally:
 
 ```bash
-ruff check .
-mypy
-python scripts/check_core_module_size.py --max-lines 850
-pytest -q tests/unit/test_migrations.py
-pytest -q
-pytest -q tests/unit/test_yfinance_provider.py tests/unit/test_data_provenance.py \
+.venv/bin/ruff check .
+.venv/bin/mypy
+.venv/bin/python scripts/check_core_module_size.py --max-lines 850
+.venv/bin/pytest -q tests/unit/test_migrations.py
+.venv/bin/pytest -q
+.venv/bin/pytest -q tests/unit/test_yfinance_provider.py tests/unit/test_data_provenance.py \
   tests/unit/test_point_in_time_validator.py \
   --cov=services.ingestion.vendors.yfinance_provider \
   --cov=services.ingestion.point_in_time_validator \
@@ -639,6 +667,17 @@ not counted as a Python business-service module.
   calibration (Brier score, expected calibration error, and confidence bins).
 - Period metrics include annualized return, benchmark return, alpha, information ratio, fill rate,
   turnover, total fees, and maximum drawdown.
+- Out-of-sample evidence also includes closed-trade count, Sharpe, Profit Factor, payoff ratio, and
+  after-cost expectancy. Entry and exit fees are both allocated to realized trade P&L.
+- Results, full equity curves, trade ledgers, dataset fingerprints, strategy configuration IDs,
+  calibration, and bull/sideways/bear regime metrics are retained in `backtest_runs`.
+
+The fixed live-acceptance policy requires at least 100 out-of-sample trades, drawdown at or below
+15%, Profit Factor at or above 1.20, Sharpe at or above 0.8, payoff ratio at or above 1.5, positive
+after-cost expectancy, maximum name exposure at or below 10%, and maximum observed sector exposure
+at or below 30%. Live readiness only accepts a retained passing run with the same
+`strategy_config_id` and `dataset_fingerprint` as the recommendation snapshot. These production
+thresholds are not request parameters and cannot be lowered to force a run through the gate.
 
 Endpoint:
 - `POST /backtests/runs`
@@ -661,6 +700,7 @@ curl -X POST "http://127.0.0.1:8000/backtests/runs" \
     "initial_cash": 100000,
     "max_position_pct": 0.10,
     "max_gross_exposure_pct": 1.0,
+    "max_sector_exposure_pct": 0.30,
     "max_volume_participation_pct": 0.05,
     "train_fraction": 0.60,
     "validation_fraction": 0.20

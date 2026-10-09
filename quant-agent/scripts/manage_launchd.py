@@ -19,6 +19,10 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def default_python() -> Path:
+    return repo_root() / ".venv" / "bin" / "python"
+
+
 def launch_agents_dir(home: Path | None = None) -> Path:
     return (home or Path.home()) / "Library" / "LaunchAgents"
 
@@ -29,6 +33,24 @@ def default_plist_path(label: str = DEFAULT_LABEL, home: Path | None = None) -> 
 
 def default_log_dir(home: Path | None = None) -> Path:
     return (home or Path.home()) / "Library" / "Logs"
+
+
+def _database_url(args: argparse.Namespace) -> str:
+    if args.database_url:
+        prefix = "sqlite:///"
+        if not args.database_url.startswith(prefix):
+            return args.database_url
+        configured_path = Path(args.database_url[len(prefix) :]).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = Path(args.repo_root).expanduser() / configured_path
+        return f"sqlite:///{configured_path.resolve()}"
+    database_path = Path(args.repo_root).expanduser().resolve() / "quant_agent_v2.db"
+    return f"sqlite:///{database_path}"
+
+
+def _set_optional(env: dict[str, str], name: str, value: str | None) -> None:
+    if value:
+        env[name] = value
 
 
 def build_program_arguments(args: argparse.Namespace) -> list[str]:
@@ -117,6 +139,7 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
 
 def build_plist(args: argparse.Namespace, home: Path | None = None) -> dict[str, Any]:
     label = args.label
+    root = Path(args.repo_root).expanduser().resolve()
     logs = default_log_dir(home=home)
     structured_log = (
         Path(args.log_file).expanduser().resolve()
@@ -125,6 +148,8 @@ def build_plist(args: argparse.Namespace, home: Path | None = None) -> dict[str,
     )
     env = {
         "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": str(root),
+        "DATABASE_URL": _database_url(args),
         "DATA_PROVIDER": args.data_provider,
         "QUANT_AGENT_LOG_FORMAT": "json",
         "QUANT_AGENT_LOG_FILE": str(structured_log),
@@ -133,11 +158,21 @@ def build_plist(args: argparse.Namespace, home: Path | None = None) -> dict[str,
     }
     if args.access_password:
         env["QUANT_AGENT_ACCESS_PASSWORD"] = args.access_password
+    _set_optional(env, "QUANT_AGENT_AUTH_SIGNING_SECRET", args.auth_signing_secret)
+    _set_optional(env, "POINT_IN_TIME_UNIVERSE_CSV", args.point_in_time_universe_csv)
+    _set_optional(env, "POINT_IN_TIME_FUNDAMENTALS_CSV", args.point_in_time_fundamentals_csv)
+    _set_optional(env, "POINT_IN_TIME_EVENTS_CSV", args.point_in_time_events_csv)
+    _set_optional(env, "POINT_IN_TIME_EARNINGS_CSV", args.point_in_time_earnings_csv)
+    _set_optional(env, "POINT_IN_TIME_VALIDATION_REPORT", args.point_in_time_validation_report)
+    _set_optional(env, "QUANT_BROKER_ADAPTER", args.broker_adapter)
+    _set_optional(env, "ALPACA_BASE_URL", args.alpaca_base_url)
+    _set_optional(env, "ALPACA_API_KEY", args.alpaca_api_key)
+    _set_optional(env, "ALPACA_SECRET_KEY", args.alpaca_secret_key)
 
     return {
         "Label": label,
         "ProgramArguments": build_program_arguments(args),
-        "WorkingDirectory": str(Path(args.repo_root).resolve()),
+        "WorkingDirectory": str(root),
         "RunAtLoad": True,
         "KeepAlive": True,
         # Worker events are written through RotatingFileHandler. Discard raw
@@ -192,9 +227,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label", default=DEFAULT_LABEL)
     parser.add_argument("--plist-path", default=None, help="override plist path; defaults to ~/Library/LaunchAgents")
     parser.add_argument("--repo-root", default=str(repo_root()))
-    parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--python", default=str(default_python()))
+    parser.add_argument(
+        "--database-url",
+        default=env_text("DATABASE_URL") or None,
+        help="explicit database override; defaults to <repo-root>/quant_agent_v2.db",
+    )
     parser.add_argument("--data-provider", default=env_text("DATA_PROVIDER", "yfinance"))
     parser.add_argument("--access-password", default=env_text("QUANT_AGENT_ACCESS_PASSWORD") or None)
+    parser.add_argument(
+        "--auth-signing-secret",
+        default=env_text("QUANT_AGENT_AUTH_SIGNING_SECRET") or None,
+    )
+    parser.add_argument(
+        "--point-in-time-universe-csv",
+        default=env_text("POINT_IN_TIME_UNIVERSE_CSV") or None,
+    )
+    parser.add_argument(
+        "--point-in-time-fundamentals-csv",
+        default=env_text("POINT_IN_TIME_FUNDAMENTALS_CSV") or None,
+    )
+    parser.add_argument(
+        "--point-in-time-events-csv",
+        default=env_text("POINT_IN_TIME_EVENTS_CSV") or None,
+    )
+    parser.add_argument(
+        "--point-in-time-earnings-csv",
+        default=env_text("POINT_IN_TIME_EARNINGS_CSV") or None,
+    )
+    parser.add_argument(
+        "--point-in-time-validation-report",
+        default=env_text("POINT_IN_TIME_VALIDATION_REPORT") or None,
+    )
+    parser.add_argument("--broker-adapter", default=env_text("QUANT_BROKER_ADAPTER") or None)
+    parser.add_argument("--alpaca-base-url", default=env_text("ALPACA_BASE_URL") or None)
+    parser.add_argument("--alpaca-api-key", default=env_text("ALPACA_API_KEY") or None)
+    parser.add_argument("--alpaca-secret-key", default=env_text("ALPACA_SECRET_KEY") or None)
     parser.add_argument("--log-file", default=None)
     parser.add_argument("--log-max-bytes", type=int, default=20 * 1024 * 1024)
     parser.add_argument("--log-backup-count", type=int, default=10)

@@ -201,7 +201,17 @@ class ExecutionRouter:
             if broker_update.filled_avg_price is None:
                 raise BrokerAdapterError("Live broker returned filled without filled_avg_price")
             status = PaperOrderStatus.FILLED
+        elif raw_status == "partially_filled":
+            if broker_update.filled_avg_price is None or broker_update.filled_qty is None:
+                raise BrokerAdapterError(
+                    "Live broker returned partially_filled without filled_qty and filled_avg_price"
+                )
+            status = PaperOrderStatus.SUBMITTED
         elif raw_status in {"canceled", "expired", "rejected"}:
+            if broker_update.filled_qty and broker_update.filled_avg_price is None:
+                raise BrokerAdapterError(
+                    "Live broker returned a terminal partial fill without filled_avg_price"
+                )
             status = PaperOrderStatus.CANCELED
         else:
             status = PaperOrderStatus.SUBMITTED
@@ -235,7 +245,13 @@ class ExecutionRouter:
                 if broker_update.filled_avg_price is not None
                 else None
             ),
+            filled_qty=(
+                float(broker_update.filled_qty)
+                if broker_update.filled_qty is not None
+                else request.qty if status == PaperOrderStatus.FILLED else 0.0
+            ),
             filled_at=broker_update.filled_at if status == PaperOrderStatus.FILLED else None,
             cancel_reason=broker_update.message if status == PaperOrderStatus.CANCELED else None,
+            broker_protection=list(broker_update.protection_legs),
         )
         return order

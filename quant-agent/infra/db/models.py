@@ -57,6 +57,18 @@ class StrategyConfigRecord(Base):
     execution_mode: Mapped[str] = mapped_column(String(32), nullable=False)
 
 
+class BacktestRunRecord(Base):
+    __tablename__ = "backtest_runs"
+
+    run_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    config_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    strategy_config_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    dataset_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    accepted: Mapped[int] = mapped_column(Integer, nullable=False, default=0, index=True)
+    result_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+
+
 class SignalSnapshotRecord(Base):
     __tablename__ = "signal_snapshots"
 
@@ -133,8 +145,10 @@ class PaperOrderRecord(Base):
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     simulated_fill_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    filled_qty: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     filled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cancel_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    broker_protection_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class PositionStateRecord(Base):

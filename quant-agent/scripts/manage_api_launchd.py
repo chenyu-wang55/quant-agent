@@ -21,6 +21,10 @@ def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def default_python() -> Path:
+    return repo_root() / ".venv" / "bin" / "python"
+
+
 def launch_agents_dir(home: Path | None = None) -> Path:
     return (home or Path.home()) / "Library" / "LaunchAgents"
 
@@ -67,7 +71,13 @@ def build_program_arguments(args: argparse.Namespace) -> list[str]:
 
 def _database_url(args: argparse.Namespace) -> str:
     if args.database_url:
-        return args.database_url
+        prefix = "sqlite:///"
+        if not args.database_url.startswith(prefix):
+            return args.database_url
+        configured_path = Path(args.database_url[len(prefix) :]).expanduser()
+        if not configured_path.is_absolute():
+            configured_path = Path(args.repo_root).expanduser() / configured_path
+        return f"sqlite:///{configured_path.resolve()}"
     database_path = Path(args.repo_root).expanduser().resolve() / "quant_agent_v2.db"
     return f"sqlite:///{database_path}"
 
@@ -102,6 +112,7 @@ def build_plist(args: argparse.Namespace, home: Path | None = None) -> dict[str,
     _set_optional(env, "POINT_IN_TIME_FUNDAMENTALS_CSV", args.point_in_time_fundamentals_csv)
     _set_optional(env, "POINT_IN_TIME_EVENTS_CSV", args.point_in_time_events_csv)
     _set_optional(env, "POINT_IN_TIME_EARNINGS_CSV", args.point_in_time_earnings_csv)
+    _set_optional(env, "POINT_IN_TIME_VALIDATION_REPORT", args.point_in_time_validation_report)
     _set_optional(env, "QUANT_BROKER_ADAPTER", args.broker_adapter)
     _set_optional(env, "ALPACA_BASE_URL", args.alpaca_base_url)
     _set_optional(env, "ALPACA_API_KEY", args.alpaca_api_key)
@@ -218,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--label", default=DEFAULT_LABEL)
     parser.add_argument("--plist-path", default=None, help="override ~/Library/LaunchAgents plist path")
     parser.add_argument("--repo-root", default=str(repo_root()))
-    parser.add_argument("--python", default=sys.executable)
+    parser.add_argument("--python", default=str(default_python()))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
@@ -250,6 +261,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--point-in-time-earnings-csv",
         default=env_text("POINT_IN_TIME_EARNINGS_CSV") or None,
+    )
+    parser.add_argument(
+        "--point-in-time-validation-report",
+        default=env_text("POINT_IN_TIME_VALIDATION_REPORT") or None,
     )
     parser.add_argument("--broker-adapter", default=env_text("QUANT_BROKER_ADAPTER") or None)
     parser.add_argument("--alpaca-base-url", default=env_text("ALPACA_BASE_URL") or None)

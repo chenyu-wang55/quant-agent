@@ -14,6 +14,7 @@ from domain.entities.models import (
     Recommendation,
     ResearchRunRequest,
     RunType,
+    build_strategy_config_snapshot,
 )
 from services.execution.market_calendar import xnys_session
 from services.ranking.pipeline import ResearchPipeline
@@ -81,8 +82,22 @@ class OpenPosition:
     recommendation_id: str
     source_snapshot_id: str
     last_processed_at: datetime
+    sector: str = "Unknown"
+    entry_fee: float = 0.0
     bars_held: int = 0
     dividends: float = 0.0
+
+
+@dataclass(frozen=True)
+class BacktestAcceptanceThresholds:
+    min_out_of_sample_trades: int = 100
+    max_out_of_sample_drawdown: float = 0.15
+    min_out_of_sample_profit_factor: float = 1.20
+    min_out_of_sample_sharpe: float = 0.80
+    max_position_exposure: float = 0.10
+    max_sector_exposure: float = 0.30
+    min_out_of_sample_payoff_ratio: float = 1.50
+    min_out_of_sample_expectancy_after_cost: float = 0.0
 
 
 class BacktestEngine:
@@ -101,18 +116,26 @@ class BacktestEngine:
                 request.start_date,
                 request.end_date,
             )
+        if not point_in_time_validation or point_in_time_validation.get("status") != "verified":
+            raise ValueError("point-in-time validation must return status=verified")
+        dataset_fingerprint = str(point_in_time_validation.get("dataset_fingerprint") or "")
+        if len(dataset_fingerprint) != 64:
+            raise ValueError("point-in-time validation report is missing a SHA-256 dataset_fingerprint")
+        backtest_template_request = template_request.model_copy(
+            update={
+                "run_type": RunType.BACKTEST_EVALUATION,
+                "publication": template_request.publication.model_copy(update={"top_n": request.top_n}),
+            }
+        )
+        strategy_config = build_strategy_config_snapshot(backtest_template_request)
         trading_days = _trading_days(request.start_date, request.end_date)
         step = _frequency_to_step_days(request.rebalance_frequency)
         rebalance_points = trading_days[::step]
         if trading_days and (not rebalance_points or rebalance_points[-1] != trading_days[-1]):
             rebalance_points.append(trading_days[-1])
 
-        config_payload = request.model_dump_json() + template_request.model_dump_json()
-        if point_in_time_validation is not None:
-            dataset_fingerprint = point_in_time_validation.get("dataset_fingerprint")
-            if not dataset_fingerprint:
-                raise ValueError("point-in-time validation report is missing dataset_fingerprint")
-            config_payload += str(dataset_fingerprint)
+        config_payload = request.model_dump_json() + backtest_template_request.model_dump_json()
+        config_payload += dataset_fingerprint
         config_hash = hashlib.sha256(config_payload.encode("utf-8")).hexdigest()[:24]
         run_id = f"bt_{config_hash[:16]}"
         cash = float(request.initial_cash)
@@ -135,6 +158,8 @@ class BacktestEngine:
         total_slippage = 0.0
         total_trade_notional = 0.0
         max_gross_exposure = 0.0
+        max_position_exposure = 0.0
+        max_sector_exposure = 0.0
 
         for index, point in enumerate(rebalance_points):
             (
@@ -175,17 +200,19 @@ class BacktestEngine:
                 )
                 continue
 
-            run_request = template_request.model_copy(
+            run_request = backtest_template_request.model_copy(
                 update={
-                    "run_type": RunType.BACKTEST_EVALUATION,
                     "as_of": point,
                     "source_snapshot_id": f"backtest:{config_hash}:{point.date().isoformat()}",
-                    "publication": template_request.publication.model_copy(update={"top_n": request.top_n}),
                 }
             )
             output = pipeline.run(run_request)
             recommendations = output.result.recommendations
             recommendation_count += len(recommendations)
+            sector_by_ticker = {
+                item.ticker.upper(): item.sector or "Unknown"
+                for item in pipeline.provider.get_universe(template_request.universe, point)
+            }
 
             entry_candidates: list[tuple] = []
             for rank, recommendation in enumerate(recommendations):
@@ -219,11 +246,14 @@ class BacktestEngine:
                 ticker = recommendation.ticker.upper()
                 if ticker in positions:
                     continue
+                sector = sector_by_ticker.get(ticker, "Unknown")
                 fill_price = raw_fill * (1.0 + request.slippage_bps / 10_000.0)
                 equity, gross = self._portfolio_value(cash, positions, pipeline, point)
+                sector_gross = self._sector_gross(positions, pipeline, point).get(sector, 0.0)
                 max_notional = min(
                     equity * request.max_position_pct,
                     max(0.0, equity * request.max_gross_exposure_pct - gross),
+                    max(0.0, equity * request.max_sector_exposure_pct - sector_gross),
                     cash / (1.0 + request.transaction_cost_bps / 10_000.0),
                 )
                 if max_notional <= 0 or fill_price <= 0:
@@ -256,6 +286,8 @@ class BacktestEngine:
                     recommendation_id=recommendation.id,
                     source_snapshot_id=recommendation.source_snapshot_id,
                     last_processed_at=bar.timestamp.astimezone(timezone.utc),
+                    sector=sector,
+                    entry_fee=fee,
                 )
                 trades.append(
                     {
@@ -279,6 +311,14 @@ class BacktestEngine:
                 max_gross_exposure = max(
                     max_gross_exposure,
                     entry_gross / entry_equity if entry_equity > 0 else 0.0,
+                )
+                max_position_exposure = max(
+                    max_position_exposure,
+                    notional / entry_equity if entry_equity > 0 else 0.0,
+                )
+                max_sector_exposure = max(
+                    max_sector_exposure,
+                    (sector_gross + notional) / entry_equity if entry_equity > 0 else 0.0,
                 )
 
             equity_curve.append(
@@ -350,21 +390,38 @@ class BacktestEngine:
                 "gap_fill_count": float(gap_fill_count),
                 "corporate_action_count": float(corporate_action_count),
                 "max_gross_exposure": round(max_gross_exposure, 6),
+                "max_position_exposure": round(max_position_exposure, 6),
+                "max_sector_exposure": round(max_sector_exposure, 6),
                 "ending_open_position_count": float(len(positions)),
             }
         )
 
         segments = self._segment_metrics(
             returns,
+            benchmark_returns,
+            closed_trades,
+            equity_curve,
             request.train_fraction,
             request.validation_fraction,
             252.0 / max(1, step),
         )
         calibration = self._confidence_calibration(closed_trades, request.confidence_bins)
+        market_regimes = self._market_regime_metrics(
+            returns,
+            benchmark_returns,
+            252.0 / max(1, step),
+        )
+        acceptance = self._acceptance(
+            segments=segments,
+            metrics=metrics,
+            thresholds=BacktestAcceptanceThresholds(),
+        )
         return BacktestRunResult(
             run_id=run_id,
             created_at=datetime.now(timezone.utc),
             config_hash=config_hash,
+            strategy_config_id=strategy_config.strategy_config_id,
+            dataset_fingerprint=dataset_fingerprint,
             metrics=metrics,
             notes=(
                 "Point-in-time event-driven portfolio backtest using XNYS sessions, cash and "
@@ -373,6 +430,8 @@ class BacktestEngine:
             ),
             segments=segments,
             calibration=calibration,
+            market_regimes=market_regimes,
+            acceptance=acceptance,
             equity_curve=equity_curve,
             trades=trades,
             assumptions={
@@ -512,7 +571,13 @@ class BacktestEngine:
             stats["slippage"] += slippage
             stats["notional"] += notional
             allocated_dividends = position.dividends * (exit_qty / max(position.qty, 1e-12))
-            realized = (exit_price - position.entry_price) * exit_qty - fee + allocated_dividends
+            allocated_entry_fee = position.entry_fee * (exit_qty / max(position.qty, 1e-12))
+            realized = (
+                (exit_price - position.entry_price) * exit_qty
+                - fee
+                - allocated_entry_fee
+                + allocated_dividends
+            )
             realized_return = realized / max(position.entry_price * exit_qty, 0.01)
             if reason.endswith("_gap"):
                 stats["gap_fills"] += 1
@@ -526,6 +591,7 @@ class BacktestEngine:
                     "entry_price": position.entry_price,
                     "exit_price": exit_price,
                     "reason": reason,
+                    "entry_fee": allocated_entry_fee,
                     "fee": fee,
                     "slippage": slippage,
                     "dividends": allocated_dividends,
@@ -537,6 +603,7 @@ class BacktestEngine:
                 }
             )
             position.dividends -= allocated_dividends
+            position.entry_fee -= allocated_entry_fee
             position.qty -= exit_qty
             if position.qty <= 1e-12:
                 positions.pop(ticker, None)
@@ -556,6 +623,20 @@ class BacktestEngine:
             mark = eligible[-1].close if eligible else position.entry_price
             gross += position.qty * mark
         return cash + gross, gross
+
+    @staticmethod
+    def _sector_gross(
+        positions: dict[str, OpenPosition],
+        pipeline: ResearchPipeline,
+        as_of: datetime,
+    ) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for position in positions.values():
+            bars = pipeline.provider.get_bars(position.ticker, as_of, lookback_days=5)
+            eligible = [bar for bar in bars if bar.timestamp.astimezone(timezone.utc) <= as_of]
+            mark = eligible[-1].close if eligible else position.entry_price
+            values[position.sector] = values.get(position.sector, 0.0) + position.qty * mark
+        return values
 
     @staticmethod
     def _equity_returns(equity_curve: list[dict[str, Any]]) -> list[float]:
@@ -618,25 +699,195 @@ class BacktestEngine:
     def _segment_metrics(
         self,
         returns: list[float],
+        benchmark_returns: list[float],
+        trades: list[dict[str, Any]],
+        equity_curve: list[dict[str, Any]],
         train_fraction: float,
         validation_fraction: float,
         periods_per_year: float,
-    ) -> dict[str, dict[str, float]]:
+    ) -> dict[str, dict[str, Any]]:
         train_end = int(len(returns) * train_fraction)
         validation_end = train_end + int(len(returns) * validation_fraction)
-        chunks = {
-            "train": returns[:train_end],
-            "validation": returns[train_end:validation_end],
-            "out_of_sample": returns[validation_end:],
+        ranges = {
+            "train": (0, train_end),
+            "validation": (train_end, validation_end),
+            "out_of_sample": (validation_end, len(returns)),
         }
+        result: dict[str, dict[str, Any]] = {}
+        for name, (start, end) in ranges.items():
+            values = returns[start:end]
+            benchmarks = benchmark_returns[start:end]
+            metrics: dict[str, Any] = self._metrics(
+                returns=values,
+                benchmark_returns=benchmarks,
+                periods_per_year=periods_per_year,
+            )
+            metrics["periods"] = len(values)
+            start_at = self._curve_timestamp(equity_curve, start)
+            end_at = self._curve_timestamp(equity_curve, end)
+            segment_trades = [
+                trade
+                for trade in trades
+                if self._timestamp_in_segment(trade.get("exit_at"), start_at, end_at, start == 0)
+            ]
+            metrics.update(self._trade_metrics(segment_trades))
+            metrics["start_at"] = start_at.isoformat() if start_at else None
+            metrics["end_at"] = end_at.isoformat() if end_at else None
+            result[name] = metrics
+        return result
+
+    @staticmethod
+    def _curve_timestamp(equity_curve: list[dict[str, Any]], index: int) -> datetime | None:
+        if not equity_curve:
+            return None
+        bounded = min(max(index, 0), len(equity_curve) - 1)
+        value = datetime.fromisoformat(str(equity_curve[bounded]["timestamp"]))
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _timestamp_in_segment(
+        value: Any,
+        start_at: datetime | None,
+        end_at: datetime | None,
+        include_start: bool,
+    ) -> bool:
+        if not value or start_at is None or end_at is None:
+            return False
+        timestamp = datetime.fromisoformat(str(value)).astimezone(timezone.utc)
+        lower = timestamp >= start_at if include_start else timestamp > start_at
+        return lower and timestamp <= end_at
+
+    @staticmethod
+    def _trade_metrics(trades: list[dict[str, Any]]) -> dict[str, Any]:
+        pnls = [float(trade.get("realized_pnl") or 0.0) for trade in trades]
+        returns = [float(trade.get("realized_return") or 0.0) for trade in trades]
+        wins = [value for value in pnls if value > 0]
+        losses = [value for value in pnls if value < 0]
+        gross_profit = sum(wins)
+        gross_loss = abs(sum(losses))
+        average_win = sum(wins) / len(wins) if wins else 0.0
+        average_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+        profit_factor = gross_profit / gross_loss if gross_loss else None
+        payoff_ratio = average_win / average_loss if average_loss else None
+        return {
+            "trade_count": len(trades),
+            "win_rate": round(len(wins) / len(pnls), 6) if pnls else 0.0,
+            "gross_profit": round(gross_profit, 6),
+            "gross_loss": round(gross_loss, 6),
+            "profit_factor": round(profit_factor, 6) if profit_factor is not None else None,
+            "profit_factor_infinite": bool(gross_profit > 0 and gross_loss == 0),
+            "payoff_ratio": round(payoff_ratio, 6) if payoff_ratio is not None else None,
+            "payoff_ratio_infinite": bool(average_win > 0 and average_loss == 0),
+            "expectancy_after_cost": round(sum(returns) / len(returns), 6) if returns else 0.0,
+        }
+
+    def _market_regime_metrics(
+        self,
+        returns: list[float],
+        benchmark_returns: list[float],
+        periods_per_year: float,
+    ) -> dict[str, dict[str, Any]]:
+        grouped: dict[str, tuple[list[float], list[float]]] = {
+            "bull": ([], []),
+            "sideways": ([], []),
+            "bear": ([], []),
+        }
+        for value, benchmark in zip(returns, benchmark_returns):
+            regime = "bull" if benchmark > 0.01 else "bear" if benchmark < -0.01 else "sideways"
+            grouped[regime][0].append(value)
+            grouped[regime][1].append(benchmark)
         return {
             name: {
-                "periods": float(len(values)),
-                "annualized_return": round(_annualized_return(values, periods_per_year), 6),
-                "volatility": round(_std(values), 6),
-                "max_drawdown": round(_max_drawdown(values), 6),
+                "periods": len(values),
+                **self._metrics(
+                    returns=values,
+                    benchmark_returns=benchmarks,
+                    periods_per_year=periods_per_year,
+                ),
             }
-            for name, values in chunks.items()
+            for name, (values, benchmarks) in grouped.items()
+        }
+
+    @staticmethod
+    def _acceptance(
+        *,
+        segments: dict[str, dict[str, Any]],
+        metrics: dict[str, float],
+        thresholds: BacktestAcceptanceThresholds,
+    ) -> dict[str, Any]:
+        out_of_sample = segments.get("out_of_sample", {})
+        checks: dict[str, dict[str, Any]] = {
+            "out_of_sample_trade_count": {
+                "passed": int(out_of_sample.get("trade_count") or 0)
+                >= thresholds.min_out_of_sample_trades,
+                "actual": int(out_of_sample.get("trade_count") or 0),
+                "minimum": thresholds.min_out_of_sample_trades,
+            },
+            "out_of_sample_max_drawdown": {
+                "passed": float(out_of_sample.get("max_drawdown") or 0.0)
+                <= thresholds.max_out_of_sample_drawdown,
+                "actual": float(out_of_sample.get("max_drawdown") or 0.0),
+                "maximum": thresholds.max_out_of_sample_drawdown,
+            },
+            "out_of_sample_profit_factor": BacktestEngine._ratio_check(
+                out_of_sample,
+                "profit_factor",
+                "profit_factor_infinite",
+                thresholds.min_out_of_sample_profit_factor,
+            ),
+            "out_of_sample_sharpe": {
+                "passed": float(out_of_sample.get("sharpe") or 0.0)
+                >= thresholds.min_out_of_sample_sharpe,
+                "actual": float(out_of_sample.get("sharpe") or 0.0),
+                "minimum": thresholds.min_out_of_sample_sharpe,
+            },
+            "max_position_exposure": {
+                "passed": float(metrics.get("max_position_exposure") or 0.0)
+                <= thresholds.max_position_exposure,
+                "actual": float(metrics.get("max_position_exposure") or 0.0),
+                "maximum": thresholds.max_position_exposure,
+            },
+            "max_sector_exposure": {
+                "passed": float(metrics.get("max_sector_exposure") or 0.0)
+                <= thresholds.max_sector_exposure,
+                "actual": float(metrics.get("max_sector_exposure") or 0.0),
+                "maximum": thresholds.max_sector_exposure,
+            },
+            "out_of_sample_payoff_ratio": BacktestEngine._ratio_check(
+                out_of_sample,
+                "payoff_ratio",
+                "payoff_ratio_infinite",
+                thresholds.min_out_of_sample_payoff_ratio,
+            ),
+            "out_of_sample_expectancy_after_cost": {
+                "passed": float(out_of_sample.get("expectancy_after_cost") or 0.0)
+                > thresholds.min_out_of_sample_expectancy_after_cost,
+                "actual": float(out_of_sample.get("expectancy_after_cost") or 0.0),
+                "minimum_exclusive": thresholds.min_out_of_sample_expectancy_after_cost,
+            },
+        }
+        reasons = [name for name, check in checks.items() if not bool(check["passed"])]
+        return {
+            "passed": not reasons,
+            "evaluated_segment": "out_of_sample",
+            "checks": checks,
+            "reasons": reasons,
+        }
+
+    @staticmethod
+    def _ratio_check(
+        values: dict[str, Any],
+        ratio_name: str,
+        infinite_name: str,
+        minimum: float,
+    ) -> dict[str, Any]:
+        infinite = bool(values.get(infinite_name))
+        raw = values.get(ratio_name)
+        actual = float(raw) if raw is not None else None
+        return {
+            "passed": infinite or (actual is not None and actual >= minimum),
+            "actual": "infinite" if infinite else actual,
+            "minimum": minimum,
         }
 
     @staticmethod

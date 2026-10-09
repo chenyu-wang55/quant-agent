@@ -65,6 +65,12 @@ def _research_recommendation(objective: str):
     assert response.status_code == 200
     state = get_app_state()
     recommendation_id = response.json()["recommendations"][0]["id"]
+    approval = client.post(
+        f"/recommendations/{recommendation_id}/approval",
+        json={"decision": "approved", "approver": "qa", "notes": "recovery test"},
+        headers=AUTH_HEADERS,
+    )
+    assert approval.status_code == 200
     return state, state.recommendations_by_id[recommendation_id]
 
 
@@ -306,6 +312,24 @@ def _seed_holding(ticker: str = "IDEM"):
     return state, holding
 
 
+def _seed_recommended_holding(objective: str):
+    state, recommendation = _research_recommendation(objective)
+    state.close_holding(recommendation.ticker)
+    holding = state.record_manual_buy(
+        ManualBuyRequest(
+            ticker=recommendation.ticker,
+            qty=10,
+            buy_price=100,
+            stop_loss=90,
+            take_profit1=110,
+            take_profit2=120,
+            source_recommendation_id=recommendation.id,
+            note="live sell readiness setup",
+        )
+    )
+    return state, holding
+
+
 def test_paper_sell_idempotency_replay_does_not_reduce_holding_twice() -> None:
     state, holding = _seed_holding("SIDEM")
     request = ManualSellRequest(
@@ -326,7 +350,7 @@ def test_paper_sell_idempotency_replay_does_not_reduce_holding_twice() -> None:
 
 
 def test_concurrent_live_sell_retry_calls_broker_once() -> None:
-    state, holding = _seed_holding("SCONC")
+    state, holding = _seed_recommended_holding("concurrent-live-sell")
     original_router = state.execution_router
     adapter = BlockingBrokerAdapter()
     state.execution_router = ExecutionRouter(broker_adapter=adapter)
@@ -393,7 +417,7 @@ def test_sell_transaction_rolls_back_and_stale_intent_recovers_once() -> None:
 
 
 def test_ambiguous_live_sell_recovers_by_client_order_id_on_retry() -> None:
-    state, holding = _seed_holding("SRECV")
+    state, holding = _seed_recommended_holding("ambiguous-live-sell")
     original_router = state.execution_router
     adapter = TimeoutThenLookupBrokerAdapter(lookup_succeeds=True)
     state.execution_router = ExecutionRouter(broker_adapter=adapter)
@@ -465,7 +489,7 @@ def test_concurrent_distinct_sells_use_optimistic_holding_guard() -> None:
 
 
 def test_worker_broker_sync_automatically_recovers_unknown_sell_submission() -> None:
-    state, holding = _seed_holding("SAUTO")
+    state, holding = _seed_recommended_holding("worker-live-sell-recovery")
     original_router = state.execution_router
     adapter = TimeoutThenLookupBrokerAdapter(lookup_succeeds=True)
     state.execution_router = ExecutionRouter(broker_adapter=adapter)

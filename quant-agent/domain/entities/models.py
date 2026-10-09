@@ -528,6 +528,7 @@ class BrokerOrderStatusSnapshot(BaseModel):
     reason: str | None = None
     broker_message: str | None = None
     apply_to_ledger: bool | None = None
+    broker_protection: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_sync_payload(self) -> "BrokerOrderStatusSnapshot":
@@ -538,6 +539,8 @@ class BrokerOrderStatusSnapshot(BaseModel):
             BrokerOrderSyncStatus.PARTIALLY_FILLED,
         } and self.fill_price is None:
             raise ValueError("fill_price is required for filled broker statuses")
+        if self.status == BrokerOrderSyncStatus.PARTIALLY_FILLED and self.filled_qty is None:
+            raise ValueError("filled_qty is required for partially_filled broker status")
         return self
 
 
@@ -565,6 +568,7 @@ class BrokerOrderSyncResult(BaseModel):
     checked_at: datetime
     total_count: int
     filled_count: int = 0
+    partially_filled_count: int = 0
     canceled_count: int = 0
     unchanged_count: int = 0
     skipped_count: int = 0
@@ -625,8 +629,16 @@ class PaperOrder(BaseModel):
     submitted_at: datetime
     status: PaperOrderStatus
     simulated_fill_price: float | None = None
+    filled_qty: float = Field(default=0.0, ge=0.0)
     filled_at: datetime | None = None
     cancel_reason: str | None = None
+    broker_protection: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_filled_quantity(self) -> "PaperOrder":
+        if self.filled_qty > self.qty + 1e-9:
+            raise ValueError("filled_qty cannot exceed order qty")
+        return self
 
 
 class PositionState(BaseModel):
@@ -653,6 +665,7 @@ class BacktestRunRequest(BaseModel):
     initial_cash: float = Field(default=100_000.0, gt=0)
     max_position_pct: float = Field(default=0.10, gt=0, le=1.0)
     max_gross_exposure_pct: float = Field(default=1.0, gt=0, le=5.0)
+    max_sector_exposure_pct: float = Field(default=0.30, gt=0, le=1.0)
     max_volume_participation: float = Field(default=0.02, gt=0, le=1.0)
     entry_valid_trading_days: int = Field(default=3, ge=1, le=20)
     max_holding_trading_days: int = Field(default=10, ge=1, le=252)
@@ -675,10 +688,14 @@ class BacktestRunResult(BaseModel):
     run_id: str
     created_at: datetime
     config_hash: str
+    strategy_config_id: str
+    dataset_fingerprint: str
     metrics: dict[str, float]
     notes: str
-    segments: dict[str, dict[str, float]] = Field(default_factory=dict)
+    segments: dict[str, dict[str, Any]] = Field(default_factory=dict)
     calibration: dict[str, Any] = Field(default_factory=dict)
+    market_regimes: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    acceptance: dict[str, Any] = Field(default_factory=dict)
     equity_curve: list[dict[str, Any]] = Field(default_factory=list)
     trades: list[dict[str, Any]] = Field(default_factory=list)
     assumptions: dict[str, Any] = Field(default_factory=dict)

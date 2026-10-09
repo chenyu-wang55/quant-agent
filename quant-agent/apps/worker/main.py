@@ -32,6 +32,7 @@ from domain.entities.models import (
     SnapshotMode,
     SystemCycleRun,
 )
+from infra.config import CoreSettings
 from infra.observability.health import HealthEvaluator
 from infra.observability.logging import configure_logging
 from infra.queue.events import EventType
@@ -129,6 +130,7 @@ def _snapshot_quality_gate(
     min_bar_coverage: float,
     min_fundamental_coverage: float,
     max_bar_age_minutes: int,
+    require_live_execution: bool = False,
 ) -> dict[str, Any]:
     state = get_app_state()
     summary = state.source_snapshot_repo.get_summary(source_snapshot_id)
@@ -149,7 +151,7 @@ def _snapshot_quality_gate(
     fundamental_coverage = float(quality.get("fundamental_coverage") or 0.0)
     latest_bar_age_minutes = quality.get("latest_bar_age_minutes")
     reasons: list[str] = []
-    if not bool(quality.get("live_execution_allowed")):
+    if require_live_execution and not bool(quality.get("live_execution_allowed")):
         reasons.append("snapshot_provider_quality_blocked")
     if bar_coverage < min_bar_coverage:
         reasons.append("snapshot_bar_coverage_below_threshold")
@@ -412,11 +414,15 @@ def system_cycle(
     )
     output = state.pipeline.run(request)
     state.ingest_run_output(request, output)
+    live_auto_execution_requested = auto_execute_approved and auto_execution_mode.lower() == "live"
+    adapter_name = str(getattr(state.execution_router.broker_adapter, "name", "") or "").lower()
+    fake_test_execution = CoreSettings.from_env().test_mode and adapter_name not in {"", "alpaca"}
     snapshot_quality_gate = _snapshot_quality_gate(
         source_snapshot_id=output.result.source_snapshot_id,
         min_bar_coverage=min_snapshot_bar_coverage,
         min_fundamental_coverage=min_snapshot_fundamental_coverage,
         max_bar_age_minutes=max_snapshot_bar_age_minutes,
+        require_live_execution=live_auto_execution_requested and not fake_test_execution,
     )
     snapshot_quality_passed = bool(snapshot_quality_gate.get("passed"))
     daily_loss_gate = state.get_autopilot_daily_loss_gate(
@@ -425,7 +431,6 @@ def system_cycle(
         max_daily_realized_loss_pct=max_daily_realized_loss_pct,
     )
     daily_loss_passed = bool(daily_loss_gate.get("passed"))
-    live_auto_execution_requested = auto_execute_approved and auto_execution_mode.lower() == "live"
     paper_shadow_gate = state.get_paper_shadow_gate(
         required_trading_days=min_paper_shadow_trading_days,
         as_of=started_at,

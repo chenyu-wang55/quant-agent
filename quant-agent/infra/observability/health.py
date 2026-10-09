@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text
 
+from domain.entities.models import Direction, OrderExecutionMode
 from infra.config import ObservabilitySettings, env_text
 from infra.db.session import SessionLocal, get_database_url
 from infra.observability.alerts import AlertSpec, OperationalAlertManager
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _sqlite_path() -> Path | None:
@@ -140,7 +144,51 @@ class HealthEvaluator:
                 )
             )
 
+        paper_shadow_ready, paper_shadow_details = self._paper_shadow_check(
+            live_requested,
+            policy,
+            checked_at,
+        )
+        checks.append(
+            _check(
+                "paper_shadow",
+                "pass" if paper_shadow_ready else "fail",
+                "paper-shadow evidence is ready"
+                if paper_shadow_ready
+                else "paper-shadow evidence blocks live trading",
+                **paper_shadow_details,
+            )
+        )
+
+        strategy_ready, strategy_details = self._strategy_acceptance_check(
+            live_requested,
+            snapshot_details,
+        )
+        checks.append(
+            _check(
+                "strategy_acceptance",
+                "pass" if strategy_ready else "fail",
+                "accepted out-of-sample evidence is ready"
+                if strategy_ready
+                else "accepted out-of-sample evidence blocks live trading",
+                **strategy_details,
+            )
+        )
+
+        protection_ready, protection_details = self._broker_protection_check(live_requested)
+        checks.append(
+            _check(
+                "broker_protection",
+                "pass" if protection_ready else "fail",
+                "native Broker protection is ready"
+                if protection_ready
+                else "native Broker protection blocks live trading",
+                **protection_details,
+            )
+        )
+
         active_alerts = self.alert_manager.sync(alerts)
+        critical_alert_count = sum(item.get("severity") == "critical" for item in active_alerts)
         self.state.metrics_store.set_gauge("health_database_ready", 1.0 if database_ready else 0.0)
         self.state.metrics_store.set_gauge("health_provider_ready", 1.0 if provider_ready else 0.0)
         self.state.metrics_store.set_gauge("health_snapshot_ready", 1.0 if snapshot_ready else 0.0)
@@ -159,6 +207,14 @@ class HealthEvaluator:
             trading_blockers.append("autopilot_disabled")
         if live_requested and not reconciliation_ready:
             trading_blockers.append("position_reconciliation_not_ready")
+        if live_requested and not paper_shadow_ready:
+            trading_blockers.append("paper_shadow_period_incomplete")
+        if live_requested and not strategy_ready:
+            trading_blockers.append("accepted_out_of_sample_backtest_missing")
+        if live_requested and not protection_ready:
+            trading_blockers.append("broker_protection_not_ready")
+        if critical_alert_count:
+            trading_blockers.append("critical_alerts_active")
         trading_ready = core_ready and snapshot_ready and not trading_blockers
         return {
             "status": "ready" if core_ready else "not_ready",
@@ -279,16 +335,30 @@ class HealthEvaluator:
         age_minutes = max(0.0, (checked_at - as_of.astimezone(timezone.utc)).total_seconds() / 60.0)
         max_age = int(policy.max_snapshot_bar_age_minutes)
         live_allowed = bool(quality.get("live_execution_allowed"))
+        provider_status = str(quality.get("provider_status") or "unverified").lower()
+        bar_coverage = float(quality.get("bar_coverage") or 0.0)
+        fundamental_coverage = float(quality.get("fundamental_coverage") or 0.0)
+        dataset_fingerprint = str(quality.get("dataset_fingerprint") or "").lower()
         details = {
             "source_snapshot_id": snapshot.source_snapshot_id,
             "as_of": as_of.isoformat(),
             "age_minutes": round(age_minutes, 3),
             "max_age_minutes": max_age,
             "live_execution_allowed": live_allowed,
-            "provider_status": quality.get("provider_status"),
+            "provider_status": provider_status,
+            "bar_coverage": bar_coverage,
+            "fundamental_coverage": fundamental_coverage,
             "provider_failure_count": int(quality.get("provider_failure_count") or 0),
+            "dataset_fingerprint": dataset_fingerprint or None,
         }
-        return live_allowed and age_minutes <= max_age, details
+        return (
+            live_allowed
+            and provider_status == "verified"
+            and bar_coverage >= 1.0
+            and fundamental_coverage >= 1.0
+            and _SHA256_RE.fullmatch(dataset_fingerprint) is not None
+            and age_minutes <= max_age
+        ), details
 
     def _consecutive_cycle_errors(self) -> int:
         count = 0
@@ -311,4 +381,108 @@ class HealthEvaluator:
             "reconciliation_status": latest.status,
             "blocks_auto_execution": latest.blocks_auto_execution,
             "checked_at": latest.checked_at.isoformat(),
+        }
+
+    def _paper_shadow_check(
+        self,
+        live_requested: bool,
+        policy: Any,
+        checked_at: datetime,
+    ) -> tuple[bool, dict[str, Any]]:
+        if not live_requested:
+            return True, {"required": False, "reason": "not_required"}
+        details = dict(
+            self.state.get_paper_shadow_gate(
+                required_trading_days=policy.min_paper_shadow_trading_days,
+                as_of=checked_at,
+            )
+        )
+        details["required"] = True
+        return bool(details.get("passed")), details
+
+    def _strategy_acceptance_check(
+        self,
+        live_requested: bool,
+        snapshot_details: dict[str, Any],
+    ) -> tuple[bool, dict[str, Any]]:
+        if not live_requested:
+            return True, {"required": False, "reason": "not_required"}
+        source_snapshot_id = str(snapshot_details.get("source_snapshot_id") or "")
+        dataset_fingerprint = str(snapshot_details.get("dataset_fingerprint") or "")
+        recommendations = (
+            self.state.recommendation_repo.list_by_source_snapshot(source_snapshot_id, limit=1)
+            if source_snapshot_id
+            else []
+        )
+        strategy_config_id = recommendations[0].strategy_config_id if recommendations else None
+        accepted = (
+            self.state.backtest_run_repo.latest_accepted(
+                strategy_config_id=strategy_config_id,
+                dataset_fingerprint=dataset_fingerprint,
+            )
+            if strategy_config_id and dataset_fingerprint
+            else None
+        )
+        return accepted is not None, {
+            "required": True,
+            "source_snapshot_id": source_snapshot_id or None,
+            "strategy_config_id": strategy_config_id,
+            "dataset_fingerprint": dataset_fingerprint or None,
+            "backtest_run_id": accepted.run_id if accepted is not None else None,
+            "reason": None if accepted is not None else "accepted_out_of_sample_backtest_missing",
+        }
+
+    def _broker_protection_check(self, live_requested: bool) -> tuple[bool, dict[str, Any]]:
+        if not live_requested:
+            return True, {"required": False, "reason": "not_required"}
+        open_holdings = self.state.list_open_holdings()
+        live_orders = [
+            order
+            for order in self.state.list_paper_orders(limit=1000)
+            if order.execution_mode == OrderExecutionMode.LIVE
+            and not order.dry_run
+            and order.side == Direction.BUY
+            and order.filled_qty > 0
+        ]
+        failures: list[dict[str, Any]] = []
+        active_statuses = {"new", "accepted", "held", "pending_new", "partially_filled"}
+        for holding in open_holdings:
+            matching = [
+                order
+                for order in live_orders
+                if order.recommendation_id == holding.source_recommendation_id
+            ]
+            order = matching[0] if matching else None
+            legs = list(order.broker_protection) if order is not None else []
+            stop_legs = [
+                leg
+                for leg in legs
+                if str(leg.get("order_type") or "").lower() in {"stop", "stop_limit"}
+                and leg.get("stop_price") is not None
+            ]
+            target_legs = [
+                leg
+                for leg in legs
+                if str(leg.get("order_type") or "").lower() == "limit"
+                and leg.get("limit_price") is not None
+            ]
+            active = bool(stop_legs and target_legs) and all(
+                str(leg.get("status") or "unknown").lower() in active_statuses
+                for leg in [*stop_legs, *target_legs]
+            )
+            if not active:
+                failures.append(
+                    {
+                        "ticker": holding.ticker,
+                        "order_id": order.id if order is not None else None,
+                        "reason": "active_native_bracket_missing",
+                        "protection_legs": legs,
+                    }
+                )
+        return not failures, {
+            "required": True,
+            "open_holding_count": len(open_holdings),
+            "protected_holding_count": len(open_holdings) - len(failures),
+            "failures": failures,
+            "reason": None if not failures else "broker_protection_not_ready",
         }

@@ -14,7 +14,11 @@ from domain.entities.models import (
 )
 from services.ingestion.mock_provider import MockMarketDataProvider
 from services.ranking.pipeline import ResearchPipeline
-from services.research.backtest_engine import BacktestEngine, OpenPosition
+from services.research.backtest_engine import (
+    BacktestAcceptanceThresholds,
+    BacktestEngine,
+    OpenPosition,
+)
 
 
 def test_backtest_engine_produces_historical_metrics() -> None:
@@ -25,7 +29,7 @@ def test_backtest_engine_produces_historical_metrics() -> None:
         validation_calls.append((start, end))
         return {
             "status": "verified",
-            "dataset_fingerprint": "unit-test-dataset-fingerprint",
+            "dataset_fingerprint": "a" * 64,
         }
 
     provider.validate_backtest_data = validate_backtest_data  # type: ignore[attr-defined]
@@ -71,6 +75,13 @@ def test_backtest_engine_produces_historical_metrics() -> None:
     assert result.assumptions["calendar"] == "XNYS"
     assert result.assumptions["same_bar_stop_target_priority"] == "stop_first_conservative"
     assert result.assumptions["point_in_time_validation"]["status"] == "verified"
+    assert result.dataset_fingerprint == "a" * 64
+    assert result.strategy_config_id.startswith("strat_")
+    assert "profit_factor" in result.segments["out_of_sample"]
+    assert "sharpe" in result.segments["out_of_sample"]
+    assert set(result.market_regimes) == {"bull", "sideways", "bear"}
+    assert result.acceptance["passed"] is False
+    assert "out_of_sample_trade_count" in result.acceptance["reasons"]
     assert validation_calls == [(request.start_date, request.end_date)]
     assert sum(trade["side"] == "buy" for trade in result.trades) == result.metrics["traded_count"]
     buy_times = [trade["entry_at"] for trade in result.trades if trade["side"] == "buy"]
@@ -80,7 +91,7 @@ def test_backtest_engine_produces_historical_metrics() -> None:
     repeated_provider.validate_backtest_data = (  # type: ignore[attr-defined]
         lambda _start, _end: {
             "status": "verified",
-            "dataset_fingerprint": "unit-test-dataset-fingerprint",
+            "dataset_fingerprint": "a" * 64,
         }
     )
     repeated = BacktestEngine().run(
@@ -97,7 +108,7 @@ def test_backtest_engine_produces_historical_metrics() -> None:
     changed_provider.validate_backtest_data = (  # type: ignore[attr-defined]
         lambda _start, _end: {
             "status": "verified",
-            "dataset_fingerprint": "changed-unit-test-dataset-fingerprint",
+            "dataset_fingerprint": "b" * 64,
         }
     )
     changed = BacktestEngine().run(
@@ -150,6 +161,7 @@ def test_backtest_applies_splits_dividends_gap_stops_and_bilateral_costs() -> No
             recommendation_id="rec-1",
             source_snapshot_id="snapshot-1",
             last_processed_at=entry_at,
+            entry_fee=10.0,
         )
     }
     request = BacktestRunRequest(
@@ -173,6 +185,13 @@ def test_backtest_applies_splits_dividends_gap_stops_and_bilateral_costs() -> No
     assert trades[0]["qty"] == 20
     assert trades[0]["exit_price"] < bar.open
     assert trades[0]["dividends"] == 20
+    assert trades[0]["entry_fee"] == 10.0
+    assert trades[0]["realized_pnl"] == pytest.approx(
+        (trades[0]["exit_price"] - trades[0]["entry_price"]) * trades[0]["qty"]
+        - trades[0]["fee"]
+        - trades[0]["entry_fee"]
+        + trades[0]["dividends"]
+    )
     assert stats["corporate_actions"] == 2
     assert stats["gap_fills"] == 1
     assert stats["fees"] > 0
@@ -268,3 +287,33 @@ def test_confidence_calibration_reports_brier_score_and_ece() -> None:
     assert calibration["sample_count"] == 2
     assert calibration["brier_score"] == pytest.approx(0.325)
     assert calibration["ece"] == pytest.approx(0.35)
+
+
+def test_backtest_acceptance_requires_every_out_of_sample_threshold() -> None:
+    out_of_sample = {
+        "trade_count": 100,
+        "max_drawdown": 0.15,
+        "profit_factor": 1.20,
+        "profit_factor_infinite": False,
+        "sharpe": 0.80,
+        "payoff_ratio": 1.50,
+        "payoff_ratio_infinite": False,
+        "expectancy_after_cost": 0.001,
+    }
+    metrics = {"max_position_exposure": 0.10, "max_sector_exposure": 0.30}
+
+    accepted = BacktestEngine._acceptance(
+        segments={"out_of_sample": out_of_sample},
+        metrics=metrics,
+        thresholds=BacktestAcceptanceThresholds(),
+    )
+    rejected = BacktestEngine._acceptance(
+        segments={"out_of_sample": {**out_of_sample, "trade_count": 99}},
+        metrics=metrics,
+        thresholds=BacktestAcceptanceThresholds(),
+    )
+
+    assert accepted["passed"] is True
+    assert accepted["reasons"] == []
+    assert rejected["passed"] is False
+    assert rejected["reasons"] == ["out_of_sample_trade_count"]

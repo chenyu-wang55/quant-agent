@@ -366,6 +366,7 @@ def _auto_execute_cycle(
                     dry_run=dry_run,
                     confirm_live=confirm_live,
                 ),
+                automatic=live_execution_requested,
             )
             control_adjustment = _post_sell_control_adjustment(
                 alert=alert,
@@ -663,6 +664,7 @@ def _auto_execute_cycle(
             order = state.submit_order(
                 recommendation=recommendation,
                 request=request,
+                automatic=live_execution_requested,
             )
             open_tickers.add(ticker)
             buy_count += 1

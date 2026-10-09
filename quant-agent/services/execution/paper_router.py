@@ -43,6 +43,7 @@ class PaperExecutionRouter:
             submitted_at=submitted_at,
             status=PaperOrderStatus.FILLED,
             simulated_fill_price=round(fill_price, 4),
+            filled_qty=request.qty,
             filled_at=submitted_at,
             cancel_reason=None,
         )

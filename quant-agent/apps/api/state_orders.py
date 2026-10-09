@@ -151,19 +151,24 @@ class OrderStateMixin:
                 "status": order.status.value,
                 "broker_order_id": order.broker_order_id,
                 "adapter_message": order.adapter_message,
+                "filled_qty": order.filled_qty,
+                "broker_protection": order.broker_protection,
             },
         )
         events = [routed_event, *(extra_events or [])]
-        if order.status == PaperOrderStatus.FILLED and order.simulated_fill_price is not None:
+        if order.filled_qty > 0 and order.simulated_fill_price is not None:
+            fill_key = str(round(order.filled_qty, 6)).replace(".", "_")
             events.append(
                 SystemEvent(
-                    id=f"paper_fill_{order.id}",
+                    id=f"paper_fill_{order.id}_{fill_key}",
                     event_type=EventType.PAPER_FILL,
                     payload={
                         "order_id": order.id,
                         "recommendation_id": order.recommendation_id,
                         "status": order.status.value,
                         "fill_price": order.simulated_fill_price,
+                        "filled_qty": order.filled_qty,
+                        "order_qty": order.qty,
                     },
                 )
             )
@@ -248,8 +253,20 @@ class OrderStateMixin:
         *,
         recommendation: Recommendation,
         request: PaperOrderRequest,
+        automatic: bool = False,
     ) -> PaperOrder:
         """Persist the order intent before routing and collapse concurrent retries."""
+
+        if (
+            request.execution_mode == OrderExecutionMode.LIVE
+            and not request.dry_run
+            and request.confirm_live
+        ):
+            self.require_execution_readiness(
+                recommendation_id=recommendation.id,
+                source_snapshot_id=recommendation.source_snapshot_id,
+                automatic=automatic,
+            )
 
         intent = self.execution_router.prepare_intent(
             recommendation=recommendation,
@@ -382,6 +399,10 @@ class OrderStateMixin:
         )
 
         if order.execution_mode == OrderExecutionMode.LIVE and not order.dry_run:
+            self.require_execution_readiness(
+                recommendation_id=recommendation.id,
+                source_snapshot_id=order.source_snapshot_id or recommendation.source_snapshot_id,
+            )
             broker_adapter = self.execution_router.broker_adapter
             if broker_adapter is None:
                 raise BrokerAdapterError("Live broker execution adapter is not configured")
@@ -530,6 +551,7 @@ class OrderStateMixin:
             update={
                 "status": PaperOrderStatus.FILLED,
                 "simulated_fill_price": round(request.fill_price, 6),
+                "filled_qty": order.qty,
                 "filled_at": filled_at,
                 "cancel_reason": None,
                 "adapter_message": (
@@ -552,6 +574,69 @@ class OrderStateMixin:
                 return order
         return self.get_paper_order_by_broker_order_id(snapshot.broker_order_id)
 
+    def _apply_broker_buy_progress(
+        self,
+        *,
+        order: PaperOrder,
+        snapshot: BrokerOrderStatusSnapshot,
+        checked_at: datetime,
+        apply_to_ledger: bool | None,
+        updated_by: str,
+        broker: str,
+    ) -> tuple[PaperOrder, bool]:
+        cumulative_qty = (
+            float(snapshot.filled_qty)
+            if snapshot.filled_qty is not None
+            else order.qty if snapshot.status == BrokerOrderSyncStatus.FILLED else order.filled_qty
+        )
+        if cumulative_qty + 1e-9 < order.filled_qty:
+            raise ValueError("Broker cumulative filled_qty moved backwards")
+        if cumulative_qty > order.qty + 1e-9:
+            raise ValueError("Broker cumulative filled_qty exceeds local order qty")
+        if cumulative_qty > order.filled_qty + 1e-9 and snapshot.fill_price is None:
+            raise ValueError("Broker fill progress is missing fill_price")
+
+        final_fill = snapshot.status == BrokerOrderSyncStatus.FILLED or cumulative_qty >= order.qty - 1e-9
+        status = PaperOrderStatus.FILLED if final_fill else PaperOrderStatus.SUBMITTED
+        protection = snapshot.broker_protection or order.broker_protection
+        changed = (
+            abs(cumulative_qty - order.filled_qty) > 1e-9
+            or order.status != status
+            or protection != order.broker_protection
+        )
+        fill_price = (
+            round(float(snapshot.fill_price), 6)
+            if snapshot.fill_price is not None
+            else order.simulated_fill_price
+        )
+        effective_apply = (not order.dry_run) if apply_to_ledger is None else apply_to_ledger
+        progress_note = (
+            f"filled_by={updated_by}:{broker}; "
+            f"apply_to_ledger={str(effective_apply).lower()}"
+        )
+        if snapshot.broker_message or snapshot.reason:
+            progress_note = f"{progress_note}; note={snapshot.broker_message or snapshot.reason}"
+        updated = order.model_copy(
+            update={
+                "status": status,
+                "simulated_fill_price": fill_price,
+                "filled_qty": round(cumulative_qty, 6),
+                "filled_at": snapshot.filled_at or checked_at if cumulative_qty > 0 else order.filled_at,
+                "cancel_reason": None,
+                "broker_protection": protection,
+                "adapter_message": (
+                    f"{order.adapter_message}; {progress_note}"
+                    if order.adapter_message
+                    else progress_note
+                ),
+            }
+        )
+        recommendation = self._get_recommendation_by_id(order.recommendation_id) if effective_apply else None
+        if effective_apply and cumulative_qty > 0 and recommendation is None:
+            raise ValueError("Recommendation id not found for broker fill ledger application")
+        self.record_paper_order(updated, recommendation=recommendation)
+        return updated, changed
+
     def sync_broker_order_statuses(self, request: BrokerOrderSyncRequest) -> BrokerOrderSyncResult:
         checked_at = request.checked_at or datetime.now(timezone.utc)
         if checked_at.tzinfo is None:
@@ -561,6 +646,7 @@ class OrderStateMixin:
 
         items: list[BrokerOrderSyncItemResult] = []
         filled_count = 0
+        partially_filled_count = 0
         canceled_count = 0
         unchanged_count = 0
         skipped_count = 0
@@ -585,37 +671,30 @@ class OrderStateMixin:
             apply_to_ledger = (
                 snapshot.apply_to_ledger if snapshot.apply_to_ledger is not None else request.apply_fills_to_ledger
             )
-            broker_note = snapshot.broker_message or snapshot.reason
             try:
-                if snapshot.status == BrokerOrderSyncStatus.FILLED:
-                    if order.status == PaperOrderStatus.CANCELED:
-                        skipped_count += 1
-                        items.append(
-                            BrokerOrderSyncItemResult(
-                                order_id=order.id,
-                                broker_order_id=order.broker_order_id,
-                                broker_status=snapshot.status,
-                                action="skipped",
-                                before_status=before_status,
-                                after_status=order.status,
-                                apply_to_ledger=apply_to_ledger,
-                                message_cn="本地订单已取消，跳过 broker fill。",
-                            )
-                        )
-                        continue
-                    updated = self.fill_paper_order(
-                        order.id,
-                        PaperOrderFillRequest(
-                            fill_price=float(snapshot.fill_price or 0.0),
-                            filled_at=snapshot.filled_at or checked_at,
-                            filled_by=f"{request.updated_by}:{request.broker}",
-                            apply_to_ledger=apply_to_ledger,
-                            note=broker_note,
-                        ),
+                if snapshot.status in {
+                    BrokerOrderSyncStatus.FILLED,
+                    BrokerOrderSyncStatus.PARTIALLY_FILLED,
+                }:
+                    updated, changed = self._apply_broker_buy_progress(
+                        order=order,
+                        snapshot=snapshot,
+                        checked_at=checked_at,
+                        apply_to_ledger=apply_to_ledger,
+                        updated_by=request.updated_by,
+                        broker=request.broker,
                     )
-                    action = "unchanged" if before_status == PaperOrderStatus.FILLED else "filled"
+                    action = (
+                        "filled"
+                        if updated.status == PaperOrderStatus.FILLED and before_status != PaperOrderStatus.FILLED
+                        else "partially_filled"
+                        if snapshot.status == BrokerOrderSyncStatus.PARTIALLY_FILLED and changed
+                        else "unchanged"
+                    )
                     if action == "filled":
                         filled_count += 1
+                    elif action == "partially_filled":
+                        partially_filled_count += 1
                     else:
                         unchanged_count += 1
                     items.append(
@@ -627,7 +706,13 @@ class OrderStateMixin:
                             before_status=before_status,
                             after_status=updated.status,
                             apply_to_ledger=apply_to_ledger,
-                            message_cn="已回写 broker 成交。" if action == "filled" else "订单已是 filled。",
+                            message_cn=(
+                                "已回写 broker 全部成交。"
+                                if action == "filled"
+                                else "已增量回写 broker 部分成交。"
+                                if action == "partially_filled"
+                                else "broker 成交进度未变化。"
+                            ),
                         )
                     )
                 elif snapshot.status in {BrokerOrderSyncStatus.CANCELED, BrokerOrderSyncStatus.REJECTED}:
@@ -645,6 +730,20 @@ class OrderStateMixin:
                             )
                         )
                         continue
+                    if snapshot.filled_qty is not None and snapshot.filled_qty > order.filled_qty + 1e-9:
+                        order, _ = self._apply_broker_buy_progress(
+                            order=order,
+                            snapshot=snapshot,
+                            checked_at=checked_at,
+                            apply_to_ledger=apply_to_ledger,
+                            updated_by=request.updated_by,
+                            broker=request.broker,
+                        )
+                    elif snapshot.broker_protection and snapshot.broker_protection != order.broker_protection:
+                        order = order.model_copy(
+                            update={"broker_protection": snapshot.broker_protection}
+                        )
+                        self.record_paper_order(order)
                     reason = snapshot.reason or f"{snapshot.status.value}_by_{request.broker}"
                     if snapshot.broker_message:
                         reason = f"{reason}; {snapshot.broker_message}"
@@ -673,16 +772,28 @@ class OrderStateMixin:
                         )
                     )
                 else:
-                    unchanged_count += 1
+                    updated = order
+                    if snapshot.broker_protection and snapshot.broker_protection != order.broker_protection:
+                        updated = order.model_copy(
+                            update={"broker_protection": snapshot.broker_protection}
+                        )
+                        self.record_paper_order(updated)
+                    action = "protection_updated" if updated is not order else "unchanged"
+                    if action == "unchanged":
+                        unchanged_count += 1
                     items.append(
                         BrokerOrderSyncItemResult(
                             order_id=order.id,
                             broker_order_id=order.broker_order_id,
                             broker_status=snapshot.status,
-                            action="unchanged",
+                            action=action,
                             before_status=before_status,
-                            after_status=order.status,
-                            message_cn="broker 仍显示 submitted，本地保持不变。",
+                            after_status=updated.status,
+                            message_cn=(
+                                "已更新 Broker 止盈/止损保护子单。"
+                                if action == "protection_updated"
+                                else "broker 仍显示 submitted，本地保持不变。"
+                            ),
                         )
                     )
             except ValueError as exc:
@@ -706,6 +817,7 @@ class OrderStateMixin:
             checked_at=checked_at,
             total_count=len(request.statuses),
             filled_count=filled_count,
+            partially_filled_count=partially_filled_count,
             canceled_count=canceled_count,
             unchanged_count=unchanged_count,
             skipped_count=skipped_count,
@@ -719,6 +831,7 @@ class OrderStateMixin:
                 "checked_at": result.checked_at.isoformat(),
                 "total_count": result.total_count,
                 "filled_count": result.filled_count,
+                "partially_filled_count": result.partially_filled_count,
                 "canceled_count": result.canceled_count,
                 "unchanged_count": result.unchanged_count,
                 "skipped_count": result.skipped_count,
