@@ -12,7 +12,7 @@ annotated-types==0.7.0
     # via pydantic
 anyio==4.14.2
     # via
-    #   httpx
+    #   httpx2
     #   starlette
     #   watchfiles
 ast-serialize==0.6.0
@@ -22,8 +22,6 @@ beautifulsoup4==4.15.0
 certifi==2026.6.17
     # via
     #   curl-cffi
-    #   httpcore
-    #   httpx
     #   requests
 cffi==2.1.0
     # via curl-cffi
@@ -37,24 +35,24 @@ curl-cffi==0.15.0
     # via yfinance
 exchange-calendars==4.13.2
     # via quant-agent (pyproject.toml)
-fastapi==0.139.0
+fastapi==0.143.0
     # via quant-agent (pyproject.toml)
 greenlet==3.5.3
     # via sqlalchemy
 h11==0.16.0
     # via
-    #   httpcore
+    #   httpcore2
     #   uvicorn
-httpcore==1.0.9
-    # via httpx
+httpcore2==2.13.1
+    # via httpx2
 httptools==0.8.0
     # via uvicorn
-httpx==0.28.1
+httpx2==2.13.1
     # via quant-agent (pyproject.toml)
 idna==3.18
     # via
     #   anyio
-    #   httpx
+    #   httpx2
     #   requests
 iniconfig==2.3.0
     # via pytest
@@ -83,6 +81,8 @@ numpy==2.5.1
     #   exchange-calendars
     #   pandas
     #   yfinance
+opentelemetry-api==1.45.1
+    # via fastapi
 packaging==26.2
     # via pytest
 pandas==3.0.6
@@ -148,12 +148,17 @@ starlette==1.3.1
     # via fastapi
 toolz==1.1.0
     # via exchange-calendars
+truststore==0.10.4
+    # via
+    #   httpcore2
+    #   httpx2
 typing-extensions==4.16.0
     # via
     #   alembic
     #   beautifulsoup4
     #   fastapi
     #   mypy
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   sqlalchemy
@@ -166,7 +171,7 @@ tzdata==2026.3
     # via exchange-calendars
 urllib3==2.7.0
     # via requests
-uvicorn==0.51.0
+uvicorn==0.54.0
     # via quant-agent (pyproject.toml)
 uvloop==0.22.1
     # via uvicorn
