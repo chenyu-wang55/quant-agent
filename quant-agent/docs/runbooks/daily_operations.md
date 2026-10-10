@@ -11,18 +11,18 @@
 ## Commands
 
 ```bash
-python -m apps.worker.main pre_market_ingestion
-python -m apps.worker.main intraday_refresh
-python -m apps.worker.main end_of_day_reconciliation
-python -m apps.worker.main nightly_backtest_batch
-python -m apps.worker.main daily_metrics_aggregation
-python -m apps.worker.main process_event_queue
-python -m apps.worker.main monitor_positions_alerts
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 --auto-execute-approved --auto-execution-mode paper
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 --auto-approve-recommendations --auto-approve-min-confidence 0.72 --auto-execute-approved --auto-execution-mode paper
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 --use-autopilot-policy
-python -m apps.worker.main system_cycle_loop --interval-seconds 300 --use-autopilot-policy
+.venv/bin/python -m apps.worker.main pre_market_ingestion
+.venv/bin/python -m apps.worker.main intraday_refresh
+.venv/bin/python -m apps.worker.main end_of_day_reconciliation
+.venv/bin/python -m apps.worker.main nightly_backtest_batch
+.venv/bin/python -m apps.worker.main daily_metrics_aggregation
+.venv/bin/python -m apps.worker.main process_event_queue
+.venv/bin/python -m apps.worker.main monitor_positions_alerts
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 --auto-execute-approved --auto-execution-mode paper
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 --auto-approve-recommendations --auto-approve-min-confidence 0.72 --auto-execute-approved --auto-execution-mode paper
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 --use-autopilot-policy
+.venv/bin/python -m apps.worker.main system_cycle_loop --interval-seconds 300 --use-autopilot-policy
 ```
 
 Run commands from the locked repository environment (`.venv/bin/python`). Before any persistent

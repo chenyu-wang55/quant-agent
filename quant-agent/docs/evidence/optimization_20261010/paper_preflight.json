@@ -1,0 +1,122 @@
+{
+  "checks": [
+    {
+      "details": {
+        "actual": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+        "expected": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+        "version": "3.13.1"
+      },
+      "message": "running from repository .venv",
+      "name": "python_environment",
+      "status": "pass"
+    },
+    {
+      "details": {
+        "mismatched": [],
+        "missing": []
+      },
+      "message": "installed dependencies match requirements.lock",
+      "name": "dependency_lock",
+      "status": "pass"
+    },
+    {
+      "details": {},
+      "message": "production mode is active",
+      "name": "runtime_mode",
+      "status": "pass"
+    },
+    {
+      "details": {
+        "access_password_configured": true,
+        "auth_disabled": false,
+        "signing_secret_configured": true
+      },
+      "message": "authentication secrets are configured",
+      "name": "authentication",
+      "status": "pass"
+    },
+    {
+      "details": {
+        "path": null
+      },
+      "message": "POINT_IN_TIME_UNIVERSE_CSV is missing or not a file",
+      "name": "point_in_time_universe",
+      "status": "fail"
+    },
+    {
+      "details": {
+        "path": null
+      },
+      "message": "POINT_IN_TIME_FUNDAMENTALS_CSV is missing or not a file",
+      "name": "point_in_time_fundamentals",
+      "status": "fail"
+    },
+    {
+      "details": {
+        "path": null
+      },
+      "message": "POINT_IN_TIME_EVENTS_CSV is missing or not a file",
+      "name": "point_in_time_events",
+      "status": "fail"
+    },
+    {
+      "details": {
+        "path": null
+      },
+      "message": "POINT_IN_TIME_EARNINGS_CSV is missing or not a file",
+      "name": "point_in_time_earnings",
+      "status": "fail"
+    },
+    {
+      "details": {
+        "path": null
+      },
+      "message": "POINT_IN_TIME_VALIDATION_REPORT is missing or not a file",
+      "name": "point_in_time_validation_report",
+      "status": "fail"
+    },
+    {
+      "details": {
+        "expected_revision": "20260721_0037",
+        "path": "/Users/chenyu/Desktop/auto/quant/quant-agent/quant_agent_v2.db",
+        "quick_check": "ok",
+        "revision": "20260721_0037"
+      },
+      "message": "database integrity and migration revision are current",
+      "name": "database",
+      "status": "pass"
+    },
+    {
+      "details": {
+        "enabled": true,
+        "reason": "maintenance safety lock after test database recovery"
+      },
+      "message": "kill switch state satisfies requirement: enabled",
+      "name": "kill_switch_initial_state",
+      "status": "pass"
+    },
+    {
+      "details": {
+        "adapter": null,
+        "api_key_configured": false,
+        "api_secret_configured": false,
+        "base_url": null,
+        "target": "paper"
+      },
+      "message": "broker configuration matches target",
+      "name": "broker_configuration",
+      "status": "pass"
+    },
+    {
+      "details": {
+        "path": "/Users/chenyu/Library/Logs/com.quant-agent.api.json.log"
+      },
+      "message": "structured log directory is writable",
+      "name": "logging",
+      "status": "pass"
+    }
+  ],
+  "passed": false,
+  "status": "blocked",
+  "target": "paper"
+}

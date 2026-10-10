@@ -1,0 +1,20 @@
+{
+  "status": "draft",
+  "gold_path": null,
+  "gold_sha256": null,
+  "minimum_cases": 200,
+  "minimum_frozen_test_cases": 60,
+  "group_by": [
+    "issuer",
+    "event",
+    "time"
+  ],
+  "minimum_field_precision": 0.95,
+  "minimum_event_recall": 0.9,
+  "minimum_validated_coverage": 0.9,
+  "candidates": [],
+  "paid_calls_enabled": false,
+  "daily_budget_usd": null,
+  "run_budget_usd": null,
+  "note": "Offline fault fixtures are regression tests, not authorized human gold samples."
+}

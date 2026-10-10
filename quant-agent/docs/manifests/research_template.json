@@ -1,0 +1,33 @@
+{
+  "status": "draft",
+  "data_kind": "unconfigured",
+  "dataset_fingerprint": null,
+  "strategy_config_id": null,
+  "labels_sha256": null,
+  "target": "positive net return at the frozen exit rule, within 10 XNYS sessions, after bilateral fees/slippage",
+  "costs": {
+    "transaction_cost_bps_per_side": 10,
+    "slippage_bps_per_side": 5,
+    "stress_multipliers": [
+      1,
+      1.5,
+      2
+    ]
+  },
+  "bins": 10,
+  "minimum_labels_per_partition": 100,
+  "windows": {
+    "start": null,
+    "end": null,
+    "train_months": 36,
+    "validation_months": 6,
+    "oos_months": 6,
+    "step_months": 6,
+    "holdout_months": 12,
+    "minimum_windows": 3,
+    "embargo_days": 14
+  },
+  "candidate_adoption": "separate OOS return/risk gates, confidence intervals, cost stress and untouched holdout required",
+  "authorization_sources": [],
+  "note": "Fill real authorized sources, dates, hashes and strategy; freeze before evaluating. Mock cannot satisfy acceptance."
+}

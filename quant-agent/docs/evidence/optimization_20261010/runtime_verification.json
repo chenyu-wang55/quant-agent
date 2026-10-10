@@ -1,0 +1,39 @@
+{
+  "/health/live": {
+    "status": 200
+  },
+  "/recommendations": {
+    "status": 401
+  },
+  "/openapi.json": {
+    "status": 200
+  },
+  "/execution/kill-switch": {
+    "status": 200,
+    "enabled": true
+  },
+  "/execution/autopilot-policy": {
+    "status": 200,
+    "enabled": false,
+    "auto_execute_approved": false,
+    "mode": "paper"
+  },
+  "/execution/paper-shadow-readiness": {
+    "status": 200,
+    "observed_trading_days": 0,
+    "passed": false
+  },
+  "/health/ready": {
+    "status": 503
+  },
+  "preflight": {
+    "status": "blocked",
+    "failures": [
+      "point_in_time_universe",
+      "point_in_time_fundamentals",
+      "point_in_time_events",
+      "point_in_time_earnings",
+      "point_in_time_validation_report"
+    ]
+  }
+}

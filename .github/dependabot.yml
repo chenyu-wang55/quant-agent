@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /quant-agent
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      data:
+        patterns: ["yfinance", "pandas", "numpy"]
+      web:
+        patterns: ["fastapi", "starlette", "pydantic*", "uvicorn", "httpx*"]
+      database:
+        patterns: ["sqlalchemy", "alembic", "greenlet"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
