@@ -119,6 +119,7 @@ from services.execution.broker_adapter import (
     BrokerOrderPlacement,
 )
 from services.execution.market_calendar import xnys_session
+from services.execution.protection import check_native_protection
 from services.execution.readiness import ExecutionReadinessGate, ExecutionReadinessResult
 from services.execution.router import ExecutionRouter
 from services.ingestion.interfaces import DataProvider
@@ -148,6 +149,10 @@ class TradingStateMixin:
         adapter = self.execution_router.broker_adapter
         adapter_name = str(getattr(adapter, "name", "") or "").lower()
         fake_test_execution = settings.test_mode and adapter_name not in {"", "alpaca"}
+        protection_passed, protection_details = (
+            (True, {"test_fake_adapter_bypass": True}) if fake_test_execution
+            else check_native_protection(self, checked_at=checked_at)
+        )
         reconciliation = (
             {
                 "passed": True,
@@ -211,11 +216,12 @@ class TradingStateMixin:
         ).evaluate(
             source_snapshot_id=source_snapshot_id,
             snapshot=snapshot,
-            kill_switch_enabled=self.kill_switch.enabled,
+            kill_switch_enabled=self.get_kill_switch().enabled,
             approval_granted=approval_granted,
             broker_adapter=adapter,
             position_reconciliation=reconciliation,
             strategy_validation=strategy_validation,
+            broker_protection={"passed": protection_passed, **protection_details},
             paper_shadow=paper_shadow,
             automatic=automatic,
             checked_at=checked_at,

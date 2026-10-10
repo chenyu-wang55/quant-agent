@@ -283,6 +283,9 @@ class AlpacaBrokerAdapter:
             legs.append(
                 {
                     "broker_order_id": broker_order_id,
+                    "parent_order_id": str(payload.get("id") or payload.get("order_id") or ""),
+                    "symbol": str(raw.get("symbol") or payload.get("symbol") or "").upper(),
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
                     "client_order_id": raw.get("client_order_id"),
                     "status": str(raw.get("status") or "unknown").lower(),
                     "order_type": str(raw.get("type") or "unknown").lower(),

@@ -7,6 +7,7 @@ import math
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from io import StringIO
 from pathlib import Path
 from typing import Any
 
@@ -129,11 +130,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _load_csv(path: Path, required_columns: set[str], *, label: str) -> list[dict[str, str]]:
+def _load_csv(path: Path, required_columns: set[str], *, label: str, content: bytes | None = None) -> list[dict[str, str]]:
     resolved = path.expanduser().resolve()
     if not resolved.is_file():
         raise PointInTimeValidationError(f"{label} file not found: {resolved}")
-    with resolved.open("r", encoding="utf-8-sig", newline="") as handle:
+    with StringIO((content if content is not None else resolved.read_bytes()).decode("utf-8-sig")) as handle:
         reader = csv.DictReader(handle)
         columns = {str(column).strip() for column in (reader.fieldnames or []) if column}
         missing = sorted(required_columns - columns)
@@ -360,10 +361,16 @@ def validate_point_in_time_dataset(
 
     normalized_universes = {name.strip().upper(): minimum for name, minimum in required_universes.items()}
     trading_points = _trading_points(start, end)
-    universe_rows = _load_csv(paths.universe, _UNIVERSE_COLUMNS, label="universe")
-    fundamental_rows = _load_csv(paths.fundamentals, _FUNDAMENTAL_COLUMNS, label="fundamentals")
-    event_rows = _load_csv(paths.events, _EVENT_COLUMNS, label="events")
-    earnings_rows = _load_csv(paths.earnings, _EARNINGS_COLUMNS, label="earnings")
+    resolved_paths = {name: getattr(paths, name).expanduser().resolve()
+                      for name in ("universe", "fundamentals", "events", "earnings")}
+    try:
+        input_bytes = {name: path.read_bytes() for name, path in resolved_paths.items()}
+    except OSError as exc:
+        raise PointInTimeValidationError("point-in-time input unavailable") from exc
+    universe_rows = _load_csv(paths.universe, _UNIVERSE_COLUMNS, label="universe", content=input_bytes["universe"])
+    fundamental_rows = _load_csv(paths.fundamentals, _FUNDAMENTAL_COLUMNS, label="fundamentals", content=input_bytes["fundamentals"])
+    event_rows = _load_csv(paths.events, _EVENT_COLUMNS, label="events", content=input_bytes["events"])
+    earnings_rows = _load_csv(paths.earnings, _EARNINGS_COLUMNS, label="earnings", content=input_bytes["earnings"])
 
     memberships, universe_report, first_required_at = _validate_memberships(
         universe_rows,
@@ -388,11 +395,14 @@ def validate_point_in_time_dataset(
     file_reports = {
         name: {
             "path": str(path),
-            "bytes": path.stat().st_size,
-            "sha256": _sha256(path),
+            "bytes": len(input_bytes[name]),
+            "sha256": hashlib.sha256(input_bytes[name]).hexdigest(),
         }
         for name, path in resolved_paths.items()
     }
+    for name, path in resolved_paths.items():
+        if not path.is_file() or _sha256(path) != file_reports[name]["sha256"]:
+            raise PointInTimeValidationError("point-in-time input changed during validation")
     fingerprint_payload = {
         "start": start.astimezone(timezone.utc).isoformat(),
         "end": end.astimezone(timezone.utc).isoformat(),

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -104,6 +105,16 @@ class BacktestEngine:
     """Event-driven, long-only portfolio backtest with conservative fill assumptions."""
 
     def run(
+        self,
+        request: BacktestRunRequest,
+        pipeline: ResearchPipeline,
+        template_request: ResearchRunRequest,
+    ) -> BacktestRunResult:
+        scope = getattr(pipeline.provider, "input_session", nullcontext)
+        with scope():
+            return self._run(request, pipeline, template_request)
+
+    def _run(
         self,
         request: BacktestRunRequest,
         pipeline: ResearchPipeline,

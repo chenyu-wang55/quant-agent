@@ -39,7 +39,6 @@ from domain.entities.models import (
 )
 from domain.policies.approval import ApprovalPolicy
 from infra.config import env_flag
-from infra.db.init_db import init_db
 from infra.db.order_unit_of_work import OrderUnitOfWork
 from infra.db.portfolio_risk_reservation import PortfolioRiskReservationRepository
 from infra.db.repositories import (
@@ -63,6 +62,7 @@ from infra.db.repositories import (
     SystemEventRepository,
     TradeLedgerRepository,
 )
+from infra.db.schema_readiness import require_schema
 from infra.db.sell_unit_of_work import SellUnitOfWork
 from infra.observability.alerts import OperationalAlertManager
 from infra.observability.metrics import MetricsStore
@@ -242,7 +242,7 @@ class AppState(
         ready_to_buy: list[OperationRecommendationCandidate] = []
         actions: list[OperationAction] = []
 
-        if self.kill_switch.enabled:
+        if self.get_kill_switch().enabled:
             actions.append(
                 OperationAction(
                     action_type="execution_blocked",
@@ -417,7 +417,7 @@ class AppState(
         )
 
     def __post_init__(self) -> None:
-        init_db()
+        require_schema()
         self.pipeline = ResearchPipeline(provider=self.provider, snapshot_repository=self.source_snapshot_repo)
         self.kill_switch = self.execution_control_repo.get_kill_switch()
         self.autopilot_policy = self.autopilot_policy_repo.get_latest()

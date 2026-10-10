@@ -56,7 +56,7 @@ def _auto_approve_cycle(
     approval_count = 0
     open_tickers = {holding.ticker.upper() for holding in state.list_open_holdings()}
 
-    if state.kill_switch.enabled:
+    if state.get_kill_switch().enabled:
         actions.append(
             {
                 "action": "approve_recommendation",
@@ -215,6 +215,8 @@ def _auto_execute_cycle(
     max_position_pct: float,
     max_gross_exposure_pct: float,
     max_sector_exposure_pct: float,
+    policy_required: bool = False,
+    policy_revision: int | None = None,
 ) -> dict[str, Any]:
     state = get_app_state()
     order_mode, dry_run, confirm_live = _auto_execution_mode(execution_mode)
@@ -237,7 +239,7 @@ def _auto_execute_cycle(
     broker_account_gate: dict[str, Any] | None = None
     account_equity_gate: dict[str, Any] | None = None
 
-    if state.kill_switch.enabled:
+    if state.get_kill_switch().enabled:
         actions.append(
             {
                 "action": "auto_execution",
@@ -367,6 +369,8 @@ def _auto_execute_cycle(
                     confirm_live=confirm_live,
                 ),
                 automatic=live_execution_requested,
+                policy_required=policy_required,
+                policy_revision=policy_revision,
             )
             control_adjustment = _post_sell_control_adjustment(
                 alert=alert,
@@ -665,6 +669,8 @@ def _auto_execute_cycle(
                 recommendation=recommendation,
                 request=request,
                 automatic=live_execution_requested,
+                policy_required=policy_required,
+                policy_revision=policy_revision,
             )
             open_tickers.add(ticker)
             buy_count += 1

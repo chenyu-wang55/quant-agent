@@ -15,6 +15,27 @@ from services.ingestion.mock_provider import MockMarketDataProvider
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
 
 
+def test_backdated_cycle_cannot_manufacture_paper_observation():
+    from apps.worker.main import _paper_shadow_evidence
+    from domain.entities.models import MarketSessionStatus
+    at = datetime(2026, 4, 10, 15, tzinfo=timezone.utc)
+    result = _paper_shadow_evidence(
+        use_autopilot_policy=True,
+        autopilot_policy={"enabled": True, "auto_execute_approved": True, "auto_execution_mode": "paper"},
+        autopilot_preflight={"can_auto_execute": True},
+        auto_execution={"enabled": True, "mode": "paper", "error_count": 0},
+        auto_execution_enabled=True,
+        snapshot_quality_gate={"passed": True, "data_quality": {"provider_status": "verified",
+                               "point_in_time_report_verified": True, "dataset_fingerprint": "a"*64}},
+        daily_loss_gate={"passed": True}, position_reconciliation_gate={"passed": True},
+        market_session=MarketSessionStatus(as_of=at, local_time="11:00", is_weekday=True,
+                                          is_regular_session=True, status="regular"),
+        strategy_config_id="frozen-strategy",
+    )
+    assert not result["qualified"]
+    assert result["reasons"] == ["observed_at_runtime"]
+
+
 def _qualified_shadow_metrics() -> dict[str, object]:
     return {
         "autopilot_policy": {
@@ -30,7 +51,7 @@ def _qualified_shadow_metrics() -> dict[str, object]:
             "error_count": 0,
         },
         "paper_shadow_evidence": {
-            "schema_version": 1,
+            "schema_version": 2,
             "qualified": True,
         },
     }
@@ -44,6 +65,9 @@ def _add_shadow_run(
     metrics: dict[str, object] | None = None,
     auto_execution_enabled: bool = True,
 ) -> None:
+    effective_metrics = deepcopy(metrics if metrics is not None else _qualified_shadow_metrics())
+    if "paper_shadow_evidence" in effective_metrics:
+        effective_metrics["paper_shadow_evidence"].setdefault("signature", state.paper_evidence_signature())
     state.system_cycle_run_repo.add(
         SystemCycleRun(
             id=run_id,
@@ -51,7 +75,7 @@ def _add_shadow_run(
             finished_at=started_at + timedelta(minutes=1),
             status="success",
             auto_execution_enabled=auto_execution_enabled,
-            metrics=metrics or _qualified_shadow_metrics(),
+            metrics=effective_metrics,
         )
     )
 
@@ -64,6 +88,22 @@ def _trading_datetimes(count: int) -> list[datetime]:
             trading_dates.append(cursor)
         cursor += timedelta(days=1)
     return trading_dates
+
+
+def test_behavior_change_resets_count_but_window_toggles_do_not(monkeypatch):
+    state = get_app_state()
+    state.reset()
+    monkeypatch.setenv("QUANT_AGENT_TEST_MODE", "0")
+    at = _trading_datetimes(1)[0]
+    _add_shadow_run(state, run_id="versioned-paper", started_at=at)
+    original = state.get_autopilot_policy()
+    toggled = original.model_copy(update={"enabled": True, "auto_execute_approved": True,
+                                          "auto_execution_mode": AutoExecutionMode.LIVE})
+    assert state.get_paper_shadow_gate(required_trading_days=1, as_of=at+timedelta(days=1), policy=toggled)["passed"]
+    changed = original.model_copy(update={"max_position_pct": 0.05})
+    gate = state.get_paper_shadow_gate(required_trading_days=1, as_of=at+timedelta(days=1), policy=changed)
+    assert not gate["passed"] and gate["observed_trading_days"] == 0
+    state.system_cycle_run_repo.clear_all()
 
 
 def test_paper_autopilot_can_run_before_shadow_gate_but_live_cannot(monkeypatch) -> None:

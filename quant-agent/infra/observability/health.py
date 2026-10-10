@@ -7,10 +7,11 @@ from typing import Any
 
 from sqlalchemy import text
 
-from domain.entities.models import Direction, OrderExecutionMode
 from infra.config import ObservabilitySettings, env_text
+from infra.db.schema_readiness import check_schema
 from infra.db.session import SessionLocal, get_database_url
 from infra.observability.alerts import AlertSpec, OperationalAlertManager
+from services.execution.protection import check_native_protection
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -201,7 +202,7 @@ class HealthEvaluator:
         trading_blockers: list[str] = []
         if not snapshot_ready:
             trading_blockers.append("source_snapshot_not_ready")
-        if self.state.kill_switch.enabled:
+        if self.state.get_kill_switch().enabled:
             trading_blockers.append("kill_switch_enabled")
         if not policy.enabled:
             trading_blockers.append("autopilot_disabled")
@@ -238,7 +239,8 @@ class HealthEvaluator:
         try:
             with SessionLocal() as session:
                 session.execute(text("SELECT 1"))
-            return True, details
+            schema = check_schema()
+            return bool(schema["passed"]), {**details, **schema}
         except Exception as exc:
             details["error_type"] = type(exc).__name__
             details["error"] = str(exc)
@@ -435,54 +437,4 @@ class HealthEvaluator:
     def _broker_protection_check(self, live_requested: bool) -> tuple[bool, dict[str, Any]]:
         if not live_requested:
             return True, {"required": False, "reason": "not_required"}
-        open_holdings = self.state.list_open_holdings()
-        live_orders = [
-            order
-            for order in self.state.list_paper_orders(limit=1000)
-            if order.execution_mode == OrderExecutionMode.LIVE
-            and not order.dry_run
-            and order.side == Direction.BUY
-            and order.filled_qty > 0
-        ]
-        failures: list[dict[str, Any]] = []
-        active_statuses = {"new", "accepted", "held", "pending_new", "partially_filled"}
-        for holding in open_holdings:
-            matching = [
-                order
-                for order in live_orders
-                if order.recommendation_id == holding.source_recommendation_id
-            ]
-            order = matching[0] if matching else None
-            legs = list(order.broker_protection) if order is not None else []
-            stop_legs = [
-                leg
-                for leg in legs
-                if str(leg.get("order_type") or "").lower() in {"stop", "stop_limit"}
-                and leg.get("stop_price") is not None
-            ]
-            target_legs = [
-                leg
-                for leg in legs
-                if str(leg.get("order_type") or "").lower() == "limit"
-                and leg.get("limit_price") is not None
-            ]
-            active = bool(stop_legs and target_legs) and all(
-                str(leg.get("status") or "unknown").lower() in active_statuses
-                for leg in [*stop_legs, *target_legs]
-            )
-            if not active:
-                failures.append(
-                    {
-                        "ticker": holding.ticker,
-                        "order_id": order.id if order is not None else None,
-                        "reason": "active_native_bracket_missing",
-                        "protection_legs": legs,
-                    }
-                )
-        return not failures, {
-            "required": True,
-            "open_holding_count": len(open_holdings),
-            "protected_holding_count": len(open_holdings) - len(failures),
-            "failures": failures,
-            "reason": None if not failures else "broker_protection_not_ready",
-        }
+        return check_native_protection(self.state)

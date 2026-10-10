@@ -131,6 +131,16 @@ logger = logging.getLogger(__name__)
 
 
 class AutopilotStateMixin:
+    def get_kill_switch(self) -> KillSwitchState:
+        try:
+            self.kill_switch = self.execution_control_repo.get_kill_switch()
+        except Exception:
+            logger.exception("Execution control read failed; failing closed")
+            self.kill_switch = KillSwitchState(
+                enabled=True, reason="execution_control_unavailable", updated_by="system"
+            )
+        return self.kill_switch
+
     def decide_recommendation(self, request: ApprovalDecisionRequest) -> RecommendationApproval:
         issues = self.approval_policy.validate(request)
         if issues:
@@ -164,15 +174,25 @@ class AutopilotStateMixin:
         self.autopilot_policy = self.autopilot_policy_repo.get_latest()
         return self.autopilot_policy
 
+    def paper_evidence_signature(self, *, policy: AutopilotPolicy | None = None) -> str:
+        from services.execution.paper_evidence import paper_evidence_signature
+        configs = self.strategy_config_repo.list_recent(limit=1)
+        strategy_id = self.latest_run.strategy_config_id if self.latest_run else (
+            configs[0].strategy_config_id if configs else None
+        )
+        return paper_evidence_signature(strategy_id, policy or self.get_autopilot_policy())
+
     def get_paper_shadow_gate(
         self,
         *,
         required_trading_days: int,
         as_of: datetime | None = None,
+        policy: AutopilotPolicy | None = None,
     ) -> dict[str, Any]:
         checked_at = (as_of or datetime.now(timezone.utc)).astimezone(timezone.utc)
         eastern = ZoneInfo("America/New_York")
-        runs = self.system_cycle_run_repo.list_successful_paper_shadow_runs(checked_at)
+        signature = self.paper_evidence_signature(policy=policy)
+        runs = self.system_cycle_run_repo.list_successful_paper_shadow_runs(checked_at, signature=signature)
         trading_dates = sorted(
             {
                 run.astimezone(eastern).date().isoformat()
@@ -191,6 +211,7 @@ class AutopilotStateMixin:
             "last_trading_date": trading_dates[-1] if trading_dates else None,
             "bypassed_for_test": test_bypass,
             "checked_at": checked_at.isoformat(),
+            "evidence_signature": signature,
         }
 
     def build_paper_shadow_readiness(
@@ -245,7 +266,7 @@ class AutopilotStateMixin:
             )
         )
 
-        if self.kill_switch.enabled:
+        if self.get_kill_switch().enabled:
             reasons.append("kill_switch_enabled")
             checks.append(
                 AutopilotPreflightCheck(
@@ -284,7 +305,7 @@ class AutopilotStateMixin:
             and policy.max_auto_approvals > 0
             and daily_usage["remaining_approvals"] > 0
             and daily_loss_gate["passed"]
-            and not self.kill_switch.enabled
+            and not self.get_kill_switch().enabled
         )
         if not policy.auto_approve_recommendations:
             checks.append(
@@ -348,6 +369,7 @@ class AutopilotStateMixin:
         paper_shadow_gate = self.get_paper_shadow_gate(
             required_trading_days=policy.min_paper_shadow_trading_days,
             as_of=as_of,
+            policy=policy,
         )
         checks.append(
             AutopilotPreflightCheck(
@@ -387,7 +409,7 @@ class AutopilotStateMixin:
             and live_execution_gate["passed"]
             and ((not live_execution_requested) or paper_shadow_gate["passed"])
             and position_reconciliation_gate["passed"]
-            and not self.kill_switch.enabled
+            and not self.get_kill_switch().enabled
         )
         if not policy.auto_execute_approved:
             checks.append(

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from pathlib import Path
@@ -117,10 +120,14 @@ class YFinanceProvider(DataProvider):
         self._info_cache: dict[str, dict[str, Any]] = {}
         self._fast_info_cache: dict[str, dict[str, Any]] = {}
         self._history_cache: dict[tuple[str, str, int], list[MarketBar]] = {}
-        self._csv_cache: dict[str, list[dict[str, str]]] = {}
+        self._csv_cache: dict[str, tuple[str, list[dict[str, str]]]] = {}
+        self._input_depth = 0
+        self._input_pins: dict[str, str] = {}
         self._quality_issues: list[str] = []
         self._fallback_fields: list[str] = []
         self._point_in_time_validation: dict[str, object] = {}
+        self._run_fingerprint: str | None = None
+        self._report_verified = False
 
     @staticmethod
     def _is_rate_limited(exc: Exception) -> bool:
@@ -153,27 +160,91 @@ class YFinanceProvider(DataProvider):
             self._fallback_fields.append(field)
 
     def get_quality_report(self) -> dict[str, object]:
+        self._verify_inputs()
         blocked = bool(self._quality_issues or self._fallback_fields)
-        return {
+        report: dict[str, object] = {
             "status": "blocked" if blocked else "verified",
             "issues": list(self._quality_issues),
             "failures": [],
             "fallback_fields": list(self._fallback_fields),
             "point_in_time_validation": dict(self._point_in_time_validation),
         }
+        if self._run_fingerprint:
+            report.update(dataset_fingerprint=self._run_fingerprint,
+                          point_in_time_report_verified=self._report_verified)
+        return report
+
+    @contextmanager
+    def input_session(self):
+        outer = self._input_depth == 0
+        if outer:
+            self._input_pins = {}
+            self._quality_issues.clear()
+            self._fallback_fields.clear()
+            self._point_in_time_validation = {}
+            self._run_fingerprint = None
+            self._report_verified = False
+            hashes = {}
+            for kind in ("UNIVERSE", "FUNDAMENTALS", "EVENTS", "EARNINGS"):
+                value = env_text(f"POINT_IN_TIME_{kind}_CSV")
+                if value:
+                    path = Path(value).expanduser().resolve()
+                    if not path.is_file():
+                        raise ProviderDataError(f"point-in-time data file not found: {path}")
+                    self._input_pins[str(path)] = hashlib.sha256(path.read_bytes()).hexdigest()
+                    hashes[kind.lower()] = self._input_pins[str(path)]
+            if hashes:
+                self._run_fingerprint = hashlib.sha256(
+                    json.dumps(hashes, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest()
+            report_path = env_text("POINT_IN_TIME_VALIDATION_REPORT")
+            if report_path:
+                try:
+                    report = json.loads(Path(report_path).expanduser().read_text())
+                    if report.get("status") != "verified" or len(report.get("dataset_fingerprint", "")) != 64:
+                        raise ValueError("unverified validation report")
+                    files = report.get("files") or {}
+                    if len(files) != 4 or len(self._input_pins) != 4:
+                        raise ValueError("incomplete validation report")
+                    for detail in files.values():
+                        if self._input_pins.get(str(Path(detail["path"]).resolve())) != detail["sha256"]:
+                            raise ValueError("validation hash mismatch")
+                    self._point_in_time_validation = {"dataset_fingerprint": report["dataset_fingerprint"]}
+                    self._run_fingerprint = report["dataset_fingerprint"]
+                    self._report_verified = True
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    raise ProviderDataError("point-in-time validation report is missing, stale or invalid") from exc
+        self._input_depth += 1
+        try:
+            yield
+            self._verify_inputs()
+        finally:
+            self._input_depth -= 1
+            if outer:
+                self._input_pins = {}
+
+    def _verify_inputs(self) -> None:
+        for name, expected in self._input_pins.items():
+            path = Path(name)
+            if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                raise ProviderDataError("point-in-time input changed during run")
 
     def _csv_rows(self, env_name: str) -> list[dict[str, str]]:
         path_value = env_text(env_name)
         if not path_value:
             raise ProviderDataError(f"{env_name} is required for point-in-time data")
         path = Path(path_value).expanduser().resolve()
-        cache_key = str(path)
-        if cache_key not in self._csv_cache:
-            if not path.is_file():
-                raise ProviderDataError(f"point-in-time data file not found: {path}")
-            with path.open("r", encoding="utf-8-sig", newline="") as handle:
-                self._csv_cache[cache_key] = [dict(row) for row in csv.DictReader(handle)]
-        return self._csv_cache[cache_key]
+        if not path.is_file():
+            raise ProviderDataError(f"point-in-time data file not found: {path}")
+        key = str(path)
+        data = path.read_bytes()
+        digest = hashlib.sha256(data).hexdigest()
+        if self._input_depth and (key not in self._input_pins or self._input_pins[key] != digest):
+            raise ProviderDataError("point-in-time input changed during run")
+        cached = self._csv_cache.get(key)
+        if cached is None or cached[0] != digest:
+            self._csv_cache[key] = (digest, [dict(row) for row in csv.DictReader(StringIO(data.decode("utf-8-sig")))])
+        return [dict(row) for row in self._csv_cache[key][1]]
 
     @staticmethod
     def _parse_utc(value: str, *, end_of_time: bool = False) -> datetime:
@@ -446,6 +517,11 @@ class YFinanceProvider(DataProvider):
             )
         except PointInTimeValidationError as exc:
             raise ProviderDataError(f"point-in-time backtest dataset validation failed: {exc}") from exc
+        self._verify_inputs()
+        if self._input_depth:
+            for details in report["files"].values():
+                if self._input_pins.get(str(Path(details["path"]).resolve())) != details["sha256"]:
+                    raise ProviderDataError("point-in-time validation did not match pinned input")
         self._point_in_time_validation["backtest_range"] = report
         return report
 
@@ -739,55 +815,64 @@ class YFinanceProvider(DataProvider):
             return self._point_in_time_events(tickers, as_of, lookback_days)
         as_of_utc = as_of.astimezone(timezone.utc)
         cutoff = as_of_utc - timedelta(days=lookback_days)
-        events: list[NewsEvent] = []
-
+        events: dict[str, NewsEvent] = {}
         for ticker in tickers:
             items = self._retry(lambda: self._ticker(ticker).news or [], f"yfinance news {ticker}")
-            for idx, item in enumerate(items):
-                ts = item.get("providerPublishTime")
-                if ts is None:
-                    continue
+            if not isinstance(items, list):
+                self._quality_issue(f"news_schema_unknown:{ticker}")
+                continue
+            for item in items:
                 try:
-                    published_at = datetime.fromtimestamp(int(ts), tz=timezone.utc)
-                except Exception:
-                    continue
-                if published_at > as_of_utc:
-                    continue
-                if published_at < cutoff:
-                    continue
-
-                title = str(item.get("title") or "")
-                summary = str(item.get("summary") or title)
-                related = item.get("relatedTickers") or [ticker]
-                source_url = item.get("link")
-                if source_url is None and isinstance(item.get("canonicalUrl"), dict):
-                    source_url = item["canonicalUrl"].get("url")
-                source_url = str(source_url or "")
-
-                sentiment = self._headline_sentiment(title)
-                relevance = 1.0 if ticker in related else 0.7
-                source_id = str(item.get("uuid") or f"{ticker}-{int(ts)}-{idx}")
-
-                events.append(
-                    NewsEvent(
-                        source_id=source_id,
-                        published_at=published_at,
-                        ingested_at=as_of_utc,
-                        headline=title,
-                        normalized_text=summary,
-                        tickers=[str(t).upper() for t in related if t],
-                        event_type=str(item.get("type") or "news"),
-                        sentiment=sentiment,
-                        relevance=relevance,
-                        horizon="short",
-                        source_url=source_url,
-                        source="yfinance_news",
+                    if not isinstance(item, dict):
+                        raise ValueError("news item is not an object")
+                    content = item.get("content", item)
+                    if not isinstance(content, dict):
+                        raise ValueError("news content is not an object")
+                    raw_time = content.get("pubDate") or content.get("providerPublishTime")
+                    if isinstance(raw_time, (int, float)) or (isinstance(raw_time, str) and raw_time.isdigit()):
+                        published_at = datetime.fromtimestamp(int(raw_time), tz=timezone.utc)
+                    else:
+                        published_at = self._parse_utc(str(raw_time or ""))
+                    if not cutoff <= published_at <= as_of_utc:
+                        continue
+                    title = str(content.get("title") or "").strip()
+                    if not title:
+                        raise ValueError("news title missing")
+                    finance = content.get("finance") or {}
+                    related = content.get("relatedTickers") or (
+                        finance.get("stockTickers") if isinstance(finance, dict) else None
+                    ) or [ticker]
+                    if not isinstance(related, list):
+                        raise ValueError("news tickers are not a list")
+                    related = sorted({str(t.get("symbol") or t.get("ticker") or "").upper()
+                                      if isinstance(t, dict) else str(t).upper() for t in related})
+                    related = [t for t in related if t]
+                    if ticker.upper() not in related:
+                        continue
+                    canonical = content.get("canonicalUrl") or content.get("clickThroughUrl") or {}
+                    url = str(content.get("link") or (canonical.get("url") if isinstance(canonical, dict) else "") or "")
+                    source_id = str(content.get("id") or item.get("id") or item.get("uuid") or
+                                    hashlib.sha256(json.dumps([title, published_at.isoformat(), url]).encode()).hexdigest())
+                    provider = content.get("provider") or {}
+                    publisher = provider.get("displayName") if isinstance(provider, dict) else None
+                    event = NewsEvent(
+                        source_id=source_id, published_at=published_at, ingested_at=as_of_utc,
+                        headline=title, normalized_text=str(content.get("summary") or title),
+                        tickers=related, event_type=str(content.get("contentType") or content.get("type") or "news"),
+                        sentiment=self._headline_sentiment(title), relevance=1.0, horizon="short",
+                        source_url=url, source="yfinance_news" + (f"/{publisher}" if publisher else ""),
                         quality_status="verified",
                     )
-                )
-
-        events.sort(key=lambda e: e.published_at, reverse=True)
-        return events
+                    existing = events.get(source_id)
+                    if existing is not None:
+                        if existing.headline != event.headline or existing.published_at != event.published_at:
+                            self._quality_issue(f"news_identity_conflict:{source_id}")
+                            continue
+                        event.tickers = sorted(set(existing.tickers + event.tickers))
+                    events[source_id] = event
+                except (ValueError, TypeError, OverflowError, OSError):
+                    self._quality_issue(f"news_schema_unknown:{ticker}")
+        return sorted(events.values(), key=lambda event: event.published_at, reverse=True)
 
     def get_upcoming_earnings_minutes(self, ticker: str, as_of: datetime) -> int | None:
         as_of_utc = as_of.astimezone(timezone.utc)

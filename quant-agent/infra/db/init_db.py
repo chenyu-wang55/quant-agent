@@ -7,7 +7,6 @@ from pathlib import Path
 from alembic.config import Config
 
 from alembic import command
-from infra.config import env_flag
 from infra.db.session import get_database_url
 
 REQUIRED_TABLES = {
@@ -72,34 +71,20 @@ def init_db() -> None:
     db_url = get_database_url()
     sqlite_path = _sqlite_path_from_url(db_url, root)
 
-    def _reset_and_upgrade_if_needed() -> bool:
-        allow_reset = env_flag("DB_RESET_ON_SCHEMA_CONFLICT")
-        if not allow_reset or sqlite_path is None:
-            return False
-        if sqlite_path.exists():
-            sqlite_path.unlink()
-        command.upgrade(cfg, "head")
-        return True
-
     try:
         command.upgrade(cfg, "head")
     except Exception as exc:
         message = str(exc).lower()
         if "already exists" in message:
-            if _reset_and_upgrade_if_needed():
-                return
             raise RuntimeError(
-                "Database schema conflict detected. Back up the database and set "
-                "DB_RESET_ON_SCHEMA_CONFLICT=1 to allow automatic SQLite rebuild."
+                "Database schema conflict detected. Back up the database and perform "
+                "an explicit reviewed repair; automatic database rebuilding is disabled."
             ) from exc
         raise
 
     if sqlite_path is not None and not _has_required_sqlite_tables(sqlite_path):
-        if _reset_and_upgrade_if_needed():
-            return
         raise RuntimeError(
-            "Database schema is missing required tables. Run Alembic manually or set "
-            "DB_RESET_ON_SCHEMA_CONFLICT=1 after backing up local data."
+            "Database schema is missing required tables. Back up and run explicit maintenance."
         )
 
 

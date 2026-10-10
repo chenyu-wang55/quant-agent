@@ -84,7 +84,7 @@ from domain.entities.models import (
     TradeSide,
 )
 from domain.policies.approval import ApprovalDecisionRequest, ApprovalPolicy
-from infra.db.init_db import init_db
+from infra.db.execution_authorization import authorize_submission, submission_mode
 from infra.db.order_unit_of_work import OrderUnitOfWork
 from infra.db.portfolio_risk_reservation import PortfolioRiskReservationRepository
 from infra.db.repositories import (
@@ -254,6 +254,8 @@ class OrderStateMixin:
         recommendation: Recommendation,
         request: PaperOrderRequest,
         automatic: bool = False,
+        policy_required: bool = False,
+        policy_revision: int | None = None,
     ) -> PaperOrder:
         """Persist the order intent before routing and collapse concurrent retries."""
 
@@ -272,7 +274,9 @@ class OrderStateMixin:
             recommendation=recommendation,
             request=request,
         )
-        reserved, created = self.paper_order_repo.reserve_intent(intent)
+        reserved, created = self.paper_order_repo.reserve_intent(
+            intent, policy_required=policy_required, policy_revision=policy_revision,
+        )
         self._cache_paper_order(reserved)
         logger.info(
             "order intent reserved" if created else "idempotent order intent reused",
@@ -298,6 +302,8 @@ class OrderStateMixin:
                     account_equity=request.account_equity,
                     max_gross_exposure_pct=request.max_gross_exposure_pct,
                 )
+            authorize_submission(order_id=intent.id, automatic=policy_required,
+                                 execution_mode=submission_mode(request.execution_mode, dry_run=request.dry_run))
             order, updated_positions = self.execution_router.submit(
                 recommendation=recommendation,
                 request=request,
@@ -427,9 +433,11 @@ class OrderStateMixin:
             except BrokerAdapterError:
                 raise
 
-        if self.kill_switch.enabled:
+        if self.get_kill_switch().enabled:
             raise ValueError("Order recovery resubmission is blocked by kill switch")
 
+        authorize_submission(order_id=order.id,
+                             execution_mode=submission_mode(order.execution_mode, dry_run=order.dry_run))
         recovered, updated_positions = self.execution_router.submit(
             recommendation=recommendation,
             request=request,

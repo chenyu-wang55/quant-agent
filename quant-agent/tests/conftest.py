@@ -38,3 +38,9 @@ def pytest_sessionfinish(session, exitstatus) -> None:
 
 
 atexit.register(_cleanup_test_database)
+
+
+def pytest_sessionstart(session) -> None:
+    # Explicit test setup, never an API request side effect.
+    from infra.db.init_db import init_db
+    init_db()

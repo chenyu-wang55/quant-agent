@@ -59,7 +59,8 @@ def _locked_versions(lock_path: Path) -> dict[str, str]:
 def check_python_environment(root: Path) -> list[Check]:
     expected = (root / ".venv" / "bin" / "python").resolve()
     actual = Path(sys.executable).resolve()
-    isolated = sys.prefix != sys.base_prefix and actual == expected
+    isolated = (sys.prefix != sys.base_prefix and actual == expected
+                and Path(sys.prefix).resolve() == (root / ".venv").resolve())
     checks = [
         Check(
             name="python_environment",

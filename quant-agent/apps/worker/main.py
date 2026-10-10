@@ -36,6 +36,7 @@ from infra.config import CoreSettings
 from infra.observability.health import HealthEvaluator
 from infra.observability.logging import configure_logging
 from infra.queue.events import EventType
+from services.execution.paper_evidence import EXECUTION_BEHAVIOR_VERSION, paper_evidence_signature
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -241,6 +242,7 @@ def _paper_shadow_evidence(
     daily_loss_gate: dict[str, Any],
     position_reconciliation_gate: dict[str, Any],
     market_session: MarketSessionStatus,
+    strategy_config_id: str | None,
 ) -> dict[str, Any]:
     """Build explicit, fail-closed evidence for one paper-shadow trading day."""
 
@@ -248,6 +250,9 @@ def _paper_shadow_evidence(
     preflight = autopilot_preflight or {}
     mode = str(auto_execution.get("mode") or policy.get("auto_execution_mode") or "").lower()
     reasons: list[str] = []
+    quality = snapshot_quality_gate.get("data_quality") or {}
+    fingerprint = str(quality.get("dataset_fingerprint") or "")
+    observed_at = datetime.now(timezone.utc)
     checks = {
         "autopilot_policy_used": use_autopilot_policy,
         "autopilot_policy_enabled": policy.get("enabled") is True,
@@ -257,16 +262,28 @@ def _paper_shadow_evidence(
         "auto_execution_path_enabled": auto_execution.get("enabled") is True,
         "effective_auto_execution_enabled": auto_execution_enabled,
         "snapshot_quality_passed": snapshot_quality_gate.get("passed") is True,
+        "real_point_in_time_data": (quality.get("provider_status") == "verified"
+                                    and quality.get("point_in_time_report_verified") is True
+                                    and len(fingerprint) == 64
+                                    and all(char in "0123456789abcdef" for char in fingerprint)
+                                    and "mock" not in str(quality.get("provider_name") or "").lower()),
+        "strategy_version_present": bool(strategy_config_id),
         "daily_loss_gate_passed": daily_loss_gate.get("passed") is True,
         "position_reconciliation_passed": position_reconciliation_gate.get("passed") is True,
         "regular_xnys_session": market_session.is_regular_session,
+        "observed_at_runtime": 0 <= (observed_at-market_session.as_of).total_seconds() <= 300,
         "execution_completed_without_errors": int(auto_execution.get("error_count") or 0) == 0,
     }
     for name, passed in checks.items():
         if not passed:
             reasons.append(name)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
+        "signature": paper_evidence_signature(strategy_config_id, AutopilotPolicy.model_validate(policy)),
+        "strategy_config_id": strategy_config_id,
+        "execution_behavior_version": EXECUTION_BEHAVIOR_VERSION,
+        "dataset_fingerprint": fingerprint or None,
+        "observed_at": observed_at.isoformat(),
         "qualified": not reasons,
         "mode": mode or None,
         "checks": checks,
@@ -530,6 +547,8 @@ def system_cycle(
             max_position_pct=max_position_pct,
             max_gross_exposure_pct=max_gross_exposure_pct,
             max_sector_exposure_pct=max_sector_exposure_pct,
+            policy_required=use_autopilot_policy,
+            policy_revision=(autopilot_policy or {}).get("policy_id"),
         )
         if auto_execute_approved and auto_execution_block is None
         else _auto_execution_report(
@@ -562,6 +581,7 @@ def system_cycle(
         daily_loss_gate=daily_loss_gate,
         position_reconciliation_gate=position_reconciliation_gate,
         market_session=market_session,
+        strategy_config_id=output.result.strategy_config_id,
     )
     consumed_events = state.consume_events(limit=1000) if consume_events else []
     pending_event_count = state.pending_event_count()
