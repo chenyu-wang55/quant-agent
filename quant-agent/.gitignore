@@ -16,3 +16,5 @@ quant_agent_v2.db
 *.db
 *.sqlite
 *.sqlite3
+
+artifacts/llm/
