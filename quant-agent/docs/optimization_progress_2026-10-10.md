@@ -22,13 +22,13 @@
 
 ## 验证结果
 
-- 项目正式 `.venv`：**235项测试通过**，ResourceWarning与PytestUnraisableExceptionWarning均按错误处理；测试数据库为独立临时库，生产库未被测试重置。
+- 项目正式 `.venv`：**236项测试通过**，ResourceWarning与PytestUnraisableExceptionWarning均按错误处理；测试数据库为独立临时库，生产库未被测试重置。
 - Ruff通过；mypy检查34个源文件通过；15个核心模块均不超过850行；pip check通过。
 - yfinance/全范围PIT验证器相关覆盖率 **88.54%**（门槛70%）。
 - 实际漏洞扫描最初发现urllib3 2.7.0与soupsieve 2.8.4共5项已知漏洞；升级后扫描68个依赖，**未发现已知漏洞**。这是当次数据库扫描结果。
-- 最终候选：yfinance1.7.0、pandas3.0.6、FastAPI0.143.0、Pydantic2.14.0、Uvicorn0.54.0、httpx2/httpcore2 2.13.1、SQLAlchemy2.1.4、Alembic1.20.0；Starlette保留兼容解析版本1.3.1，安全修复urllib3 2.8.0和soupsieve 2.10。
+- 最终候选：yfinance1.7.0、pandas3.0.6、FastAPI0.143.0、Pydantic2.14.0、Uvicorn0.54.0、httpx2/httpcore2 2.13.1、SQLAlchemy2.1.4、Alembic1.20.0；Starlette保留兼容解析版本1.3.1，安全修复urllib3 2.8.0和soupsieve 2.10；NumPy统一使用兼容Python3.11/3.13的2.4.6。
 
-依赖提交：数据 `993bccb`，Web `2c460d2`，持久化/Pydantic `de7fe50`，漏洞修复 `d4feaf8`。完整最终回归对所有分组共同验证；回退依赖时仍需检查代码与schema兼容性。
+依赖提交：数据 `993bccb`，Web `2c460d2`，持久化/Pydantic `de7fe50`，漏洞修复 `d4feaf8`。首次启用真实GitHub矩阵后发现原锁中NumPy2.5.1要求Python≥3.12；已改为共同兼容的2.4.6，并新增包元数据兼容性回归。完整最终回归对所有分组共同验证；回退依赖时仍需检查代码与schema兼容性。
 
 ## 正式运行状态
 

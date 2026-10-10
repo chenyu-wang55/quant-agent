@@ -26,7 +26,7 @@ required evidence.
   authenticated, plist mode `0600`; installed dependencies match `requirements.lock`
 - LaunchAgent `com.quant-agent.system-cycle-loop`: not loaded
 
-The 2026-10-10 implementation passes 235 strict tests in the repository runtime,
+The 2026-10-10 implementation passes 236 strict tests in the repository runtime,
 Ruff, mypy across 34 source files, the 850-line core-module limit and pip check.
 Production was upgraded explicitly from 0035 to 0037 after a fresh maintenance
 backup and isolated upgrade/restore rehearsal. Existing table counts and safety
@@ -50,7 +50,7 @@ validation or paper-shadow readiness is incomplete.
 
 | Priority | Requirement | Status | Authoritative evidence |
 |---|---|---|---|
-| P0 | Test isolation and state restoration | Accepted | 235 tests pass with `ResourceWarning` and `PytestUnraisableExceptionWarning` promoted to errors. Tests use a temporary database and dispose the SQLAlchemy engine. |
+| P0 | Test isolation and state restoration | Accepted | 236 tests pass with `ResourceWarning` and `PytestUnraisableExceptionWarning` promoted to errors. Tests use a temporary database and dispose the SQLAlchemy engine. |
 | P0 | Atomic and idempotent buy/sell execution | Accepted | Unique idempotency and client-order identifiers, intent-first submission, atomic fill units of work, optimistic holding updates, broker lookup recovery, concurrent retry tests, injected rollback tests, and stale-intent worker recovery tests are present. |
 | P0 | Authentication and live-trading safety | Accepted | Signed HttpOnly session cookie, double-submit CSRF protection, read/approve/execute roles, protected OpenAPI, URL-password rejection, correlation IDs, maintained XNYS calendar tests, and regular-session defaults all pass. Confirmed/automatic live buy and sell paths, including recovery, share one fail-closed readiness gate and Mock data cannot authorize live Broker I/O. |
 | P1 | Deduplicated snapshot storage and database operations | Accepted | Production contains 594 snapshots, 36,660 immutable content-addressed bars, and 2,611,180 compact references. Listing 500 snapshots took 0.283 seconds. Repeated identical bars are stored once; revised corporate-action/provenance content creates a new immutable version. Backup, restore, retention, pruning, compaction, migration upgrade/downgrade, and integrity checks pass. |

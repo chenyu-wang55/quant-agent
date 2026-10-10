@@ -74,10 +74,11 @@ mypy==2.3.0
     # via quant-agent (pyproject.toml)
 mypy-extensions==1.1.0
     # via mypy
-numpy==2.5.1
+numpy==2.4.6
     # via
     #   exchange-calendars
     #   pandas
+    #   quant-agent (pyproject.toml)
     #   yfinance
 opentelemetry-api==1.45.1
     # via fastapi

@@ -1,4 +1,19 @@
+from importlib.metadata import distribution
+from pathlib import Path
+
+from packaging.specifiers import SpecifierSet
+
 from scripts import preflight
+
+
+def test_locked_packages_support_both_python_matrix_versions():
+    lock = Path(__file__).resolve().parents[2] / "requirements.lock"
+    incompatible = []
+    for name in preflight._locked_versions(lock):
+        constraint = distribution(name).metadata.get("Requires-Python")
+        if constraint and any(version not in SpecifierSet(constraint) for version in ("3.11", "3.13")):
+            incompatible.append((name, constraint))
+    assert incompatible == [], "A common dependency lock must support both Python matrix versions"
 
 
 def test_another_venv_with_same_python_binary_is_not_repository_environment(tmp_path, monkeypatch):

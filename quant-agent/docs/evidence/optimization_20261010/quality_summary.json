@@ -1,8 +1,8 @@
 {
   "strict_tests": {
-    "passed": 235,
+    "passed": 236,
     "failed": 0,
-    "duration_seconds": 96.75,
+    "duration_seconds": 76.99,
     "python": "3.13.1",
     "environment": "/Users/chenyu/Desktop/auto/quant/quant-agent/.venv"
   },
@@ -22,7 +22,7 @@
     "dependencies": 68,
     "known_vulnerabilities": 0
   },
-  "lock_sha256": "03d79894802609e75f079f87f73b6b4dc1cf6799ef2e35c372b93c2c1cb227e0",
+  "lock_sha256": "09e6fbc447ec73ff38f8104807686469947e432261794c072e17c962949ff7a3",
   "versions": {
     "fastapi": "0.143.0",
     "pydantic": "2.14.0",
@@ -35,7 +35,9 @@
     "pandas": "3.0.6",
     "starlette": "1.3.1",
     "urllib3": "2.8.0",
-    "soupsieve": "2.10"
+    "soupsieve": "2.10",
+    "numpy": "2.4.6"
   },
-  "remote_matrix": "pending GitHub PR CI"
+  "remote_matrix": "pending GitHub PR CI",
+  "matrix_compatibility": "All locked Requires-Python metadata supports Python 3.11 and 3.13; GitHub rerun tracked on PR"
 }
