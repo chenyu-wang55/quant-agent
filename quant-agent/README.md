@@ -5,6 +5,10 @@ PRD-aligned quant research and trading recommendation platform.
 2026-10-10 implementation: [optimization progress](docs/optimization_progress_2026-10-10.md),
 [safety, AI evidence and calibration tools](docs/optimization_tools.md).
 
+2026-10-12 continuation: [free SEC/Yahoo/Stooq research collection](docs/free_data_sources.md).
+These archives preserve missing-data blockers and do not qualify as production PIT inputs.
+See the [implementation and actual source-access results](docs/optimization_progress_2026-10-12.md).
+
 ## Scope
 
 - US equities recommendation workflow

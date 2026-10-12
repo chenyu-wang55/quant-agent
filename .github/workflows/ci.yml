@@ -77,6 +77,17 @@ jobs:
           --cov=services.ingestion.point_in_time_validator
           --cov-report=term-missing
           --cov-fail-under=70
+      - name: Enforce free research source coverage
+        if: matrix.python-version == '3.13'
+        run: >-
+          pytest -q tests/unit/test_free_research_data.py
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
+          --cov=services.ingestion.sec_facts
+          --cov=services.ingestion.free_sources
+          --cov=services.ingestion.free_dataset
+          --cov-report=term-missing
+          --cov-fail-under=80
 
   dependency-audit:
     runs-on: ubuntu-latest

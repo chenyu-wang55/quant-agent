@@ -1,0 +1,54 @@
+{
+  "assessment_date": "2026-10-12",
+  "source_policy": "free_sources_only",
+  "local_quality": {
+    "strict_tests_passed": 273,
+    "new_offline_tests_passed": 37,
+    "free_source_coverage_percent": 87.21,
+    "ruff": "passed",
+    "mypy_source_files": 37,
+    "mypy": "passed",
+    "module_size": "passed",
+    "pip_check": "passed"
+  },
+  "live_collection": {
+    "status": "partial",
+    "dataset_fingerprint": "7009197c52738ad7c6135dabda8c83d8e896b18a5b9ce675f4f070561c07f742",
+    "summary": {
+      "AAPL": {},
+      "SPY": {}
+    },
+    "errors": [
+      {
+        "component": "sec",
+        "error_type": "HTTPStatusError",
+        "http_status": 403,
+        "ticker": "AAPL"
+      },
+      {
+        "component": "bars",
+        "error_type": "HTTPStatusError",
+        "ticker": "AAPL"
+      },
+      {
+        "component": "bars",
+        "error_type": "HTTPStatusError",
+        "ticker": "SPY"
+      }
+    ],
+    "paid_api_calls": 0,
+    "production_ready": false
+  },
+  "live_probes": {
+    "sec_submissions_http_status": 403,
+    "yfinance_error_type": "YFRateLimitError",
+    "stooq_http_status": 404
+  },
+  "archive_integrity": "verified",
+  "actual_collected_source_files": 0,
+  "data_readiness": "blocked",
+  "test_data_kind": "synthetic_offline_contract_samples",
+  "production_database_written": false,
+  "execution_controls_changed": false,
+  "remote_ci": "follow_current_PR_head_checks"
+}

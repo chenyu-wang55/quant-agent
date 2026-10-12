@@ -18,3 +18,4 @@ quant_agent_v2.db
 *.sqlite3
 
 artifacts/llm/
+artifacts/free_data/
