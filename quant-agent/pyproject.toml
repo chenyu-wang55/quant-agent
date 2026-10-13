@@ -74,6 +74,7 @@ files = [
   "services/ingestion/sec_facts.py",
   "services/ingestion/free_sources.py",
   "services/ingestion/free_dataset.py",
+  "services/ingestion/twelve_prices.py",
   "services/ingestion/vendors/yfinance_provider.py",
   "services/ranking/pipeline.py",
   "services/llm/client.py",
@@ -82,6 +83,8 @@ files = [
   "services/research/backtest_engine.py",
   "services/research/calibration.py",
   "services/research/walk_forward.py",
+  "services/research/price_data.py",
+  "services/research/price_only.py",
   "services/risk/engine.py"
 ]
 follow_imports = "skip"

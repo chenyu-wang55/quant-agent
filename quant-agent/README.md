@@ -9,6 +9,11 @@ PRD-aligned quant research and trading recommendation platform.
 These archives preserve missing-data blockers and do not qualify as production PIT inputs.
 See the [implementation and actual source-access results](docs/optimization_progress_2026-10-12.md).
 
+An independent [explicit-pool daily-price study](docs/price_research.md) provides free Basic-plan
+price collection, frozen technical stock selection and cost-aware backtests. Real completion
+requires the owner's personal data key and complete dated inputs; it never authorizes trading.
+See the [implementation evidence and outstanding real-data dependency](docs/price_research_delivery_2026-10-13.md).
+
 ## Scope
 
 - US equities recommendation workflow

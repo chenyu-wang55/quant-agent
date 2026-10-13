@@ -29,6 +29,7 @@ from apps.api.routes.operations import router as operations_router
 from apps.api.routes.paper_orders import router as paper_orders_router
 from apps.api.routes.portfolio import router as portfolio_router
 from apps.api.routes.positions import router as positions_router
+from apps.api.routes.price_research import router as price_research_router
 from apps.api.routes.recommendations import router as recommendations_router
 from apps.api.routes.research import router as research_router
 from apps.api.routes.signals import router as signals_router
@@ -152,6 +153,7 @@ app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(universe_router)
 app.include_router(research_router)
+app.include_router(price_research_router)
 app.include_router(recommendations_router)
 app.include_router(approvals_router)
 app.include_router(dashboard_router)

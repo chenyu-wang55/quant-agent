@@ -1,0 +1,28 @@
+{
+  "strategy": "price_momentum_v1",
+  "selected_on": "2026-10-13",
+  "securities": {
+    "AAPL": "Technology", "MSFT": "Technology", "AMZN": "ConsumerDiscretionary",
+    "GOOGL": "CommunicationServices", "META": "CommunicationServices", "NVDA": "Technology",
+    "AVGO": "Technology", "ORCL": "Technology", "AMD": "Technology", "CRM": "Technology",
+    "JPM": "Financials", "BAC": "Financials", "V": "Financials", "MA": "Financials",
+    "UNH": "HealthCare", "JNJ": "HealthCare", "XOM": "Energy", "CVX": "Energy",
+    "PG": "ConsumerStaples", "COST": "ConsumerStaples"
+  },
+  "benchmark": "SPY",
+  "data_start": "2015-01-01",
+  "data_end": "2026-10-12",
+  "backtest_start": "2016-01-04",
+  "backtest_end": "2025-12-31",
+  "validation_start": "2024-01-01",
+  "holdout_start": "2025-01-01",
+  "selection_at": "2026-10-13T04:00:00+00:00",
+  "top_n": 8,
+  "rebalance_sessions": 5,
+  "initial_cash": 100000,
+  "max_position_weight": 0.1,
+  "max_sector_weight": 0.3,
+  "max_gross_weight": 0.8,
+  "transaction_cost_bps": 10,
+  "slippage_bps": 5
+}

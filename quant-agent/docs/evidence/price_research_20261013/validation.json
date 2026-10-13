@@ -1,0 +1,49 @@
+{
+  "audited_at": "2026-10-13T13:49:57.074073+00:00",
+  "research_status": "awaiting_personal_free_data_key",
+  "personal_key_configured": false,
+  "research_scope": "explicit_pool_price_only",
+  "stock_count": 20,
+  "benchmark": "SPY",
+  "strategy_config_id": "c466dd1905300da9b0f74c9ed2e7bd81f2eb593916f87e6f449350ea1d7fa72a",
+  "data_start": "2015-01-01",
+  "data_end": "2026-10-12",
+  "backtest_start": "2016-01-04",
+  "backtest_end": "2025-12-31",
+  "real_dataset_generated": false,
+  "real_selection_generated": false,
+  "real_backtest_generated": false,
+  "private_sources_committed": false,
+  "paid_endpoints_used": false,
+  "execution_allowed": false,
+  "production_acceptance_passed": false,
+  "local_validation": {
+    "focused_tests_passed": 37,
+    "focused_coverage_percent": 89.87068965517241,
+    "strict_resource_warnings": true,
+    "ruff": "passed",
+    "mypy_source_files": 40,
+    "mypy": "passed",
+    "core_size_limit": 850,
+    "core_size_files": 15,
+    "core_size": "passed",
+    "installed_dependency_consistency": "passed",
+    "dependency_lock_changed": false,
+    "strict_full_tests_passed": 310,
+    "strict_full_tests_duration_seconds": 95.17
+  },
+  "limits": [
+    "pool_selected_retrospectively_selection_and_survivorship_bias",
+    "sector_labels_are_research_assumptions",
+    "adjusted_current_vendor_price_vintage_not_full_production_PIT",
+    "synthetic_contract_tests_are_not_real_research_evidence",
+    "no_fundamentals_news_earnings_or_intraday_liquidity"
+  ],
+  "source_probe_summary": {
+    "SEC": "HTTP 403",
+    "Yahoo": "YFRateLimitError",
+    "Stooq": "browser verification HTML, not market CSV",
+    "Nasdaq": "transport error, bounded HTTP1 retry timed out",
+    "Twelve_Data_demo": "connectivity only; demo refused as research input"
+  }
+}
