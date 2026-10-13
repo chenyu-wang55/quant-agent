@@ -88,6 +88,17 @@ jobs:
           --cov=services.ingestion.free_dataset
           --cov-report=term-missing
           --cov-fail-under=80
+      - name: Enforce daily price study coverage
+        if: matrix.python-version == '3.13'
+        run: >-
+          pytest -q tests/unit/test_price_research.py
+          -W error::ResourceWarning
+          -W error::pytest.PytestUnraisableExceptionWarning
+          --cov=services.ingestion.twelve_prices
+          --cov=services.research.price_data
+          --cov=services.research.price_only
+          --cov-report=term-missing
+          --cov-fail-under=80
 
   dependency-audit:
     runs-on: ubuntu-latest
