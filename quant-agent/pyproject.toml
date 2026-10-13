@@ -26,8 +26,8 @@ dev = [
   "mypy>=1.16.0"
 ]
 vendors = [
-  "yfinance>=0.2.58",
-  "pandas>=2.2.0",
+  "yfinance>=1.7.0",
+  "pandas>=3.0.6",
   # NumPy 2.5 drops Python 3.11; keep one lock for the supported matrix.
   "numpy>=2.4.6,<2.5"
 ]
