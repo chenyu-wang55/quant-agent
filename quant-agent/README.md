@@ -2,6 +2,13 @@
 
 PRD-aligned quant research and trading recommendation platform.
 
+2026-10-10 implementation: [optimization progress](docs/optimization_progress_2026-10-10.md),
+[safety, AI evidence and calibration tools](docs/optimization_tools.md).
+
+2026-10-12 continuation: [free SEC/Yahoo/Stooq research collection](docs/free_data_sources.md).
+These archives preserve missing-data blockers and do not qualify as production PIT inputs.
+See the [implementation and actual source-access results](docs/optimization_progress_2026-10-12.md).
+
 ## Scope
 
 - US equities recommendation workflow
@@ -100,17 +107,17 @@ holding, position, trade-ledger, audit, and event effects commit atomically.
 Database maintenance commands always operate on an explicit database/backup path:
 
 ```bash
-python3 scripts/manage_database.py backup \
+.venv/bin/python scripts/manage_database.py backup \
   --output backups/quant_agent_v2-before-maintenance.db
-python3 scripts/manage_database.py restore \
+.venv/bin/python scripts/manage_database.py restore \
   --backup backups/quant_agent_v2-before-maintenance.db \
   --output /tmp/quant-agent-restored.db
-python3 scripts/manage_database.py retention-plan \
+.venv/bin/python scripts/manage_database.py retention-plan \
   --created-before "2026-01-01T00:00:00Z" --keep-latest 500
-python3 scripts/manage_database.py archive-and-prune --help
-python3 scripts/manage_database.py compact --help
-python3 scripts/manage_database.py inspect-test-snapshots --help
-python3 scripts/manage_database.py cleanup-test-snapshots --help
+.venv/bin/python scripts/manage_database.py archive-and-prune --help
+.venv/bin/python scripts/manage_database.py compact --help
+.venv/bin/python scripts/manage_database.py inspect-test-snapshots --help
+.venv/bin/python scripts/manage_database.py cleanup-test-snapshots --help
 ```
 
 The retention workflow is deliberately two-step: inspect a plan, then archive the complete
@@ -131,7 +138,7 @@ monthly backups for 12 months; test a restore into a new path at least monthly.
 Example:
 
 ```bash
-DATA_PROVIDER=yfinance uvicorn apps.api.main:app --reload
+DATA_PROVIDER=yfinance .venv/bin/uvicorn apps.api.main:app --reload
 ```
 
 Point-in-time CSV contracts:
@@ -145,7 +152,7 @@ Before a historical backtest, validate the complete licensed export offline and 
 JSON report with the run evidence:
 
 ```bash
-python scripts/validate_point_in_time_data.py \
+.venv/bin/python scripts/validate_point_in_time_data.py \
   --start 2021-01-01T00:00:00Z --end 2025-12-31T00:00:00Z \
   --output artifacts/pit-validation-2021-2025.json
 ```
@@ -277,23 +284,18 @@ limits, ATR stop ranges, and signal weights.
 
 ## Database and Migrations
 
-Recommended bootstrap (idempotent):
+API startup, business requests and readiness only inspect the schema. A missing,
+old or incomplete database returns HTTP 503 with `maintenance_required=true`;
+no request creates, migrates or rebuilds it. Initialization is an explicit maintenance
+operation. Keep execution locked, stop writers and take a verified backup before upgrading:
 
 ```bash
-python -m infra.db.init_db
+.venv/bin/python -m infra.db.init_db
 ```
 
-If a local SQLite schema is stale, back up the database first. Automatic rebuild is opt-in:
-
-```bash
-DB_RESET_ON_SCHEMA_CONFLICT=1 python -m infra.db.init_db
-```
-
-Direct Alembic usage (fresh database preferred):
-
-```bash
-alembic upgrade head
-```
+The command upgrades through Alembic and never deletes a conflicting database.
+`DB_RESET_ON_SCHEMA_CONFLICT` no longer permits rebuilding. Test databases are
+initialized explicitly by the test session fixture.
 
 ## Approval and Execution Controls
 
@@ -418,7 +420,7 @@ survive API or worker restarts.
 The conservative full-system loop is:
 
 ```bash
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0
 ```
 
 It captures or replays the latest source snapshot, generates recommendations, refreshes
@@ -428,7 +430,7 @@ alert, event, and metric counts. By default it does not auto-buy or auto-sell.
 Explicit automatic execution mode:
 
 ```bash
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
   --auto-execute-approved --auto-execution-mode paper
 ```
 
@@ -462,7 +464,7 @@ before automatic actions are blocked.
 Full autopilot mode also auto-approves qualifying recommendations before execution:
 
 ```bash
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
   --auto-approve-recommendations --auto-approve-min-confidence 0.72 \
   --auto-execute-approved --auto-execution-mode paper
 ```
@@ -491,7 +493,7 @@ curl -X POST http://localhost:8000/execution/autopilot-policy \
     "reason": "paper autopilot"
   }'
 
-python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
+.venv/bin/python -m apps.worker.main system_cycle --top-n 8 --min-confidence 0.0 \
   --use-autopilot-policy
 ```
 
@@ -582,7 +584,7 @@ an `auto_execution` action report.
 For unattended local operation, run the bounded or continuous loop wrapper:
 
 ```bash
-python -m apps.worker.main system_cycle_loop --interval-seconds 300 \
+.venv/bin/python -m apps.worker.main system_cycle_loop --interval-seconds 300 \
   --use-autopilot-policy
 ```
 

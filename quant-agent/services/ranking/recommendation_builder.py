@@ -105,86 +105,58 @@ class RecommendationBuilder:
     @staticmethod
     def _build_thesis(signal: SignalSnapshot) -> list[str]:
         components = {
-            "technical trend and structure are supportive": signal.technical_score,
-            "event/news flow is favorable": signal.event_score,
-            "relative strength vs benchmark is positive": signal.relative_strength_score,
-            "fundamental quality and revisions are supportive": signal.fundamental_score,
-            "execution quality is acceptable": signal.execution_quality_score,
+            "technical": signal.technical_score,
+            "event/news": signal.event_score,
+            "relative strength": signal.relative_strength_score,
+            "fundamental": signal.fundamental_score,
+            "execution quality": signal.execution_quality_score,
         }
         ranked = sorted(components.items(), key=lambda kv: kv[1], reverse=True)
-        return [text for text, _ in ranked[:3]]
+        return [f"{name} rule score {score:.3f} ({'supportive' if score >= 0.65 else 'weak' if score < 0.45 else 'mixed'})"
+                for name, score in ranked[:3]]
 
     @staticmethod
     def _build_analysis(signal: SignalSnapshot, trade_plan: TradePlan) -> RecommendationAnalysis:
-        technical = [
-            "价格结构维持上行节奏，趋势并未被破坏。",
-            "短期动能仍有延续性，回撤后承接相对稳定。",
-            f"当前市场环境为 {signal.regime_label}，顺势交易胜率相对更高。",
-        ]
-        event_view = [
-            "事件流与价格流分开评估，避免单条新闻误导交易决策。",
-            "近期事件没有出现明显反向冲击，交易逻辑可继续观察执行。",
-        ]
-        fundamental_view = [
-            "盈利修正与经营质量维度对中期持有形成支撑。",
-            "流动性和成交质量较好，执行时的冲击成本可控。",
-        ]
-        execution_view = [
-            f"建议在 {trade_plan.entry_zone_low:.2f}-{trade_plan.entry_zone_high:.2f} 区间内分批进入，避免追高。",
-            f"防守位放在 {trade_plan.stop_loss:.2f}，一旦收盘失守应优先止损。",
-            f"第一目标 {trade_plan.tp1:.2f} 先锁定部分利润，第二目标 {trade_plan.tp2:.2f} 作为趋势延伸目标。",
-        ]
-        risk_notes = [
-            "若价格收盘跌破止损位，说明交易假设被破坏，应及时退出。",
-            "若市场风格转向 risk-off，应主动降低仓位或暂停新开仓。",
-            "若后续事件与价格方向出现明显冲突，需重新评估持仓理由。",
-        ]
+        def describe(label: str, score: float) -> str:
+            judgement = "规则证据较强" if score >= 0.65 else "规则证据不足" if score < 0.45 else "规则证据混合"
+            return f"{label}评分 {score:.3f}，{judgement}；评分不等于原始事实或预测胜率。"
 
-        why_to_buy_cn: list[str] = []
-        if signal.technical_score >= 0.65:
-            why_to_buy_cn.append("技术结构健康，趋势与动能同向，具备继续上行的基础。")
-        if signal.relative_strength_score >= 0.55:
-            why_to_buy_cn.append("相对大盘更强，说明资金偏好仍在该标的。")
-        if signal.fundamental_score >= 0.50:
-            why_to_buy_cn.append("基本面与盈利修正维度提供了中周期支撑。")
-        if signal.execution_quality_score >= 0.55:
-            why_to_buy_cn.append("流动性较好，实际执行更容易贴近计划价位。")
+        technical = [describe("趋势", signal.trend_score), describe("动量", signal.momentum_score),
+                     describe("技术综合", signal.technical_score), f"市场环境：{signal.regime_label}。"]
+        event_view = [describe("事件", signal.event_score),
+                      "本报告未附原始新闻证据，不能据评分断言具体利好、利空或没有新闻。"]
+        fundamental_view = [describe("基本面", signal.fundamental_score),
+                            "具体盈利修正与财务数值需核对源数据及其可用时间。"]
+        execution_view = [describe("流动性", signal.liquidity_score),
+                          describe("执行质量", signal.execution_quality_score),
+                          f"程序计划入场区间 {trade_plan.entry_zone_low:.2f}-{trade_plan.entry_zone_high:.2f}，"
+                          f"止损 {trade_plan.stop_loss:.2f}，目标 {trade_plan.tp1:.2f}/{trade_plan.tp2:.2f}。"]
+        risk_notes = ["规则信号强度不是经校准的胜率；执行仍需通过审批、数据与风控门槛。",
+                      "新闻、基本面或价格证据缺失时不能推断其对交易形成支持。"]
+        if signal.regime_label == "risk_off":
+            risk_notes.append("当前处于 risk_off，应暂停新开仓或按既定风控降低敞口。")
+        if signal.evidence_conflict:
+            risk_notes.append("事件与价格证据存在冲突，需要复核后才能形成交易判断。")
+        supporting = [("技术", signal.technical_score), ("相对强弱", signal.relative_strength_score),
+                      ("基本面", signal.fundamental_score), ("执行质量", signal.execution_quality_score)]
+        why_to_buy_cn = [describe(name, score) for name, score in supporting if score >= 0.65]
         if not why_to_buy_cn:
-            why_to_buy_cn.append("当前信号偏中性，可小仓位试错并严格执行止损。")
-
-        why_to_sell_cn = [
-            f"价格收盘跌破 {trade_plan.stop_loss:.2f}，说明买入逻辑失效，优先止损。",
-            f"价格触达 {trade_plan.tp1:.2f} 可先减仓，触达 {trade_plan.tp2:.2f} 可进一步止盈。",
-            "若市场切换为 risk-off，或出现明显利空事件，应提前收缩风险敞口。",
-        ]
-
-        action_guidance_cn = (
-            "先按计划价位分批进场，再按止损/止盈规则机械执行；"
-            "不要在情绪波动时随意扩大仓位或取消风控。"
-        )
-
-        report_title = f"{trade_plan.ticker} 量化推荐分析"
-        report_cn = (
-            f"{trade_plan.ticker} 当前属于‘有条件可做’的多头机会。"
-            f"核心原因是趋势仍向上、相对强弱不弱于市场、且执行流动性可接受。"
-            f"策略上建议在入场区间 {trade_plan.entry_zone_low:.2f}-{trade_plan.entry_zone_high:.2f} 分批建仓，"
-            f"以 {trade_plan.stop_loss:.2f} 作为失效边界。"
-            f"若价格上行到 {trade_plan.tp1:.2f}/{trade_plan.tp2:.2f}，按计划分批兑现利润。"
-            "这不是对收益的承诺，而是基于当前证据的风险收益决策。"
-        )
-
+            why_to_buy_cn = ["尚无充分的规则支持项，不建议仅依据该信号新开仓。"]
+        stop_action = "跌破" if trade_plan.direction == Direction.BUY else "升破"
+        why_to_sell_cn = [f"价格{stop_action}止损 {trade_plan.stop_loss:.2f} 时按已批准计划处理。",
+                          f"目标价 {trade_plan.tp1:.2f}/{trade_plan.tp2:.2f}，执行前确认方向与持仓。"]
+        blocked_signal = (signal.composite_score < 0.45 or signal.regime_label == "risk_off"
+                          or signal.evidence_conflict)
+        action_guidance_cn = ("当前信号证据不足或存在风险阻断，先观察并复核，不建议新开仓。"
+                              if blocked_signal else "仅在数据、审批和风控通过后按程序价格计划执行，禁止追价或扩大仓位。")
+        summary = (f"综合规则信号强度 {signal.composite_score:.3f}，市场环境 {signal.regime_label}；"
+                   "此数值不是预测胜率。")
         return RecommendationAnalysis(
-            summary=(
-                f"当前推荐基于多维证据的一致性，而不是单一指标。综合信号强度为 {signal.composite_score:.3f}。"
-            ),
-            report_title=report_title,
-            report_cn=report_cn,
-            why_to_buy_cn=why_to_buy_cn,
-            why_to_sell_cn=why_to_sell_cn,
-            action_guidance_cn=action_guidance_cn,
-            technical_view=technical,
-            event_view=event_view,
-            fundamental_view=fundamental_view,
-            execution_view=execution_view,
-            risk_notes=risk_notes,
+            summary=summary, report_title=f"{trade_plan.ticker} 量化证据分析",
+            report_cn=" ".join([summary, *technical, *event_view, *fundamental_view,
+                                *execution_view, *risk_notes, action_guidance_cn]),
+            why_to_buy_cn=why_to_buy_cn, why_to_sell_cn=why_to_sell_cn,
+            action_guidance_cn=action_guidance_cn, technical_view=technical,
+            event_view=event_view, fundamental_view=fundamental_view,
+            execution_view=execution_view, risk_notes=risk_notes,
         )

@@ -11,6 +11,8 @@ from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from apps.worker.main import _auto_broker_sync_cycle
 from domain.entities.models import (
+    AutoExecutionMode,
+    AutopilotPolicy,
     ManualBuyRequest,
     ManualSellRequest,
     OrderExecutionMode,
@@ -29,6 +31,48 @@ from services.execution.broker_adapter import (
 from services.execution.router import ExecutionRouter
 
 AUTH_HEADERS = {"x-access-password": "test-access-password"}
+
+
+def test_policy_driven_live_dry_run_is_authorized_without_broker_io() -> None:
+    get_app_state().reset()
+    state, recommendation = _research_recommendation("policy dry run")
+    policy = state.autopilot_policy_repo.set_policy(AutopilotPolicy(
+        enabled=True, auto_execute_approved=True, auto_execution_mode=AutoExecutionMode.LIVE_DRY_RUN,
+    ))
+    order = state.submit_order(recommendation=recommendation, request=PaperOrderRequest(
+        recommendation_id=recommendation.id, qty=1, execution_mode=OrderExecutionMode.LIVE,
+        dry_run=True, enforce_risk_limits=False,
+    ), policy_required=True, policy_revision=policy.policy_id)
+    assert order.dry_run and order.filled_qty == 0
+
+
+def test_policy_revision_change_blocks_recovery_resubmission(monkeypatch) -> None:
+    get_app_state().reset()
+    state, recommendation = _research_recommendation("policy revision")
+    policy = state.autopilot_policy_repo.set_policy(AutopilotPolicy(enabled=True, auto_execute_approved=True))
+    request = PaperOrderRequest(recommendation_id=recommendation.id, qty=1, enforce_risk_limits=False)
+    intent = state.execution_router.prepare_intent(recommendation=recommendation, request=request)
+    state.paper_order_repo.reserve_intent(intent, policy_required=True, policy_revision=policy.policy_id)
+    state.autopilot_policy_repo.set_policy(policy.model_copy(update={"max_position_pct": 0.05}))
+    sends = []
+    monkeypatch.setattr(state.execution_router, "submit", lambda **_: sends.append(1))
+    with pytest.raises(ValueError, match="policy"):
+        state.recover_order_submission(intent, recommendation=recommendation)
+    assert sends == []
+
+
+def test_recovery_preserves_disabled_automatic_policy(monkeypatch) -> None:
+    state = get_app_state()
+    state.reset()
+    _, recommendation = _research_recommendation("recovery policy provenance")
+    request = PaperOrderRequest(recommendation_id=recommendation.id, qty=1, enforce_risk_limits=False)
+    intent = state.execution_router.prepare_intent(recommendation=recommendation, request=request)
+    state.paper_order_repo.reserve_intent(intent, policy_required=True)
+    sends = []
+    monkeypatch.setattr(state.execution_router, "submit", lambda **_: sends.append(1))
+    with pytest.raises(ValueError, match="policy"):
+        state.recover_order_submission(intent, recommendation=recommendation)
+    assert sends == []
 
 
 def _research_recommendation(objective: str):
@@ -280,7 +324,9 @@ def test_order_fill_transaction_rolls_back_all_ledger_effects_and_recovers() -> 
     assert recommendation.ticker not in state.positions
     assert all(item.ticker != recommendation.ticker for item in state.list_holdings())
     assert all((item.reason or "") != f"paper_order_fill:{intent.id}" for item in state.list_trade_ledger())
-    assert all(event.payload.get("order_id") != intent.id for event in state.list_pending_events(limit=1000))
+    assert all(event.payload.get("order_id") != intent.id
+               for event in state.list_pending_events(limit=1000)
+               if event.event_type.value != "execution_authorized")
 
     recovered = state.recover_order_submission(intent, recommendation=recommendation)
     assert recovered.status == PaperOrderStatus.FILLED
@@ -442,13 +488,22 @@ def test_ambiguous_live_sell_recovers_by_client_order_id_on_retry() -> None:
     assert adapter.lookups == [recovered.client_order_id]
 
 
-def test_concurrent_distinct_sells_use_optimistic_holding_guard() -> None:
+def test_concurrent_distinct_sells_use_optimistic_holding_guard(monkeypatch) -> None:
     state, holding = _seed_holding("SLOCK")
     original_uow = state.sell_unit_of_work
     first_in_transaction = Event()
     release_first = Event()
     hook_lock = Lock()
     hook_calls = 0
+    second_captured_holding = Event()
+    original_reserve = state.sell_execution_audit_repo.reserve_intent
+
+    def reserve_after_capture(intent, **kwargs):
+        if intent.idempotency_key == "optimistic-sell-second-key":
+            second_captured_holding.set()
+        return original_reserve(intent, **kwargs)
+
+    monkeypatch.setattr(state.sell_execution_audit_repo, "reserve_intent", reserve_after_capture)
 
     def pause_first_commit() -> None:
         nonlocal hook_calls
@@ -475,6 +530,7 @@ def test_concurrent_distinct_sells_use_optimistic_holding_guard() -> None:
             first_future = executor.submit(state.sell_holding, holding.ticker, first_request)
             assert first_in_transaction.wait(timeout=5)
             second_future = executor.submit(state.sell_holding, holding.ticker, second_request)
+            assert second_captured_holding.wait(timeout=5)
             release_first.set()
             first = first_future.result(timeout=5)
             with pytest.raises(ConcurrentPortfolioUpdateError):

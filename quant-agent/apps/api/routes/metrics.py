@@ -33,7 +33,7 @@ def get_metrics(state: AppState = Depends(get_app_state)) -> dict:
             "paper_order_count": len(state.paper_orders),
             "avg_simulated_fill_price": round(avg_fill, 6),
             "open_position_count": sum(1 for pos in state.positions.values() if pos.qty > 0),
-            "kill_switch_enabled": state.kill_switch.enabled,
+            "kill_switch_enabled": state.get_kill_switch().enabled,
         },
         "approval_metrics": {
             "approval_decision_count": len(state.approvals_by_recommendation_id),

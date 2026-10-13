@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Iterable
+from uuid import uuid4
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -380,7 +381,8 @@ class FeatureRepository:
 
 
 class PaperOrderRepository:
-    def reserve_intent(self, order: PaperOrder) -> tuple[PaperOrder, bool]:
+    def reserve_intent(self, order: PaperOrder, *, policy_required: bool = False,
+                       policy_revision: int | None = None) -> tuple[PaperOrder, bool]:
         """Insert an order intent before any broker I/O.
 
         The unique idempotency/client-order indexes serialize concurrent retries.
@@ -389,6 +391,13 @@ class PaperOrderRepository:
         try:
             with SessionLocal() as session:
                 session.add(self._to_record(order))
+                session.add(SystemEventRecord(
+                    id=uuid4().hex,
+                    event_type=EventType.EXECUTION_INTENT_RESERVED.value,
+                    payload_json={"order_id": order.id, "policy_required": policy_required,
+                                  "policy_revision": policy_revision},
+                    created_at=datetime.now(timezone.utc), status="consumed",
+                ))
                 session.commit()
             return order, True
         except IntegrityError:
@@ -831,10 +840,17 @@ class TradeLedgerRepository:
 
 
 class SellExecutionAuditRepository:
-    def reserve_intent(self, item: SellExecutionAudit) -> tuple[SellExecutionAudit, bool]:
+    def reserve_intent(self, item: SellExecutionAudit, *, policy_required: bool = False,
+                       policy_revision: int | None = None) -> tuple[SellExecutionAudit, bool]:
         try:
             with SessionLocal() as session:
                 session.add(self._to_record(item))
+                session.add(SystemEventRecord(
+                    id=uuid4().hex, event_type=EventType.EXECUTION_INTENT_RESERVED.value,
+                    payload_json={"order_id": item.id, "policy_required": policy_required,
+                                  "policy_revision": policy_revision},
+                    created_at=datetime.now(timezone.utc), status="consumed",
+                ))
                 session.commit()
             return item, True
         except IntegrityError:
@@ -1077,7 +1093,7 @@ class SystemCycleRunRepository:
             records = list(session.execute(stmt).scalars())
         return [self._to_domain(record) for record in records]
 
-    def list_successful_paper_shadow_runs(self, as_of: datetime) -> list[datetime]:
+    def list_successful_paper_shadow_runs(self, as_of: datetime, *, signature: str) -> list[datetime]:
         with SessionLocal() as session:
             records = list(
                 session.execute(
@@ -1113,7 +1129,8 @@ class SystemCycleRunRepository:
                 and isinstance(snapshot_gate, dict)
                 and snapshot_gate.get("passed") is True
                 and isinstance(evidence, dict)
-                and evidence.get("schema_version") == 1
+                and evidence.get("schema_version") == 2
+                and evidence.get("signature") == signature
                 and evidence.get("qualified") is True
             ):
                 dates.append(_ensure_utc(record.started_at))
@@ -1267,7 +1284,7 @@ class ExecutionControlRepository:
             stmt = select(ExecutionControlRecord).order_by(ExecutionControlRecord.id.desc()).limit(1)
             record = session.execute(stmt).scalars().first()
             if record is None:
-                return KillSwitchState(enabled=False, reason=None, updated_by="system")
+                return KillSwitchState(enabled=True, reason="execution_control_missing", updated_by="system")
             return KillSwitchState(
                 enabled=bool(record.enabled),
                 reason=record.reason,
@@ -1930,6 +1947,7 @@ class SourceSnapshotRepository:
             "provider_failures": provider_failures[:25],
             "fallback_fields": fallback_fields[:50],
             "dataset_fingerprint": str(dataset_fingerprint) if dataset_fingerprint else None,
+            "point_in_time_report_verified": provider_quality.get("point_in_time_report_verified") is True,
             "universe_ticker_count": len(universe_set),
             "expected_ticker_count": expected_count,
             "captured_ticker_count": expected_count,

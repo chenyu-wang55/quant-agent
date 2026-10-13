@@ -151,6 +151,9 @@ class SnapshotRecordingProvider:
         if failures or issues or fallback_fields:
             status = "blocked"
         return {
+            "point_in_time_validation": delegate_report.get("point_in_time_validation", {}),
+            "dataset_fingerprint": delegate_report.get("dataset_fingerprint"),
+            "point_in_time_report_verified": delegate_report.get("point_in_time_report_verified", False),
             "status": status,
             "issues": issues,
             "failures": failures,

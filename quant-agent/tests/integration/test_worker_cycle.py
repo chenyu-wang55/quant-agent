@@ -1576,7 +1576,8 @@ def test_system_cycle_uses_persisted_autopilot_policy() -> None:
     assert latest_run.metrics["autopilot_preflight"]["status"] == "ready"
     assert latest_run.metrics["auto_approval"]["approved_count"] == 1
     assert latest_run.metrics["auto_execution"]["buy_order_count"] == 1
-    assert result["paper_shadow_evidence"]["qualified"] is True
+    assert result["paper_shadow_evidence"]["qualified"] is False
+    assert "real_point_in_time_data" in result["paper_shadow_evidence"]["reasons"]
     assert result["paper_shadow_evidence"]["xnys_session_date"] == "2026-04-10"
     assert latest_run.metrics["paper_shadow_evidence"] == result["paper_shadow_evidence"]
 

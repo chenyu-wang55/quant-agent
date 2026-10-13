@@ -9,12 +9,14 @@ from fastapi.testclient import TestClient
 from apps.api.dependencies import get_app_state
 from apps.api.main import app
 from domain.entities.models import (
+    BrokerPositionSnapshot,
     Direction,
     ManualBuyRequest,
     OrderExecutionMode,
     PaperOrder,
     PaperOrderStatus,
     PositionReconciliationReport,
+    PositionReconciliationRequest,
     SourceSnapshotSummary,
     SystemCycleRun,
 )
@@ -233,6 +235,16 @@ def test_live_health_requires_active_native_bracket_for_open_holdings() -> None:
     )
     state.record_paper_order(order)
 
+    order.broker_protection = [
+        {**leg, "qty": 1.0, "filled_qty": 0.0, "symbol": "PROT",
+         "parent_order_id": "broker-parent", "observed_at": now.isoformat()}
+        for leg in order.broker_protection
+    ]
+    state.record_paper_order(order)
+    state.reconcile_broker_positions(PositionReconciliationRequest(
+        broker="alpaca", positions=[BrokerPositionSnapshot(ticker="PROT", qty=1, avg_price=100)]
+    ))
+
     ready, details = HealthEvaluator(state)._broker_protection_check(True)
     assert ready is True
     assert details["protected_holding_count"] == 1
@@ -249,4 +261,4 @@ def test_live_health_requires_active_native_bracket_for_open_holdings() -> None:
     )
     ready, details = HealthEvaluator(state)._broker_protection_check(True)
     assert ready is False
-    assert details["failures"][0]["reason"] == "active_native_bracket_missing"
+    assert "active_native_bracket_missing" in details["failures"][0]["reasons"]

@@ -137,7 +137,7 @@ def submit_paper_order(
                 raise HTTPException(status_code=502, detail=str(exc)) from exc
         return existing
 
-    if state.kill_switch.enabled:
+    if state.get_kill_switch().enabled:
         raise HTTPException(status_code=423, detail="Execution is blocked by kill switch")
 
     if request.execution_mode == OrderExecutionMode.LIVE and not request.idempotency_key:

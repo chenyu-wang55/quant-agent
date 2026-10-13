@@ -37,6 +37,7 @@ from apps.api.routes.strategy_configs import router as strategy_configs_router
 from apps.api.routes.universe import router as universe_router
 from apps.dashboard.main import router as dashboard_router
 from infra.config import CoreSettings
+from infra.db.schema_readiness import SchemaNotReadyError
 from infra.observability.logging import configure_logging, log_context
 
 configure_logging()
@@ -59,6 +60,14 @@ app = FastAPI(
     version="0.1.0",
     description="PRD-aligned quant decision-support API",
 )
+
+
+@app.exception_handler(SchemaNotReadyError)
+async def schema_not_ready(request: Request, exc: SchemaNotReadyError) -> JSONResponse:
+    return JSONResponse(status_code=503, content={
+        "status": "not_ready", "ready": False, "trading_ready": False,
+        "detail": exc.details, "maintenance_required": True,
+    })
 
 
 @app.middleware("http")

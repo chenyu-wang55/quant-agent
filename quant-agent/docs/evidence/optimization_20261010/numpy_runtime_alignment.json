@@ -1,0 +1,7 @@
+{
+  "reason": "NumPy common Python 3.11/3.13 lock compatibility",
+  "worker_started": false,
+  "status": "aligned",
+  "numpy": "2.4.6",
+  "api_loaded": true
+}

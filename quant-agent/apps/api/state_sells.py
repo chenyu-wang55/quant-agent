@@ -84,7 +84,7 @@ from domain.entities.models import (
     TradeSide,
 )
 from domain.policies.approval import ApprovalDecisionRequest, ApprovalPolicy
-from infra.db.init_db import init_db
+from infra.db.execution_authorization import authorize_submission, submission_mode
 from infra.db.order_unit_of_work import OrderUnitOfWork
 from infra.db.portfolio_risk_reservation import PortfolioRiskReservationRepository
 from infra.db.repositories import (
@@ -169,6 +169,8 @@ class SellExecutionStateMixin:
         request: ManualSellRequest,
         *,
         automatic: bool = False,
+        policy_required: bool = False,
+        policy_revision: int | None = None,
     ) -> SellExecutionResult:
         ticker_upper = ticker.upper()
         existing_audit: SellExecutionAudit | None = None
@@ -186,7 +188,7 @@ class SellExecutionStateMixin:
                 ) - submitted_at < timedelta(seconds=30)
                 if existing_audit.status not in {"pending_submit", "submit_unknown"} or fresh_pending:
                     return replay
-        if existing_audit is None and self.kill_switch.enabled:
+        if existing_audit is None and self.get_kill_switch().enabled:
             raise ValueError("Execution is blocked by kill switch")
         holding = self.holdings_by_ticker.get(ticker_upper)
         if holding is None:
@@ -251,11 +253,16 @@ class SellExecutionStateMixin:
             holding_status_after=holding.status,
         )
         if existing_audit is None:
-            reserved, created = self.sell_execution_audit_repo.reserve_intent(intent)
+            reserved, created = self.sell_execution_audit_repo.reserve_intent(
+                intent, policy_required=policy_required, policy_revision=policy_revision,
+            )
             if not created:
                 return self._sell_result_from_audit(reserved, request)
         else:
             created = False
+
+        if execution_mode != OrderExecutionMode.LIVE or request.dry_run:
+            authorize_submission(order_id=execution_id, execution_mode=submission_mode(execution_mode, dry_run=request.dry_run), automatic=policy_required)
 
         if execution_mode == OrderExecutionMode.LIVE:
             if not request.dry_run:
@@ -267,9 +274,10 @@ class SellExecutionStateMixin:
                     execution_id=execution_id,
                     client_order_id=client_order_id,
                     recovering=not created,
+                    automatic=policy_required,
                 )
 
-            if not created and self.kill_switch.enabled:
+            if not created and self.get_kill_switch().enabled:
                 raise ValueError("Sell recovery resubmission is blocked by kill switch")
 
             estimated_delta = (request.sell_price - holding.avg_buy_price) * sell_qty
@@ -462,6 +470,7 @@ class SellExecutionStateMixin:
         execution_id: str,
         client_order_id: str,
         recovering: bool,
+        automatic: bool = False,
     ) -> SellExecutionResult:
         ticker_upper = holding.ticker.upper()
         broker_adapter = self.execution_router.broker_adapter
@@ -478,8 +487,9 @@ class SellExecutionStateMixin:
                 raise
 
         if broker_update is None:
-            if recovering and self.kill_switch.enabled:
+            if recovering and self.get_kill_switch().enabled:
                 raise ValueError("Sell recovery resubmission is blocked by kill switch")
+            authorize_submission(order_id=execution_id, execution_mode=OrderExecutionMode.LIVE.value, automatic=automatic)
             try:
                 broker_update = broker_adapter.submit_order(
                     BrokerOrderPlacement(

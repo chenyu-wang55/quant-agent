@@ -47,6 +47,7 @@ class ExecutionReadinessGate:
         broker_adapter: BrokerExecutionAdapter | None,
         position_reconciliation: dict[str, Any],
         strategy_validation: dict[str, Any],
+        broker_protection: dict[str, Any] | None = None,
         paper_shadow: dict[str, Any] | None = None,
         automatic: bool = False,
         checked_at: datetime | None = None,
@@ -88,6 +89,11 @@ class ExecutionReadinessGate:
         checks["strategy_validation"] = dict(strategy_validation)
         if not strategy_passed:
             reasons.append(str(strategy_validation.get("reason") or "strategy_validation_failed"))
+
+        if broker_protection is not None:
+            checks["broker_protection"] = broker_protection
+            if not broker_protection.get("passed"):
+                reasons.append("broker_protection_not_ready")
 
         if automatic:
             paper_shadow = dict(paper_shadow or {})

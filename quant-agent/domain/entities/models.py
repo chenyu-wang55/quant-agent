@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 
 def utc_now() -> datetime:
@@ -421,6 +421,7 @@ class RecommendationAnalysis(BaseModel):
 
 
 class Recommendation(BaseModel):
+    calibrated_probability: float | None = Field(default=None, ge=0.0, le=1.0)
     id: str
     generated_at: datetime
     ticker: str
@@ -446,6 +447,16 @@ class Recommendation(BaseModel):
     prompt_version: str = "v1"
     pattern_template: PatternType
     analysis: RecommendationAnalysis = Field(default_factory=RecommendationAnalysis)
+
+    @computed_field
+    @property
+    def signal_strength(self) -> float:
+        return self.confidence
+
+    @computed_field
+    @property
+    def confidence_kind(self) -> str:
+        return "rule_signal_strength"
 
     @property
     def entry_zone(self) -> list[float]:
@@ -755,6 +766,7 @@ class AutopilotPolicy(BaseModel):
 
 
 class PaperShadowReadiness(BaseModel):
+    evidence_signature: str | None = None
     passed: bool
     required_trading_days: int = Field(ge=0)
     observed_trading_days: int = Field(ge=0)

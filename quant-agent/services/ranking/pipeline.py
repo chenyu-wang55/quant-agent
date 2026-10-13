@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -71,14 +72,31 @@ class ResearchPipeline:
         self.snapshot_repository = snapshot_repository
 
     def run(self, request: ResearchRunRequest) -> PipelineOutput:
+        scope = getattr(self.provider, "input_session", nullcontext)
+        with scope():
+            return self._run(request)
+
+    def _run(self, request: ResearchRunRequest) -> PipelineOutput:
         as_of = request.as_of.astimezone(timezone.utc)
         source_snapshot_id = request.source_snapshot_id or f"{as_of.isoformat()}#batch001"
+        quality_fn = getattr(self.provider, "get_quality_report", None)
+        quality = quality_fn() if callable(quality_fn) else {}
+        validation = quality.get("point_in_time_validation") or {}
+        fingerprint = quality.get("dataset_fingerprint") or validation.get("dataset_fingerprint") or (
+            validation.get("backtest_range") or {}
+        ).get("dataset_fingerprint")
+        if fingerprint and not request.source_snapshot_id:
+            source_snapshot_id += f"#{fingerprint}"
         strategy_config = build_strategy_config_snapshot(request)
         provider = self.provider
         recording_provider: SnapshotRecordingProvider | None = None
         snapshot_operation = "disabled"
         if self.snapshot_repository is not None:
             if self.snapshot_repository.snapshot_exists(source_snapshot_id):
+                summary = self.snapshot_repository.get_summary(source_snapshot_id)
+                stored_fingerprint = (summary.data_quality or {}).get("dataset_fingerprint") if summary else None
+                if fingerprint and stored_fingerprint != fingerprint:
+                    raise ValueError("snapshot_dataset_fingerprint_mismatch")
                 provider = SnapshotReplayProvider(
                     source_snapshot_id=source_snapshot_id,
                     repository=self.snapshot_repository,

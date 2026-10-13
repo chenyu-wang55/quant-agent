@@ -60,7 +60,7 @@ router = APIRouter(tags=["execution-controls"])
 
 @router.get("/execution/kill-switch", response_model=KillSwitchState)
 def get_kill_switch(state: AppState = Depends(get_app_state)) -> KillSwitchState:
-    return state.kill_switch
+    return state.get_kill_switch()
 
 
 @router.post("/execution/kill-switch", response_model=KillSwitchState)
